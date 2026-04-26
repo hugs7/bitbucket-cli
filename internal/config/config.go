@@ -34,6 +34,17 @@ type Config struct {
 	// comments" — the friendlier default.
 	DiffSplit      bool `yaml:"diff_split,omitempty"`
 	DiffHideInline bool `yaml:"diff_hide_inline,omitempty"`
+
+	// Favourites are repos the user has pinned from the home TUI.
+	Favourites []FavRepo `yaml:"favourites,omitempty"`
+}
+
+// FavRepo is a repo entry persisted in the user's favourites list.
+type FavRepo struct {
+	Host    string `yaml:"host"`
+	Project string `yaml:"project"`
+	Slug    string `yaml:"slug"`
+	Name    string `yaml:"name,omitempty"`
 }
 
 // Editor returns the user's preferred text editor command.
@@ -127,6 +138,41 @@ func RemoveHost(name string) error {
 func SetDiffPrefs(split, showInline bool) error {
 	loaded.DiffSplit = split
 	loaded.DiffHideInline = !showInline
+	return save()
+}
+
+// IsFavourite reports whether a repo is pinned.
+func IsFavourite(host, project, slug string) bool {
+	for _, f := range loaded.Favourites {
+		if f.Host == host && f.Project == project && f.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
+// AddFavourite adds (or refreshes) a favourite entry.
+func AddFavourite(f FavRepo) error {
+	for i, ex := range loaded.Favourites {
+		if ex.Host == f.Host && ex.Project == f.Project && ex.Slug == f.Slug {
+			loaded.Favourites[i] = f
+			return save()
+		}
+	}
+	loaded.Favourites = append(loaded.Favourites, f)
+	return save()
+}
+
+// RemoveFavourite removes a favourite entry if present.
+func RemoveFavourite(host, project, slug string) error {
+	out := loaded.Favourites[:0]
+	for _, f := range loaded.Favourites {
+		if f.Host == host && f.Project == project && f.Slug == slug {
+			continue
+		}
+		out = append(out, f)
+	}
+	loaded.Favourites = out
 	return save()
 }
 

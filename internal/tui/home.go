@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 // HomeAction is what Home returns to its caller when the user picks an
@@ -51,8 +52,23 @@ type homeTab int
 
 const (
 	tabReviews homeTab = iota
+	tabFavourites
 	tabBrowse
 )
+
+var allTabs = []homeTab{tabReviews, tabFavourites, tabBrowse}
+
+func (t homeTab) name() string {
+	switch t {
+	case tabReviews:
+		return "Reviews"
+	case tabFavourites:
+		return "★ Favourites"
+	case tabBrowse:
+		return "Browse"
+	}
+	return "?"
+}
 
 type reviewItem struct{ r api.ReviewPR }
 
@@ -83,31 +99,33 @@ func (i repoBrowseItem) Description() string {
 }
 
 type homeKeys struct {
-	Up, Down, Enter, Tab, Search, Open, Quit, Back, Help, OpenPRs key.Binding
+	Up, Down, Enter, Tab, ShiftTab, Search, Open, Quit, Back, Help, OpenPRs, ToggleFav key.Binding
 }
 
 func defaultHomeKeys() homeKeys {
 	return homeKeys{
-		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-		Enter:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open / load")),
-		Tab:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch tab")),
-		Search:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
-		Open:    key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
-		OpenPRs: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "open PRs")),
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back / blur")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open / load")),
+		Tab:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
+		ShiftTab:  key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("⇧tab", "prev tab")),
+		Search:    key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
+		Open:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
+		OpenPRs:   key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "open PRs")),
+		ToggleFav: key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "favourite")),
+		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back / blur")),
+		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	}
 }
 
 func (k homeKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.Search, k.OpenPRs, k.Open, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.Search, k.OpenPRs, k.ToggleFav, k.Open, k.Help, k.Quit}
 }
 func (k homeKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Enter, k.Tab, k.Search},
-		{k.OpenPRs, k.Open, k.Help, k.Back, k.Quit},
+		{k.Up, k.Down, k.Enter, k.Tab, k.ShiftTab, k.Search},
+		{k.OpenPRs, k.ToggleFav, k.Open, k.Help, k.Back, k.Quit},
 	}
 }
 
@@ -121,6 +139,7 @@ type homeModel struct {
 	height int
 
 	reviews  list.Model
+	favs     list.Model
 	browse   list.Model
 	search   textinput.Model
 	preview  viewport.Model
@@ -128,7 +147,7 @@ type homeModel struct {
 	loading  bool
 	status   string
 	err      error
-	browseQ  string // last search executed (workspace / project key)
+	browseQ  string // last search executed
 
 	next *HomeAction
 }
@@ -147,32 +166,59 @@ func newHomeModel(svc api.Service) homeModel {
 	rl.SetShowHelp(false)
 	rl.SetShowStatusBar(true)
 
+	fl := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	fl.Title = "Pinned repos"
+	fl.SetShowHelp(false)
+
 	bl := list.New(nil, list.NewDefaultDelegate(), 0, 0)
-	bl.Title = "Browse repos"
+	bl.Title = "Search results"
 	bl.SetShowHelp(false)
 
 	ti := textinput.New()
-	ti.Placeholder = "workspace or project key, e.g. myteam"
+	ti.Placeholder = "name fragment, e.g. checkout · or workspace/name"
 	ti.Prompt = "🔎 "
-	ti.CharLimit = 80
+	ti.CharLimit = 120
 
 	pv := viewport.New(0, 0)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
-	return homeModel{
+	m := homeModel{
 		svc:     svc,
 		tab:     tabReviews,
 		keys:    defaultHomeKeys(),
 		help:    help.New(),
 		reviews: rl,
+		favs:    fl,
 		browse:  bl,
 		search:  ti,
 		preview: pv,
 		spinner: sp,
 		loading: true,
 	}
+	m.refreshFavourites()
+	return m
+}
+
+// refreshFavourites pulls the persisted favourites list (filtered to
+// the current host) into the favs list model.
+func (m *homeModel) refreshFavourites() {
+	host := m.svc.Host()
+	items := []list.Item{}
+	for _, f := range config.Get().Favourites {
+		if f.Host != host {
+			continue
+		}
+		name := f.Name
+		if name == "" {
+			name = f.Slug
+		}
+		items = append(items, repoBrowseItem{r: api.Repo{
+			Project: f.Project, Slug: f.Slug, Name: name,
+		}})
+	}
+	m.favs.SetItems(items)
 }
 
 func (m homeModel) Init() tea.Cmd {
@@ -190,10 +236,10 @@ func (m homeModel) fetchReviews() tea.Cmd {
 	}
 }
 
-func (m homeModel) fetchRepos(project string) tea.Cmd {
+func (m homeModel) fetchRepos(query string) tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
-		repos, err := svc.ListRepos(project, 100)
+		repos, err := svc.SearchRepos(query, 100)
 		if err != nil {
 			return homeErrMsg{err: err}
 		}
@@ -223,6 +269,7 @@ func (m *homeModel) layout() {
 	rightW := m.width - leftW - 2
 
 	m.reviews.SetSize(leftW, contentH)
+	m.favs.SetSize(leftW, contentH)
 	m.browse.SetSize(leftW, contentH-2) // leave room for search input
 	m.search.Width = leftW - 4
 	m.preview.Width = rightW
@@ -293,7 +340,9 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// If the search input is focused, route keys there until the
-		// user hits enter or esc.
+		// user hits enter or esc. Ctrl-U clears the buffer in place
+		// (vim-style) so users can re-search without manually
+		// backspacing the previous query.
 		if m.search.Focused() {
 			switch msg.String() {
 			case "enter":
@@ -307,6 +356,9 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.spinner.Tick, m.fetchRepos(q))
 			case "esc":
 				m.search.Blur()
+				return m, nil
+			case "ctrl+u":
+				m.search.SetValue("")
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -322,11 +374,27 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.layout()
 			return m, nil
 		case key.Matches(msg, m.keys.Tab):
-			if m.tab == tabReviews {
-				m.tab = tabBrowse
-			} else {
-				m.tab = tabReviews
+			m.tab = (m.tab + 1) % homeTab(len(allTabs))
+			return m, m.refreshPreviewForTab()
+		case key.Matches(msg, m.keys.ShiftTab):
+			m.tab = (m.tab + homeTab(len(allTabs)-1)) % homeTab(len(allTabs))
+			return m, m.refreshPreviewForTab()
+		case key.Matches(msg, m.keys.ToggleFav):
+			project, slug := m.selectedRepoContext()
+			name := m.selectedRepoName()
+			if project == "" {
+				m.status = "no repo selected"
+				return m, nil
 			}
+			host := m.svc.Host()
+			if config.IsFavourite(host, project, slug) {
+				_ = config.RemoveFavourite(host, project, slug)
+				m.status = fmt.Sprintf("✓ removed %s/%s from favourites", project, slug)
+			} else {
+				_ = config.AddFavourite(config.FavRepo{Host: host, Project: project, Slug: slug, Name: name})
+				m.status = fmt.Sprintf("✓ added %s/%s to favourites", project, slug)
+			}
+			m.refreshFavourites()
 			return m, nil
 		case key.Matches(msg, m.keys.Search):
 			m.tab = tabBrowse
@@ -344,6 +412,11 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.tab {
 			case tabReviews:
 				if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
+					m.next = &HomeAction{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+					return m, tea.Quit
+				}
+			case tabFavourites:
+				if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
 					m.next = &HomeAction{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
 					return m, tea.Quit
 				}
@@ -389,6 +462,17 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updatePreviewForReviews()
 			}
 			return m, cmd
+		case tabFavourites:
+			var cmd tea.Cmd
+			prevSel := m.favs.Index()
+			m.favs, cmd = m.favs.Update(msg)
+			if m.favs.Index() != prevSel {
+				if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+					m.loading = true
+					return m, tea.Batch(cmd, m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
+				}
+			}
+			return m, cmd
 		case tabBrowse:
 			var cmd tea.Cmd
 			m.browse, cmd = m.browse.Update(msg)
@@ -405,12 +489,53 @@ func (m *homeModel) selectedRepoContext() (string, string) {
 		if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
 			return it.r.Project, it.r.Slug
 		}
+	case tabFavourites:
+		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+			return it.r.Project, it.r.Slug
+		}
 	case tabBrowse:
 		if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
 			return it.r.Project, it.r.Slug
 		}
 	}
 	return "", ""
+}
+
+func (m *homeModel) selectedRepoName() string {
+	switch m.tab {
+	case tabFavourites:
+		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+			return it.r.Name
+		}
+	case tabBrowse:
+		if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
+			return it.r.Name
+		}
+	case tabReviews:
+		if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
+			return it.r.Slug
+		}
+	}
+	return ""
+}
+
+// refreshPreviewForTab returns a Cmd that updates the right pane to
+// reflect the currently-selected item on the newly-active tab.
+func (m *homeModel) refreshPreviewForTab() tea.Cmd {
+	switch m.tab {
+	case tabReviews:
+		m.updatePreviewForReviews()
+	case tabFavourites:
+		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+			m.loading = true
+			return tea.Batch(m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
+		}
+		m.preview.SetContent(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			Render("Pin a repo with f from the Reviews or Browse tab."))
+	case tabBrowse:
+		// Leave browse preview as the most recent README.
+	}
+	return nil
 }
 
 func (m *homeModel) updatePreviewForReviews() {
@@ -460,11 +585,23 @@ func (m homeModel) View() string {
 	switch m.tab {
 	case tabReviews:
 		leftPane = m.reviews.View()
+	case tabFavourites:
+		if len(m.favs.Items()) == 0 {
+			leftPane = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+				Render("No favourites yet — press f on a repo (in Reviews or Browse) to pin it.")
+		} else {
+			leftPane = m.favs.View()
+		}
 	case tabBrowse:
-		searchLine := m.search.View()
-		if !m.search.Focused() && m.browseQ != "" {
+		var searchLine string
+		if m.search.Focused() {
+			searchLine = m.search.View()
+		} else if m.browseQ != "" {
 			searchLine = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("🔎 " + m.browseQ + "  (press / to search again)")
+				Render("🔎 " + m.browseQ + "   (/ to search again · ctrl-u to clear in field)")
+		} else {
+			searchLine = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+				Render("Press / to search.")
 		}
 		leftPane = searchLine + "\n" + m.browse.View()
 	}
@@ -498,13 +635,19 @@ func (m homeModel) renderTabs() string {
 	active := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).
 		Background(lipgloss.Color("57")).Padding(0, 2)
 	inactive := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 2)
-	tabs := []string{"Reviews", "Browse"}
-	out := make([]string, len(tabs))
-	for i, t := range tabs {
-		if int(m.tab) == i {
-			out[i] = active.Render(t)
+	out := make([]string, 0, len(allTabs))
+	for _, t := range allTabs {
+		label := t.name()
+		if t == tabFavourites {
+			n := len(m.favs.Items())
+			if n > 0 {
+				label = fmt.Sprintf("%s (%d)", label, n)
+			}
+		}
+		if t == m.tab {
+			out = append(out, active.Render(label))
 		} else {
-			out[i] = inactive.Render(t)
+			out = append(out, inactive.Render(label))
 		}
 	}
 	return strings.Join(out, " ")

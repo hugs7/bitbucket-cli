@@ -647,6 +647,42 @@ func (c *cloudService) CancelPipeline(workspace, slug, idOrUUID string) error {
 	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pipelines/%s/stopPipeline", workspace, slug, id), nil, nil)
 }
 
+// SearchRepos searches within a workspace. Accepts "workspace" or
+// "workspace/query" as the query string. With no slash, treats the
+// whole input as a workspace and lists its repos. With a slash, lists
+// the workspace's repos filtered by name~"query".
+func (c *cloudService) SearchRepos(query string, limit int) ([]Repo, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	workspace := query
+	name := ""
+	if i := strings.Index(query, "/"); i > 0 {
+		workspace = query[:i]
+		name = query[i+1:]
+	}
+	if workspace == "" {
+		workspace = c.client.cfg.Username
+	}
+	if workspace == "" {
+		return nil, fmt.Errorf("provide a workspace (e.g. workspace or workspace/name)")
+	}
+	params := map[string]string{"pagelen": itoa(limit)}
+	if name != "" {
+		params["q"] = fmt.Sprintf(`name~"%s"`, name)
+	}
+	endpoint := fmt.Sprintf("repositories/%s%s", workspace, queryString(params))
+	var page clPaged[clRepo]
+	if err := c.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]Repo, 0, len(page.Values))
+	for _, r := range page.Values {
+		out = append(out, r.toRepo())
+	}
+	return out, nil
+}
+
 // ListMyReviewPRs returns open PRs the configured user is involved in
 // (Cloud's /pullrequests/{user} returns PRs the user authored or
 // reviews; we filter to reviewer-role using participants).

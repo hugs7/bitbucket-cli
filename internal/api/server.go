@@ -601,6 +601,26 @@ func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 	return &out, nil
 }
 
+// SearchRepos searches across projects on Bitbucket Server.
+func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	params := map[string]string{"limit": itoa(limit)}
+	if query != "" {
+		params["name"] = query
+	}
+	var page srvPaged[srvRepo]
+	if err := s.client.getJSON("repos"+queryString(params), &page); err != nil {
+		return nil, err
+	}
+	out := make([]Repo, 0, len(page.Values))
+	for _, r := range page.Values {
+		out = append(out, r.toRepo())
+	}
+	return out, nil
+}
+
 // ListMyReviewPRs uses Server's /inbox/pull-requests endpoint which
 // returns PRs the authenticated user is a reviewer on.
 func (s *serverService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {

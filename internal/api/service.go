@@ -62,6 +62,11 @@ type Service interface {
 	// GetReadme returns the rendered README markdown for a repo's
 	// default branch. Returns ("", nil) if no README is found.
 	GetReadme(project, slug string) (string, error)
+
+	// SearchRepos performs a fuzzy search for repos by name across
+	// projects (Server) or within the configured workspace (Cloud).
+	// An empty query returns the most recently updated repos.
+	SearchRepos(query string, limit int) ([]Repo, error)
 }
 
 // ReviewPR carries enough context to display and act on a PR pulled
