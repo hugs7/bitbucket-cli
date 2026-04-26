@@ -26,7 +26,23 @@ type Host struct {
 
 type Config struct {
 	DefaultHost string          `yaml:"default_host"`
+	Editor      string          `yaml:"editor,omitempty"` // command to launch text editor (default: $VISUAL/$EDITOR/nano)
 	Hosts       map[string]Host `yaml:"hosts"`
+}
+
+// Editor returns the user's preferred text editor command.
+// Resolution order: config.editor → $VISUAL → $EDITOR → "nano".
+func (c Config) EditorCmd() string {
+	if c.Editor != "" {
+		return c.Editor
+	}
+	if v := os.Getenv("VISUAL"); v != "" {
+		return v
+	}
+	if v := os.Getenv("EDITOR"); v != "" {
+		return v
+	}
+	return "nano"
 }
 
 var (

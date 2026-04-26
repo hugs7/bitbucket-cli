@@ -219,6 +219,64 @@ func (c *cloudService) PRDiff(workspace, slug string, id int) (string, error) {
 	return string(b), nil
 }
 
+// --- not-yet-implemented stubs for cloud (work for server today) ---
+
+var errCloudTodo = fmt.Errorf("not yet implemented for Bitbucket Cloud — please open an issue")
+
+func (c *cloudService) UpdatePRDescription(workspace, slug string, id int, description string) error {
+	body := map[string]any{"description": description}
+	return c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d", workspace, slug, id), body, nil)
+}
+func (c *cloudService) ApprovePR(workspace, slug string, id int) error {
+	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/approve", workspace, slug, id), nil, nil)
+}
+func (c *cloudService) UnapprovePR(workspace, slug string, id int) error {
+	return c.client.deleteJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/approve", workspace, slug, id))
+}
+func (c *cloudService) NeedsWorkPR(workspace, slug string, id int) error {
+	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/request-changes", workspace, slug, id), nil, nil)
+}
+func (c *cloudService) ListComments(workspace, slug string, id int) ([]Comment, error) {
+	type cc struct {
+		ID      int    `json:"id"`
+		Content struct{ Raw string `json:"raw"` } `json:"content"`
+		User    clUser `json:"user"`
+		Created string `json:"created_on"`
+		Updated string `json:"updated_on"`
+	}
+	var page clPaged[cc]
+	if err := c.client.getJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments?pagelen=100", workspace, slug, id), &page); err != nil {
+		return nil, err
+	}
+	out := make([]Comment, 0, len(page.Values))
+	for _, x := range page.Values {
+		out = append(out, Comment{
+			ID: x.ID, Author: x.User.DisplayName, Text: x.Content.Raw,
+			CreatedAt: parseTime(x.Created), UpdatedAt: parseTime(x.Updated),
+		})
+	}
+	return out, nil
+}
+func (c *cloudService) AddComment(workspace, slug string, id int, text string) (*Comment, error) {
+	_ = errCloudTodo
+	body := map[string]any{"content": map[string]string{"raw": text}}
+	type cc struct {
+		ID      int    `json:"id"`
+		Content struct{ Raw string `json:"raw"` } `json:"content"`
+		User    clUser `json:"user"`
+		Created string `json:"created_on"`
+		Updated string `json:"updated_on"`
+	}
+	var resp cc
+	if err := c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments", workspace, slug, id), body, &resp); err != nil {
+		return nil, err
+	}
+	return &Comment{
+		ID: resp.ID, Author: resp.User.DisplayName, Text: resp.Content.Raw,
+		CreatedAt: parseTime(resp.Created), UpdatedAt: parseTime(resp.Updated),
+	}, nil
+}
+
 func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) ([]Build, error) {
 	if limit <= 0 {
 		limit = 25

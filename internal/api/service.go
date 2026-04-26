@@ -28,6 +28,14 @@ type Service interface {
 	DeclinePR(project, slug string, id int) error
 	PRDiff(project, slug string, id int) (string, error)
 
+	UpdatePRDescription(project, slug string, id int, description string) error
+	ApprovePR(project, slug string, id int) error
+	UnapprovePR(project, slug string, id int) error
+	NeedsWorkPR(project, slug string, id int) error
+
+	ListComments(project, slug string, id int) ([]Comment, error)
+	AddComment(project, slug string, id int, text string) (*Comment, error)
+
 	ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error)
 }
 
@@ -78,6 +86,26 @@ func (c *Client) getJSON(endpoint string, v any) error {
 }
 
 func (c *Client) postJSON(endpoint string, in, out any) error {
+	return c.bodyJSON("POST", endpoint, in, out)
+}
+
+func (c *Client) putJSON(endpoint string, in, out any) error {
+	return c.bodyJSON("PUT", endpoint, in, out)
+}
+
+func (c *Client) deleteJSON(endpoint string) error {
+	req, err := c.NewRequest("DELETE", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	return decode(resp, nil)
+}
+
+func (c *Client) bodyJSON(method, endpoint string, in, out any) error {
 	body := strings.NewReader("")
 	contentType := ""
 	if in != nil {
@@ -88,7 +116,7 @@ func (c *Client) postJSON(endpoint string, in, out any) error {
 		body = strings.NewReader(string(b))
 		contentType = "application/json"
 	}
-	req, err := c.NewRequest("POST", endpoint, body)
+	req, err := c.NewRequest(method, endpoint, body)
 	if err != nil {
 		return err
 	}

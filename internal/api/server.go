@@ -247,6 +247,103 @@ func (s *serverService) PRDiff(project, slug string, id int) (string, error) {
 	return string(b), nil
 }
 
+// --- mutating actions ---
+
+func (s *serverService) prVersion(project, slug string, id int) (int, error) {
+	var raw struct{ Version int `json:"version"` }
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
+		return 0, err
+	}
+	return raw.Version, nil
+}
+
+func (s *serverService) UpdatePRDescription(project, slug string, id int, description string) error {
+	v, err := s.prVersion(project, slug, id)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"version": v, "description": description}
+	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), body, nil)
+}
+
+func (s *serverService) participantStatus(project, slug string, id int, status string, approved bool) error {
+	user := s.client.cfg.Username
+	if user == "" {
+		return fmt.Errorf("no username configured for %s", s.host)
+	}
+	body := map[string]any{
+		"user":     map[string]string{"name": user},
+		"approved": approved,
+		"status":   status,
+	}
+	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/participants/%s", project, slug, id, user), body, nil)
+}
+
+func (s *serverService) ApprovePR(project, slug string, id int) error {
+	return s.participantStatus(project, slug, id, "APPROVED", true)
+}
+func (s *serverService) UnapprovePR(project, slug string, id int) error {
+	return s.participantStatus(project, slug, id, "UNAPPROVED", false)
+}
+func (s *serverService) NeedsWorkPR(project, slug string, id int) error {
+	return s.participantStatus(project, slug, id, "NEEDS_WORK", false)
+}
+
+// --- comments ---
+
+type srvComment struct {
+	ID          int     `json:"id"`
+	Text        string  `json:"text"`
+	Author      srvUser `json:"author"`
+	CreatedDate int64   `json:"createdDate"`
+	UpdatedDate int64   `json:"updatedDate"`
+}
+type srvActivity struct {
+	ID      int        `json:"id"`
+	Action  string     `json:"action"`
+	Comment srvComment `json:"comment"`
+}
+
+func (s *serverService) ListComments(project, slug string, id int) ([]Comment, error) {
+	var page srvPaged[srvActivity]
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/activities%s",
+		project, slug, id,
+		queryString(map[string]string{"limit": "100"}),
+	)
+	if err := s.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]Comment, 0)
+	for _, a := range page.Values {
+		if a.Action != "COMMENTED" || a.Comment.ID == 0 {
+			continue
+		}
+		out = append(out, Comment{
+			ID:        a.Comment.ID,
+			Author:    a.Comment.Author.DisplayName,
+			Text:      a.Comment.Text,
+			CreatedAt: time.UnixMilli(a.Comment.CreatedDate),
+			UpdatedAt: time.UnixMilli(a.Comment.UpdatedDate),
+		})
+	}
+	return out, nil
+}
+
+func (s *serverService) AddComment(project, slug string, id int, text string) (*Comment, error) {
+	body := map[string]any{"text": text}
+	var c srvComment
+	if err := s.client.postJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments", project, slug, id), body, &c); err != nil {
+		return nil, err
+	}
+	return &Comment{
+		ID:        c.ID,
+		Author:    c.Author.DisplayName,
+		Text:      c.Text,
+		CreatedAt: time.UnixMilli(c.CreatedDate),
+		UpdatedAt: time.UnixMilli(c.UpdatedDate),
+	}, nil
+}
+
 // ListBuildsForRef hits the build-status API. Server gives us builds keyed
 // by commit SHA, so we first resolve the latest commit on the ref.
 func (s *serverService) ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error) {

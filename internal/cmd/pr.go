@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/charmbracelet/huh"
@@ -23,6 +24,8 @@ func newPRCmd() *cobra.Command {
 		newPRListCmd(), newPRViewCmd(), newPRCreateCmd(),
 		newPRCheckoutCmd(), newPRMergeCmd(), newPRDeclineCmd(),
 		newPRDiffCmd(), newPRBrowseCmd(),
+		newPREditCmd(), newPRApproveCmd(), newPRUnapproveCmd(), newPRNeedsWorkCmd(),
+		newPRCommentCmd(),
 	)
 	return c
 }
@@ -317,6 +320,220 @@ func newPRBrowseCmd() *cobra.Command {
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	return c
+}
+
+func newPREditCmd() *cobra.Command {
+	var repoFlag, hostFlag, body string
+	c := &cobra.Command{
+		Use:   "edit <id>",
+		Short: "Edit a pull request's description in $EDITOR",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			if body == "" {
+				p, err := svc.GetPR(project, slug, id)
+				if err != nil {
+					return err
+				}
+				body, err = editText(p.Description, fmt.Sprintf("pr-%d-description", id))
+				if err != nil {
+					return err
+				}
+			}
+			if err := svc.UpdatePRDescription(project, slug, id, body); err != nil {
+				return err
+			}
+			fmt.Printf("✓ Updated description for PR #%d\n", id)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	c.Flags().StringVarP(&body, "body", "b", "", "new description (skips opening editor)")
+	return c
+}
+
+func newPRApproveCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "approve <id>",
+		Short: "Approve a pull request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			if err := svc.ApprovePR(project, slug, id); err != nil {
+				return err
+			}
+			fmt.Printf("✓ Approved PR #%d\n", id)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	return c
+}
+
+func newPRUnapproveCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "unapprove <id>",
+		Short: "Withdraw approval from a pull request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			if err := svc.UnapprovePR(project, slug, id); err != nil {
+				return err
+			}
+			fmt.Printf("✓ Unapproved PR #%d\n", id)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	return c
+}
+
+func newPRNeedsWorkCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:     "needs-work <id>",
+		Aliases: []string{"request-changes"},
+		Short:   "Mark a PR as needs work / request changes",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			if err := svc.NeedsWorkPR(project, slug, id); err != nil {
+				return err
+			}
+			fmt.Printf("✓ Marked PR #%d as needs work\n", id)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	return c
+}
+
+func newPRCommentCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "comment",
+		Short: "Work with PR comments",
+	}
+	c.AddCommand(newPRCommentListCmd(), newPRCommentAddCmd())
+	return c
+}
+
+func newPRCommentListCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "list <id>",
+		Short: "List comments on a PR",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			comments, err := svc.ListComments(project, slug, id)
+			if err != nil {
+				return err
+			}
+			if len(comments) == 0 {
+				fmt.Println("No comments.")
+				return nil
+			}
+			w, done := withPager()
+			defer done()
+			b := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
+			muted := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+			for i, c := range comments {
+				if i > 0 {
+					fmt.Fprintln(w)
+				}
+				when := ""
+				if !c.CreatedAt.IsZero() {
+					when = c.CreatedAt.Format("2006-01-02 15:04")
+				}
+				fmt.Fprintf(w, "%s  %s\n", b.Render(c.Author), muted.Render(when))
+				fmt.Fprintln(w, c.Text)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	return c
+}
+
+func newPRCommentAddCmd() *cobra.Command {
+	var repoFlag, hostFlag, body string
+	c := &cobra.Command{
+		Use:   "add <id>",
+		Short: "Add a comment to a PR",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			if body == "" {
+				body, err = editText("", fmt.Sprintf("pr-%d-comment", id))
+				if err != nil {
+					return err
+				}
+				body = strings.TrimSpace(body)
+			}
+			if body == "" {
+				return fmt.Errorf("aborted: empty comment")
+			}
+			c, err := svc.AddComment(project, slug, id, body)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Added comment #%d to PR #%d\n", c.ID, id)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	c.Flags().StringVarP(&body, "body", "b", "", "comment text (skips opening editor)")
 	return c
 }
 

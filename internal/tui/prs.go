@@ -1,20 +1,12 @@
 // Package tui contains Bubble Tea models for bb's interactive mode.
 //
-// PRs() returns a runnable program that lets the user browse pull requests
-// for a given (host, project, slug). Keys:
-//
-//	↑/↓, j/k        navigate the list
-//	enter           focus / refresh detail pane
-//	d               open the diff for the selected PR
-//	o               open in browser
-//	r               refresh
-//	s               cycle state filter (OPEN → MERGED → DECLINED → ALL)
-//	?               toggle help
-//	q, esc          quit / back
+// PRs() returns a runnable program that lets the user browse and act on
+// pull requests for a given (host, project, slug).
 package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -29,6 +21,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugo/bb/internal/api"
+	"github.com/hugo/bb/internal/config"
 )
 
 // PRs launches the interactive pull-requests TUI.
@@ -46,6 +39,7 @@ const (
 	viewList viewMode = iota
 	viewDetail
 	viewDiff
+	viewComments
 )
 
 type keyMap struct {
@@ -57,51 +51,108 @@ type keyMap struct {
 	State, StatePrev key.Binding
 	Help             key.Binding
 	Back, Quit       key.Binding
+
+	Approve, Unapprove, NeedsWork, Merge key.Binding
+	EditDesc, Comments, AddComment       key.Binding
 }
 
 func defaultKeys() keyMap {
 	return keyMap{
 		Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 		Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "view")),
+		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "view detail")),
 		Diff:      key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
-		Open:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in browser")),
+		Open:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
 		Refresh:   key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		State:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s/S", "cycle state ←/→")),
+		State:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s/S", "state ←/→")),
 		StatePrev: key.NewBinding(key.WithKeys("S")),
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Back:      key.NewBinding(key.WithKeys("esc", "h"), key.WithHelp("esc/h", "back")),
 		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+
+		Approve:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "approve")),
+		Unapprove:  key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "unapprove")),
+		NeedsWork:  key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "needs work")),
+		Merge:      key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "merge")),
+		EditDesc:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit description")),
+		Comments:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comments")),
+		AddComment: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new comment")),
 	}
 }
 
-func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Diff, k.Open, k.Refresh, k.State, k.Help, k.Quit}
+// modeKeyMap is a help.KeyMap that exposes only the keys relevant to a
+// given view mode, so the footer never lies about what's available.
+type modeKeyMap struct {
+	short [][]key.Binding
+	full  [][]key.Binding
 }
-func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Up, k.Down, k.Enter},
-		{k.Diff, k.Open, k.Refresh, k.State},
-		{k.Help, k.Back, k.Quit},
+
+func (m modeKeyMap) ShortHelp() []key.Binding {
+	if len(m.short) == 0 {
+		return nil
+	}
+	return m.short[0]
+}
+func (m modeKeyMap) FullHelp() [][]key.Binding { return m.full }
+
+func (k keyMap) listHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Merge, k.State, k.Help, k.Quit}},
+		full: [][]key.Binding{
+			{k.Up, k.Down, k.Enter, k.Diff, k.Open},
+			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
+			{k.EditDesc, k.Comments, k.Refresh, k.State},
+			{k.Help, k.Back, k.Quit},
+		},
+	}
+}
+func (k keyMap) viewerHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.Back, k.Quit}},
+		full:  [][]key.Binding{{k.Up, k.Down, k.Back, k.Quit}},
+	}
+}
+func (k keyMap) commentsHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.AddComment, k.Refresh, k.Back, k.Quit}},
+		full:  [][]key.Binding{{k.Up, k.Down, k.AddComment, k.Refresh, k.Back, k.Quit}},
 	}
 }
 
 type prItem struct{ pr api.PullRequest }
 
 func (i prItem) FilterValue() string { return i.pr.Title }
-func (i prItem) Title() string {
-	return fmt.Sprintf("#%d  %s", i.pr.ID, i.pr.Title)
-}
+func (i prItem) Title() string       { return fmt.Sprintf("#%d  %s", i.pr.ID, i.pr.Title) }
 func (i prItem) Description() string {
 	return fmt.Sprintf("%s · %s → %s · %s", i.pr.State, i.pr.SourceRef, i.pr.TargetRef, i.pr.Author)
 }
+
+// ---------- messages ----------
 
 type prsLoadedMsg struct{ prs []api.PullRequest }
 type diffLoadedMsg struct {
 	id   int
 	diff string
 }
+type commentsLoadedMsg struct {
+	id       int
+	comments []api.Comment
+}
+type actionDoneMsg struct {
+	text string
+	err  error
+	// reload causes the PR list to refresh after the action.
+	reload bool
+}
+type editorResultMsg struct {
+	purpose string // "edit-description" | "add-comment"
+	prID    int
+	text    string
+	err     error
+}
 type errMsg struct{ err error }
+
+// ---------- model ----------
 
 type model struct {
 	svc     api.Service
@@ -111,17 +162,24 @@ type model struct {
 
 	mode viewMode
 
-	list     list.Model
-	detail   viewport.Model
-	diff     viewport.Model
-	spinner  spinner.Model
-	help     help.Model
-	keys     keyMap
-	loading  bool
-	err      error
-	width    int
-	height   int
-	diffID   int
+	list    list.Model
+	detail  viewport.Model
+	diff    viewport.Model
+	comments viewport.Model
+
+	commentsList []api.Comment
+	commentsPRID int
+
+	spinner spinner.Model
+	help    help.Model
+	keys    keyMap
+
+	loading bool
+	status  string // transient toast
+	err     error
+
+	width, height int
+	diffID        int
 }
 
 func newPRModel(svc api.Service, project, slug string) model {
@@ -142,6 +200,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		list:     l,
 		detail:   viewport.New(0, 0),
 		diff:     viewport.New(0, 0),
+		comments: viewport.New(0, 0),
 		spinner:  sp,
 		help:     help.New(),
 		keys:     defaultKeys(),
@@ -153,6 +212,8 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, m.fetchPRs())
 }
 
+// ---------- async commands ----------
+
 func (m *model) fetchPRs() tea.Cmd {
 	return func() tea.Msg {
 		prs, err := m.svc.ListPRs(m.project, m.slug, m.state, 100)
@@ -162,7 +223,6 @@ func (m *model) fetchPRs() tea.Cmd {
 		return prsLoadedMsg{prs}
 	}
 }
-
 func (m *model) fetchDiff(id int) tea.Cmd {
 	return func() tea.Msg {
 		d, err := m.svc.PRDiff(m.project, m.slug, id)
@@ -172,9 +232,62 @@ func (m *model) fetchDiff(id int) tea.Cmd {
 		return diffLoadedMsg{id: id, diff: d}
 	}
 }
+func (m *model) fetchComments(id int) tea.Cmd {
+	return func() tea.Msg {
+		cs, err := m.svc.ListComments(m.project, m.slug, id)
+		if err != nil {
+			return errMsg{err}
+		}
+		return commentsLoadedMsg{id: id, comments: cs}
+	}
+}
+func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
+	return func() tea.Msg {
+		err := fn()
+		return actionDoneMsg{text: label, err: err, reload: reload}
+	}
+}
+
+// editInTUI suspends the program, opens the user's editor on a temp file
+// pre-filled with `initial`, then resumes and dispatches editorResultMsg.
+func editInTUI(purpose, hint string, prID int, initial string) tea.Cmd {
+	f, err := os.CreateTemp("", "bb-edit-*-"+hint+".md")
+	if err != nil {
+		return func() tea.Msg { return editorResultMsg{purpose: purpose, prID: prID, err: err} }
+	}
+	tmp := f.Name()
+	if _, err := f.WriteString(initial); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return func() tea.Msg { return editorResultMsg{purpose: purpose, prID: prID, err: err} }
+	}
+	f.Close()
+
+	editor := config.Get().EditorCmd()
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		os.Remove(tmp)
+		return func() tea.Msg {
+			return editorResultMsg{purpose: purpose, prID: prID, err: fmt.Errorf("no editor configured")}
+		}
+	}
+	args := append(parts[1:], tmp)
+	cmd := exec.Command(parts[0], args...)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		defer os.Remove(tmp)
+		if err != nil {
+			return editorResultMsg{purpose: purpose, prID: prID, err: err}
+		}
+		data, rerr := os.ReadFile(tmp)
+		return editorResultMsg{purpose: purpose, prID: prID, text: string(data), err: rerr}
+	})
+}
+
+// ---------- update ----------
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.layout()
@@ -206,17 +319,72 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = viewDiff
 		return m, nil
 
+	case commentsLoadedMsg:
+		m.loading = false
+		m.commentsList = msg.comments
+		m.commentsPRID = msg.id
+		m.comments.SetContent(renderComments(msg.comments))
+		m.comments.GotoTop()
+		m.mode = viewComments
+		return m, nil
+
+	case actionDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status = "✗ " + msg.text + ": " + msg.err.Error()
+		} else {
+			m.status = "✓ " + msg.text
+		}
+		if msg.reload {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchPRs())
+		}
+		return m, nil
+
+	case editorResultMsg:
+		text := strings.TrimSpace(msg.text)
+		if msg.err != nil {
+			m.status = "✗ editor: " + msg.err.Error()
+			return m, nil
+		}
+		if text == "" {
+			m.status = "aborted (empty)"
+			return m, nil
+		}
+		switch msg.purpose {
+		case "edit-description":
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.doAction("description updated", true, func() error {
+				return m.svc.UpdatePRDescription(m.project, m.slug, msg.prID, text)
+			}))
+		case "add-comment":
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+				_, err := m.svc.AddComment(m.project, m.slug, msg.prID, text)
+				if err != nil {
+					return actionDoneMsg{text: "add comment", err: err}
+				}
+				// refresh comments view
+				cs, err := m.svc.ListComments(m.project, m.slug, msg.prID)
+				if err != nil {
+					return actionDoneMsg{text: "comment added (reload failed)", err: err}
+				}
+				return commentsLoadedMsg{id: msg.prID, comments: cs}
+			})
+		}
+		return m, nil
+
 	case errMsg:
 		m.loading = false
 		m.err = msg.err
 		return m, nil
 
 	case tea.KeyMsg:
-		// Filtering input: don't intercept keys.
 		if m.list.FilterState() == list.Filtering {
 			break
 		}
 
+		// Mode-independent keys come first.
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
@@ -232,17 +400,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.mode == viewDiff {
+		// Per-mode handling.
+		switch m.mode {
+		case viewDiff:
 			var cmd tea.Cmd
 			m.diff, cmd = m.diff.Update(msg)
 			return m, cmd
-		}
-		if m.mode == viewDetail {
+		case viewDetail:
 			var cmd tea.Cmd
 			m.detail, cmd = m.detail.Update(msg)
 			return m, cmd
+		case viewComments:
+			switch {
+			case key.Matches(msg, m.keys.AddComment):
+				if m.commentsPRID > 0 {
+					return m, editInTUI("add-comment", fmt.Sprintf("pr-%d-comment", m.commentsPRID), m.commentsPRID, "")
+				}
+			case key.Matches(msg, m.keys.Refresh):
+				if m.commentsPRID > 0 {
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.fetchComments(m.commentsPRID))
+				}
+			}
+			var cmd tea.Cmd
+			m.comments, cmd = m.comments.Update(msg)
+			return m, cmd
 		}
 
+		// viewList handling.
 		switch {
 		case key.Matches(msg, m.keys.Refresh):
 			m.loading = true
@@ -268,9 +453,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.fetchDiff(it.pr.ID))
 			}
+		case key.Matches(msg, m.keys.Comments):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.fetchComments(it.pr.ID))
+			}
 		case key.Matches(msg, m.keys.Open):
 			if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.WebURL != "" {
 				_ = openInBrowser(it.pr.WebURL)
+			}
+		case key.Matches(msg, m.keys.Approve):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				id := it.pr.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("approved #%d", id), true, func() error {
+					return m.svc.ApprovePR(m.project, m.slug, id)
+				}))
+			}
+		case key.Matches(msg, m.keys.Unapprove):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				id := it.pr.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("unapproved #%d", id), true, func() error {
+					return m.svc.UnapprovePR(m.project, m.slug, id)
+				}))
+			}
+		case key.Matches(msg, m.keys.NeedsWork):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				id := it.pr.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("#%d needs work", id), true, func() error {
+					return m.svc.NeedsWorkPR(m.project, m.slug, id)
+				}))
+			}
+		case key.Matches(msg, m.keys.Merge):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				id := it.pr.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("merged #%d", id), true, func() error {
+					return m.svc.MergePR(m.project, m.slug, id)
+				}))
+			}
+		case key.Matches(msg, m.keys.EditDesc):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, editInTUI("edit-description",
+					fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, it.pr.Description)
 			}
 		}
 	}
@@ -309,8 +536,31 @@ func (m *model) updateDetail() {
 	m.detail.SetContent(sb.String())
 }
 
+func renderComments(cs []api.Comment) string {
+	if len(cs) == 0 {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
+			Render("No comments yet — press n to add one.")
+	}
+	b := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	var sb strings.Builder
+	for i, c := range cs {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		when := ""
+		if !c.CreatedAt.IsZero() {
+			when = c.CreatedAt.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(&sb, "%s  %s\n", b.Render(c.Author), muted.Render(when))
+		sb.WriteString(c.Text)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 func (m *model) layout() {
-	helpHeight := lipgloss.Height(m.help.View(m.keys))
+	helpHeight := lipgloss.Height(m.helpView())
 	listW := m.width / 2
 	if listW < 32 {
 		listW = m.width
@@ -323,7 +573,24 @@ func (m *model) layout() {
 	m.detail.Height = contentH
 	m.diff.Width = m.width
 	m.diff.Height = m.height - helpHeight - 1
+	m.comments.Width = m.width
+	m.comments.Height = m.height - helpHeight - 1
 }
+
+func (m model) helpView() string {
+	var km help.KeyMap
+	switch m.mode {
+	case viewDiff, viewDetail:
+		km = m.keys.viewerHelp()
+	case viewComments:
+		km = m.keys.commentsHelp()
+	default:
+		km = m.keys.listHelp()
+	}
+	return m.help.View(km)
+}
+
+// ---------- view ----------
 
 func (m model) View() string {
 	if m.err != nil {
@@ -340,17 +607,27 @@ func (m model) View() string {
 	case viewDetail:
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("PR detail")
 		body = header + "\n" + m.detail.View()
+	case viewComments:
+		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
+			Render(fmt.Sprintf("Comments · PR #%d", m.commentsPRID))
+		body = header + "\n" + m.comments.View()
 	default:
 		left := lipgloss.NewStyle().Padding(0, 1).Render(m.list.View())
 		right := lipgloss.NewStyle().Padding(0, 1).Render(m.detail.View())
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
-	help := m.help.View(m.keys)
+	footer := m.helpView()
+	statusLine := ""
 	if m.loading {
-		help = m.spinner.View() + " loading…  " + help
+		statusLine = m.spinner.View() + " loading…"
+	} else if m.status != "" {
+		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(m.status)
 	}
-	return body + "\n" + help
+	if statusLine != "" {
+		footer = statusLine + "  " + footer
+	}
+	return body + "\n" + footer
 }
 
 // ---------- helpers ----------
@@ -390,7 +667,6 @@ func openInBrowser(url string) error {
 	return exec.Command(cmd, args...).Start()
 }
 
-// humanTime is a tiny relative-time formatter.
 func humanTime(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -405,7 +681,6 @@ func humanTime(t time.Time) string {
 	}
 }
 
-// styleState mirrors the styling used elsewhere.
 func styleState(s string) string {
 	switch strings.ToUpper(s) {
 	case "OPEN", "INPROGRESS", "PENDING":
@@ -418,7 +693,6 @@ func styleState(s string) string {
 	return s
 }
 
-// colorizeDiff is duplicated here (small) to avoid coupling cmd ↔ tui.
 func colorizeDiff(diff string) string {
 	add := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	del := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))

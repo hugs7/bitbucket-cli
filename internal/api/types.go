@@ -28,6 +28,15 @@ type PullRequest struct {
 	UpdatedAt   time.Time
 }
 
+// Comment is a unified PR comment representation.
+type Comment struct {
+	ID        int
+	Author    string
+	Text      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 // Build represents a build/pipeline run associated with a repo or commit.
 type Build struct {
 	ID        string
