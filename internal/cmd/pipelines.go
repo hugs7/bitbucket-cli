@@ -15,7 +15,33 @@ func newPipelinesCmd() *cobra.Command {
 		Aliases: []string{"pipe", "build", "builds"},
 		Short:   "Work with Bitbucket Pipelines / build statuses",
 	}
-	c.AddCommand(newPipelinesListCmd(), newPipelinesRunCmd(), newPipelinesCancelCmd())
+	c.AddCommand(newPipelinesListCmd(), newPipelinesRunCmd(), newPipelinesCancelCmd(), newPipelinesLogsCmd())
+	return c
+}
+
+func newPipelinesLogsCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "logs <build-id-or-uuid>",
+		Short: "Stream the logs for a pipeline (Bitbucket Cloud only)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			out, err := svc.PipelineLogs(project, slug, args[0])
+			if err != nil {
+				return err
+			}
+			w, done := withPager()
+			defer done()
+			fmt.Fprint(w, out)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	return c
 }
 

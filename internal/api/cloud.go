@@ -326,6 +326,74 @@ func (c *cloudService) RemoveReviewers(workspace, slug string, prID int, usernam
 	return errCloudTodo
 }
 
+// AddInlineComment posts a line-anchored comment.
+// Cloud uses inline.to (line on new side) or inline.from (line on old side).
+func (c *cloudService) AddInlineComment(workspace, slug string, prID int, in InlineCommentInput) (*Comment, error) {
+	side := strings.ToLower(in.Side)
+	if side == "" {
+		side = "new"
+	}
+	inline := map[string]any{"path": in.Path}
+	if side == "old" {
+		inline["from"] = in.Line
+	} else {
+		inline["to"] = in.Line
+	}
+	body := map[string]any{
+		"content": map[string]string{"raw": in.Text},
+		"inline":  inline,
+	}
+	var resp cloudCC
+	if err := c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments", workspace, slug, prID), body, &resp); err != nil {
+		return nil, err
+	}
+	out := resp.toComment()
+	return &out, nil
+}
+
+// PipelineLogs concatenates the logs of all steps in a pipeline run.
+func (c *cloudService) PipelineLogs(workspace, slug, idOrUUID string) (string, error) {
+	id := strings.TrimPrefix(idOrUUID, "#")
+
+	type step struct {
+		UUID string `json:"uuid"`
+		Name string `json:"name"`
+	}
+	var steps clPaged[step]
+	if err := c.client.getJSON(fmt.Sprintf("repositories/%s/%s/pipelines/%s/steps/", workspace, slug, id), &steps); err != nil {
+		return "", err
+	}
+	if len(steps.Values) == 0 {
+		return "", fmt.Errorf("no steps found for pipeline %s", id)
+	}
+
+	var b strings.Builder
+	for i, st := range steps.Values {
+		req, err := c.client.NewRequest("GET", fmt.Sprintf("repositories/%s/%s/pipelines/%s/steps/%s/log", workspace, slug, id, st.UUID), nil)
+		if err != nil {
+			return b.String(), err
+		}
+		req.Header.Set("Accept", "text/plain")
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return b.String(), err
+		}
+		if resp.StatusCode >= 400 {
+			resp.Body.Close()
+			fmt.Fprintf(&b, "\n--- step %d (%s): HTTP %d ---\n", i+1, st.Name, resp.StatusCode)
+			continue
+		}
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return b.String(), err
+		}
+		fmt.Fprintf(&b, "\n=== step %d: %s ===\n", i+1, st.Name)
+		b.Write(data)
+	}
+	return b.String(), nil
+}
+
 func (c *cloudService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 	scm := in.SCM
 	if scm == "" {

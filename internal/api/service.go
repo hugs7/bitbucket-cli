@@ -35,6 +35,7 @@ type Service interface {
 
 	ListComments(project, slug string, id int) ([]Comment, error)
 	AddComment(project, slug string, id int, text string) (*Comment, error)
+	AddInlineComment(project, slug string, prID int, in InlineCommentInput) (*Comment, error)
 	EditComment(project, slug string, prID, commentID int, text string) (*Comment, error)
 	DeleteComment(project, slug string, prID, commentID int) error
 	ReplyComment(project, slug string, prID, parentID int, text string) (*Comment, error)
@@ -47,6 +48,17 @@ type Service interface {
 	ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error)
 	TriggerPipeline(project, slug, ref string) (*Build, error)
 	CancelPipeline(project, slug, idOrUUID string) error
+	PipelineLogs(project, slug, idOrUUID string) (string, error)
+}
+
+// InlineCommentInput describes a file/line-anchored review comment.
+//
+// Side is "new" (added side / RHS, default) or "old" (removed side / LHS).
+type InlineCommentInput struct {
+	Text string
+	Path string
+	Line int
+	Side string // "new" or "old"
 }
 
 type CreatePRInput struct {

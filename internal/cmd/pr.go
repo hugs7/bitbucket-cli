@@ -744,11 +744,17 @@ func newPRCommentListCmd() *cobra.Command {
 }
 
 func newPRCommentAddCmd() *cobra.Command {
-	var repoFlag, hostFlag, body string
+	var repoFlag, hostFlag, body, file, side string
+	var line int
 	c := &cobra.Command{
 		Use:   "add <id>",
-		Short: "Add a comment to a PR",
-		Args:  cobra.ExactArgs(1),
+		Short: "Add a comment to a PR (general or inline)",
+		Long: `Add a comment to a PR.
+
+Without --file, posts a general PR comment.
+With --file and --line, posts an inline review comment anchored to that line.
+--side controls which side of the diff: "new" (default) or "old".`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.Atoi(args[0])
 			if err != nil {
@@ -758,8 +764,16 @@ func newPRCommentAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			inline := file != "" && line > 0
+			if (file != "") != (line > 0) {
+				return fmt.Errorf("--file and --line must be given together")
+			}
 			if body == "" {
-				body, err = editText("", fmt.Sprintf("pr-%d-comment", id))
+				hint := fmt.Sprintf("pr-%d-comment", id)
+				if inline {
+					hint = fmt.Sprintf("pr-%d-%s-L%d", id, sanitisePath(file), line)
+				}
+				body, err = editText("", hint)
 				if err != nil {
 					return err
 				}
@@ -768,18 +782,37 @@ func newPRCommentAddCmd() *cobra.Command {
 			if body == "" {
 				return fmt.Errorf("aborted: empty comment")
 			}
-			c, err := svc.AddComment(project, slug, id, body)
+			var comment *api.Comment
+			if inline {
+				comment, err = svc.AddInlineComment(project, slug, id, api.InlineCommentInput{
+					Text: body, Path: file, Line: line, Side: side,
+				})
+			} else {
+				comment, err = svc.AddComment(project, slug, id, body)
+			}
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Added comment #%d to PR #%d\n", c.ID, id)
+			if inline {
+				fmt.Printf("✓ Added inline comment #%d on %s:%d (PR #%d)\n", comment.ID, file, line, id)
+			} else {
+				fmt.Printf("✓ Added comment #%d to PR #%d\n", comment.ID, id)
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().StringVarP(&body, "body", "b", "", "comment text (skips opening editor)")
+	c.Flags().StringVarP(&file, "file", "F", "", "file path for an inline comment")
+	c.Flags().IntVarP(&line, "line", "l", 0, "line number for an inline comment")
+	c.Flags().StringVar(&side, "side", "new", `diff side: "new" (added) or "old" (removed)`)
 	return c
+}
+
+func sanitisePath(p string) string {
+	r := strings.NewReplacer("/", "-", "\\", "-", " ", "_")
+	return r.Replace(p)
 }
 
 func nonEmpty(s string) error {

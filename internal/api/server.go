@@ -359,6 +359,43 @@ func (s *serverService) AddComment(project, slug string, id int, text string) (*
 	}, nil
 }
 
+// AddInlineComment posts a comment anchored to a file + line in the diff.
+// On Server: lineType / fileType encode whether we're commenting on the
+// added (RHS) or removed (LHS) side of the diff.
+func (s *serverService) AddInlineComment(project, slug string, prID int, in InlineCommentInput) (*Comment, error) {
+	side := strings.ToLower(in.Side)
+	if side == "" {
+		side = "new"
+	}
+	lineType, fileType := "ADDED", "TO"
+	if side == "old" {
+		lineType, fileType = "REMOVED", "FROM"
+	}
+	body := map[string]any{
+		"text": in.Text,
+		"anchor": map[string]any{
+			"line":     in.Line,
+			"lineType": lineType,
+			"fileType": fileType,
+			"path":     in.Path,
+			"diffType": "EFFECTIVE",
+		},
+	}
+	var c srvComment
+	if err := s.client.postJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments", project, slug, prID), body, &c); err != nil {
+		return nil, err
+	}
+	return &Comment{
+		ID: c.ID, Author: c.Author.DisplayName, Text: c.Text,
+		CreatedAt: time.UnixMilli(c.CreatedDate), UpdatedAt: time.UnixMilli(c.UpdatedDate),
+	}, nil
+}
+
+// PipelineLogs is not supported on Server (no native pipelines product).
+func (s *serverService) PipelineLogs(project, slug, idOrUUID string) (string, error) {
+	return "", fmt.Errorf("downloading build logs is not supported on Bitbucket Server (use your CI system)")
+}
+
 // commentVersion fetches the current version of a comment, needed for
 // edit/delete on Bitbucket Server.
 func (s *serverService) commentVersion(project, slug string, prID, commentID int) (int, error) {
