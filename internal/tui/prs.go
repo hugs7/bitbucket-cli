@@ -299,6 +299,18 @@ type model struct {
 	// bottom). Reset on any other key.
 	zPending bool
 
+	// treeReturnCursor stores the diff cursor position at the moment
+	// the user focused the file tree, so esc inside the tree can
+	// restore it (cancel the preview navigation).
+	treeReturnCursor int
+	treeReturnSet    bool
+
+	// Vim-style jump list. jumpBack is a stack of past cursor
+	// positions; jumpFwd is the redo stack populated when the user
+	// goes back via ctrl-o so they can ctrl-i forward again.
+	jumpBack []int
+	jumpFwd  []int
+
 	// Command palette: a fuzzy-searchable list of context-aware
 	// actions. paletteReturnTo is the mode we came from so esc / enter
 	// know where to drop back to.
@@ -1095,6 +1107,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.openPalette()
 			return m, nil
 		case key.Matches(msg, m.keys.Back):
+			// Esc inside the diff file-tree returns focus to the diff
+			// AND restores the cursor to where it was when the user
+			// entered tree mode — so a "preview navigation" can be
+			// abandoned cleanly.
+			if m.mode == viewDiff && m.diffFocus == "tree" {
+				m.diffFocus = "diff"
+				if m.treeReturnSet {
+					m.diffCursor = m.treeReturnCursor
+					m.treeReturnSet = false
+					m.syncTreeCursor()
+					m.diff.SetContent(m.renderDiffRows())
+					m.ensureDiffCursorVisible()
+				}
+				return m, nil
+			}
 			if m.mode != viewList {
 				m.mode = viewList
 				return m, nil
@@ -1155,6 +1182,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (dirs + files), enter / l on a file jumps the diff and
 			// returns focus to the diff viewport.
 			if m.diffFocus == "tree" {
+				// previewFile updates the diff content to show the
+				// file under the tree cursor without leaving tree
+				// focus — so j/k browsing acts like a live preview.
+				previewFile := func() {
+					if m.diffTreeCursor >= len(m.diffTree) {
+						return
+					}
+					node := m.diffTree[m.diffTreeCursor]
+					if node.isDir {
+						return
+					}
+					m.diffCursor = node.rowIdx
+					m.diff.SetContent(m.renderDiffRows())
+					m.ensureDiffCursorVisible()
+				}
 				moveTree := func(delta int) {
 					if len(m.diffTree) == 0 {
 						return
@@ -1166,6 +1208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.diffTreeCursor >= len(m.diffTree) {
 						m.diffTreeCursor = len(m.diffTree) - 1
 					}
+					previewFile()
 				}
 				switch {
 				case key.Matches(msg, m.keys.Up):
@@ -1175,18 +1218,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					moveTree(count)
 					return m, nil
 				case key.Matches(msg, m.keys.TreeSelect), s == "l":
-					if m.diffTreeCursor < len(m.diffTree) {
-						node := m.diffTree[m.diffTreeCursor]
-						if !node.isDir {
-							m.diffCursor = node.rowIdx
-							m.diffFocus = "diff"
-							m.diff.SetContent(m.renderDiffRows())
-							m.ensureDiffCursorVisible()
-						}
-					}
+					// Commit: stay where the preview put us and
+					// abandon the saved return-cursor.
+					m.diffFocus = "diff"
+					m.treeReturnSet = false
+					m.diff.SetContent(m.renderDiffRows())
+					m.ensureDiffCursorVisible()
 					return m, nil
 				case key.Matches(msg, m.keys.TreeFocus):
+					// Tab toggles back to diff focus AND keeps the
+					// preview position (commits, like enter).
 					m.diffFocus = "diff"
+					m.treeReturnSet = false
 					return m, nil
 				}
 				// In tree focus, swallow other keys silently so they
@@ -1202,6 +1245,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.diffCursor > n-1 {
 					m.diffCursor = n - 1
 				}
+				m.syncTreeCursor()
+				m.diff.SetContent(m.renderDiffRows())
+				m.ensureDiffCursorVisible()
+			}
+			// pushJump remembers the current cursor on the back stack
+			// (vim ''  / ctrl-o), clearing the forward stack since we
+			// just made a new authoritative move.
+			pushJump := func() {
+				m.jumpBack = append(m.jumpBack, m.diffCursor)
+				if len(m.jumpBack) > 100 {
+					m.jumpBack = m.jumpBack[len(m.jumpBack)-100:]
+				}
+				m.jumpFwd = nil
+			}
+			jumpTo := func(target int) {
+				if target < 0 {
+					target = 0
+				}
+				if target > n-1 {
+					target = n - 1
+				}
+				pushJump()
+				m.diffCursor = target
 				m.syncTreeCursor()
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
@@ -1228,31 +1294,73 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				move(step * count)
 				return m, nil
-			case s == "ctrl+d":
+			case s == "ctrl+d", s == "d":
 				step := m.diff.Height / 2
 				if step < 1 {
 					step = 1
 				}
 				move(step * count)
 				return m, nil
-			case s == "ctrl+u":
+			case s == "ctrl+u", s == "u":
 				step := m.diff.Height / 2
 				if step < 1 {
 					step = 1
 				}
 				move(-step * count)
 				return m, nil
-			case s == "g":
-				m.diffCursor = 0
+			case s == "ctrl+o":
+				// Pop the back stack: jump to the most recent saved
+				// position, pushing current cursor onto the forward
+				// stack so ctrl-i can return.
+				if len(m.jumpBack) == 0 {
+					m.status = "jump list empty"
+					return m, nil
+				}
+				prev := m.jumpBack[len(m.jumpBack)-1]
+				m.jumpBack = m.jumpBack[:len(m.jumpBack)-1]
+				m.jumpFwd = append(m.jumpFwd, m.diffCursor)
+				m.diffCursor = prev
+				if m.diffCursor < 0 {
+					m.diffCursor = 0
+				}
+				if m.diffCursor > n-1 {
+					m.diffCursor = n - 1
+				}
 				m.syncTreeCursor()
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
-			case s == "G":
-				m.diffCursor = n - 1
+			case s == "ctrl+i", s == "tab":
+				// ctrl-i reverses ctrl-o. Note "tab" also matches
+				// here per the terminal — we already handle Tab as
+				// TreeFocus above (matched first), so this branch
+				// only fires for explicit ctrl-i.
+				if s == "tab" {
+					break
+				}
+				if len(m.jumpFwd) == 0 {
+					m.status = "no forward jumps"
+					return m, nil
+				}
+				next := m.jumpFwd[len(m.jumpFwd)-1]
+				m.jumpFwd = m.jumpFwd[:len(m.jumpFwd)-1]
+				m.jumpBack = append(m.jumpBack, m.diffCursor)
+				m.diffCursor = next
+				if m.diffCursor < 0 {
+					m.diffCursor = 0
+				}
+				if m.diffCursor > n-1 {
+					m.diffCursor = n - 1
+				}
 				m.syncTreeCursor()
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
+				return m, nil
+			case s == "g":
+				jumpTo(0)
+				return m, nil
+			case s == "G":
+				jumpTo(n - 1)
 				return m, nil
 			case s == "ctrl+e":
 				// Scroll viewport down one line (cursor follows so it
@@ -1318,10 +1426,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx = len(m.diffFiles) - 1
 				}
 				if idx >= 0 {
-					m.diffCursor = m.diffFiles[idx].rowIdx
-					m.syncTreeCursor()
-					m.diff.SetContent(m.renderDiffRows())
-					m.ensureDiffCursorVisible()
+					jumpTo(m.diffFiles[idx].rowIdx)
 				}
 				return m, nil
 			case key.Matches(msg, m.keys.PrevFile):
@@ -1336,10 +1441,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx = 0
 				}
 				if idx >= 0 {
-					m.diffCursor = m.diffFiles[idx].rowIdx
-					m.syncTreeCursor()
-					m.diff.SetContent(m.renderDiffRows())
-					m.ensureDiffCursorVisible()
+					jumpTo(m.diffFiles[idx].rowIdx)
 				}
 				return m, nil
 			case key.Matches(msg, m.keys.TreeFocus):
@@ -1347,6 +1449,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = "no files in diff"
 					return m, nil
 				}
+				// Remember where we were in the diff so esc inside
+				// the tree can roll the preview back.
+				m.treeReturnCursor = m.diffCursor
+				m.treeReturnSet = true
+				m.syncTreeCursor()
 				m.diffFocus = "tree"
 				return m, nil
 			case key.Matches(msg, m.keys.ToggleSplit):
