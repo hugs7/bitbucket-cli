@@ -163,6 +163,12 @@ type model struct {
 	editorActive   bool
 	editorReturnTo viewMode
 
+	// pty is the running embedded editor (vim/neovim/etc) when an
+	// inline-diff comment is being composed. Nil when no PTY editor
+	// is active. While active, keystrokes flow into the PTY and the
+	// diff renderer injects the editor's screen between code lines.
+	pty *ptyEditor
+
 	// settings overlay: a list of toggle/cycle items backed by the
 	// persisted config. settingsReturnTo is the mode we came from so
 	// esc drops back to where the user opened it.
@@ -647,6 +653,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ptyTickMsg:
+		// Periodic refresh while the embedded editor is active so
+		// vt10x's screen state shows up in the diff. Re-arm only
+		// while still active to avoid a busy-loop after exit.
+		if m.pty != nil && m.pty.Active() {
+			m.diff.SetContent(m.renderDiffRows())
+			return m, ptyTick()
+		}
+		return m, nil
+
+	case ptyExitedMsg:
+		// Editor process finished. Read the temp file (= comment
+		// text) and dispatch the same editorResultMsg the textarea
+		// path emits so the existing save plumbing handles it.
+		if m.pty == nil {
+			return m, nil
+		}
+		text, rerr := m.pty.ReadResult()
+		req := m.pty.req
+		m.pty.Close()
+		m.pty = nil
+		m.diff.SetContent(m.renderDiffRows())
+		if msg.err != nil {
+			rerr = msg.err
+		}
+		return m, func() tea.Msg { return editorResultFor(req, text, rerr) }
+
 	case aiDescribeDoneMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -664,25 +697,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// classic full-screen $EDITOR. The inline path stays in
 		// process; the fullscreen path returns a tea.ExecProcess Cmd
 		// that suspends until the editor exits.
-		if config.Get().InlineEditor {
-			m.editorReturnTo = m.mode
-			// Diff-originated edits render the textarea inline at
-			// the diff cursor (GitHub-style "Add a review comment"
-			// form between lines). Other edits use the centred
-			// overlay so descriptions / PR-level comments still get
-			// their roomy modal.
-			if m.mode == viewDiff && isDiffOriginated(msg.req.purpose) {
-				m.editor = newInlineDiffEditor(msg.req, m.diff.Width)
-				m.editorActive = true
-				// Stay in viewDiff; the editor renders inline at the
-				// cursor in renderDiffRows(). Refresh content now so
-				// the form appears on the very next paint.
-				m.diff.SetContent(m.renderDiffRows())
-				m.ensureDiffCursorVisible()
-				return m, textarea.Blink
+		// Diff-originated edits spawn the user's real editor (vim,
+		// neovim, helix, …) inside a PTY rendered inline between
+		// the diff lines. Saving the file in the editor commits the
+		// comment; quitting without saving an empty file aborts.
+		if m.mode == viewDiff && isDiffOriginated(msg.req.purpose) {
+			rows := ptyInlineRows(m.diff.Height)
+			cols := ptyInlineCols(m.diff.Width)
+			pe, startCmd, err := newPTYEditor(msg.req, cols, rows)
+			if err != nil {
+				m.status = "✗ editor: " + err.Error()
+				return m, nil
 			}
+			m.pty = pe
+			m.editorReturnTo = m.mode
+			m.diff.SetContent(m.renderDiffRows())
+			m.ensureDiffCursorVisible()
+			return m, startCmd
+		}
+		// Non-diff edits keep the centred textarea overlay —
+		// description / PR-level comments still get their roomy
+		// modal so users have room to write long-form text.
+		if config.Get().InlineEditor {
 			m.editor = newInlineEditor(msg.req, m.width, m.height)
 			m.editorActive = true
+			m.editorReturnTo = m.mode
 			m.mode = viewEditor
 			return m, textarea.Blink
 		}
@@ -864,13 +903,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// PTY-embedded editor owns *every* keystroke while active so
+		// vim-style commands (esc, :w, /search, …) reach the editor
+		// instead of being interpreted as bb shortcuts. The editor
+		// quits via its own commands (:q in vim, etc.) — we don't
+		// expose a bb-side "abort" key on purpose.
+		if m.pty != nil && m.pty.Active() {
+			m.pty.SendKey(msg)
+			m.diff.SetContent(m.renderDiffRows())
+			return m, nil
+		}
+
 		// Inline (PIP) editor owns the keymap while active. ctrl+s
 		// commits the buffer; esc cancels; F11 promotes the current
 		// content into the user's $EDITOR (so a long edit can switch
-		// to vim mid-thought without losing the draft). Also fires
-		// in viewDiff when the inline-diff editor is open so the
-		// textarea between code lines captures keystrokes.
-		if m.editorActive && (m.mode == viewEditor || m.mode == viewDiff) {
+		// to vim mid-thought without losing the draft).
+		if m.editorActive && m.mode == viewEditor {
 			return m.handleEditorKey(msg)
 		}
 

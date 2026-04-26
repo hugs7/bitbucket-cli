@@ -186,33 +186,10 @@ func newInlineEditor(req editorRequest, w, h int) inlineEditor {
 	return inlineEditor{ta: ta, req: req}
 }
 
-// newInlineDiffEditor builds a compact textarea sized to sit between
-// diff rows — narrower and shorter than the centred overlay so it
-// reads as an inline review-comment form rather than a modal dialog.
-// `diffWidth` is the diff viewport's content width so the form spans
-// the same columns as the surrounding code.
-func newInlineDiffEditor(req editorRequest, diffWidth int) inlineEditor {
-	ta := textarea.New()
-	ta.Placeholder = "Comment — ctrl+s save · esc cancel · F11 → $EDITOR"
-	ta.Prompt = "│ "
-	ta.CharLimit = 0
-	ta.ShowLineNumbers = false
-	if req.initial != "" {
-		ta.SetValue(req.initial)
-	}
-	w := diffWidth - 6 // border (2) + padding (2) + ▶ marker (2)
-	if w < 30 {
-		w = 30
-	}
-	ta.SetWidth(w)
-	ta.SetHeight(4) // compact: 4 visible rows fit comfortably between code lines
-	ta.Focus()
-	return inlineEditor{ta: ta, req: req}
-}
-
 // isDiffOriginated reports whether an editor request was raised from
 // the diff view. Used by the wantEditMsg handler to decide between
-// the centred overlay editor and the inline-in-diff form.
+// the centred overlay editor (description, PR-level comment) and the
+// PTY-embedded inline-diff editor (review comments).
 func isDiffOriginated(purpose string) bool {
 	switch purpose {
 	case "add-inline-comment",
@@ -247,26 +224,6 @@ func editorBoxInnerHeight(h int) int {
 		v = h - 4
 	}
 	return v - 4
-}
-
-// inlineDiffView renders the textarea as a compact bordered card
-// sized to sit between diff lines. Returned string includes its own
-// header chip and footer hint so it stands apart from the diff
-// content above and below it.
-func (e inlineEditor) inlineDiffView(diffWidth int) string {
-	w := diffWidth - 4 // marker + border padding
-	if w < 30 {
-		w = 30
-	}
-	header := theme.TitleBadge.Render(" "+e.label()+" ") + "  " +
-		theme.TitleChipDim.Render("ctrl+s save · esc cancel · F11 → $EDITOR")
-	body := header + "\n" + e.ta.View()
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("57")).
-		Padding(0, 1).
-		Width(w).
-		Render(body)
 }
 
 // view renders the textarea as a centred bordered card overlaid on
@@ -317,12 +274,12 @@ func (e inlineEditor) label() string {
 	return strings.ToUpper(e.req.purpose)
 }
 
-// handleEditorKey is wired in from prs.go's Update tea.KeyMsg branch
+// handleEditorKey is wired in from pr.go's Update tea.KeyMsg branch
 // when m.mode == viewEditor. It owns every keystroke while the
-// overlay is active so global keys (esc/quit) don't accidentally
-// discard a draft.
+// centred textarea overlay is active so global keys (esc/quit) don't
+// accidentally discard a draft. Diff-originated edits use the
+// PTY-embedded editor instead and never reach this handler.
 func (m model) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	inDiff := m.mode == viewDiff && m.editorReturnTo == viewDiff
 	switch msg.String() {
 	case "ctrl+s", "alt+enter":
 		text := m.editor.ta.Value()
@@ -336,39 +293,19 @@ func (m model) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// path in the editorResultMsg handler — no need for a
 		// separate cancel signal.
 		return m, func() tea.Msg { return editorResultFor(req, "", nil) }
-	case "f11", "ctrl+\\":
-		// Promote: hand the current buffer to $EDITOR via the same
-		// fullscreen path. The original initial text is replaced
-		// with the user's in-progress draft so nothing is lost.
-		req := m.editor.req
-		req.initial = m.editor.ta.Value()
-		m.closeEditor()
-		return m, runFullscreenEditor(req)
 	}
 	var cmd tea.Cmd
 	m.editor.ta, cmd = m.editor.ta.Update(msg)
-	if inDiff {
-		// Re-render the diff so the textarea contents update as the
-		// user types. Cheap because renderDiffRows just walks the
-		// pre-built rows slice.
-		m.diff.SetContent(m.renderDiffRows())
-	}
 	return m, cmd
 }
 
 // closeEditor wipes the inline editor state and restores the prior
-// view mode. Safe to call even if no editor is active. For
-// inline-in-diff edits, also refreshes the diff content so the
-// textarea card disappears immediately.
+// view mode. Safe to call even if no editor is active.
 func (m *model) closeEditor() {
-	wasInDiff := m.editorActive && m.editorReturnTo == viewDiff
 	m.editorActive = false
 	if m.editorReturnTo != viewEditor {
 		m.mode = m.editorReturnTo
 	} else {
 		m.mode = viewList
-	}
-	if wasInDiff && len(m.diffRows) > 0 {
-		m.diff.SetContent(m.renderDiffRows())
 	}
 }
