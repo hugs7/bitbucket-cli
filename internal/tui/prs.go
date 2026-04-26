@@ -789,6 +789,37 @@ func (m *model) isOwnPR(pr api.PullRequest) bool {
 	return strings.EqualFold(strings.TrimSpace(pr.Author), me)
 }
 
+// applyDiffJump moves the diff cursor to the first commentable row
+// matching the given target anchor. Returns true if a row matched.
+// A relaxed match (path+line, ignoring side) is tried as a fallback
+// because context lines in unified mode default to "new" but the user
+// may have anchored a comment to the "old" side.
+func (m *model) applyDiffJump(t diffJumpTarget) bool {
+	for i, r := range m.diffRows {
+		if r.fullWidth || r.annotation {
+			continue
+		}
+		for _, c := range r.cells {
+			if c.commentable() && c.path == t.path && c.side == t.side && c.line == t.line {
+				m.diffCursor = i
+				return true
+			}
+		}
+	}
+	for i, r := range m.diffRows {
+		if r.fullWidth || r.annotation {
+			continue
+		}
+		for _, c := range r.cells {
+			if c.commentable() && c.path == t.path && c.line == t.line {
+				m.diffCursor = i
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		err := fn()
@@ -928,27 +959,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffCursor = 0
 		m.rebuildDiffRows()
 		// If a jump target was queued (e.g. from "Enter on a comment"),
-		// place the cursor on the matching row. Otherwise fall back to
-		// the first commentable row in the diff.
+		// place the cursor on the matching row. The pending jump is
+		// preserved so it can be re-applied once comments have loaded
+		// — annotation rows shift indices by their count, which would
+		// otherwise leave the cursor a few rows above the target.
 		jumped := false
 		if m.diffPendingJump != nil {
-			t := *m.diffPendingJump
-			m.diffPendingJump = nil
-			for i, r := range m.diffRows {
-				if r.fullWidth || r.annotation {
-					continue
-				}
-				for _, c := range r.cells {
-					if c.commentable() && c.path == t.path && c.side == t.side && c.line == t.line {
-						m.diffCursor = i
-						jumped = true
-						break
-					}
-				}
-				if jumped {
-					break
-				}
-			}
+			jumped = m.applyDiffJump(*m.diffPendingJump)
 		}
 		if !jumped {
 			for i, r := range m.diffRows {
@@ -969,6 +986,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if needComments {
 			return m, m.fetchDiffComments(msg.id)
 		}
+		// Comments already cached — clear the pending jump so a later
+		// stray load doesn't snap the cursor again.
+		m.diffPendingJump = nil
 		return m, nil
 
 	case diffCommentsLoadedMsg:
@@ -977,6 +997,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffComments = msg.comments
 		if m.mode == viewDiff && m.diffID == msg.id {
 			m.rebuildDiffRows()
+			// Re-apply the pending jump after annotation rows have
+			// been injected — they shift indices so the cursor placed
+			// in diffLoadedMsg now points one or more rows above the
+			// real anchor.
+			if m.diffPendingJump != nil {
+				m.applyDiffJump(*m.diffPendingJump)
+				m.diffPendingJump = nil
+				m.syncTreeCursor()
+				m.diff.SetContent(m.renderDiffRows())
+			}
 			m.ensureDiffCursorVisible()
 		}
 		return m, nil
