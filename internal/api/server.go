@@ -601,6 +601,80 @@ func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 	return &out, nil
 }
 
+// ListMyReviewPRs uses Server's /inbox/pull-requests endpoint which
+// returns PRs the authenticated user is a reviewer on.
+func (s *serverService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	endpoint := "inbox/pull-requests" + queryString(map[string]string{
+		"role":  "REVIEWER",
+		"state": "OPEN",
+		"limit": itoa(limit),
+	})
+	// /inbox is hosted at /rest/api/latest, but our base is /rest/api/1.0;
+	// /1.0 also serves /inbox/pull-requests.
+	type srvInboxPR struct {
+		srvPR
+		ToRef struct {
+			srvRef
+			Repository srvRepo `json:"repository"`
+		} `json:"toRef"`
+	}
+	var page srvPaged[srvInboxPR]
+	if err := s.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]ReviewPR, 0, len(page.Values))
+	for _, p := range page.Values {
+		pr := p.srvPR.toPR()
+		out = append(out, ReviewPR{
+			PR:      pr,
+			Project: p.ToRef.Repository.Project.Key,
+			Slug:    p.ToRef.Repository.Slug,
+		})
+	}
+	return out, nil
+}
+
+// GetReadme fetches a README from the repo's default branch.
+func (s *serverService) GetReadme(project, slug string) (string, error) {
+	repo, err := s.GetRepo(project, slug)
+	if err != nil {
+		return "", err
+	}
+	ref := repo.DefaultRef
+	if ref == "" {
+		ref = "main"
+	}
+	for _, name := range []string{"README.md", "README.MD", "Readme.md", "README", "README.txt"} {
+		endpoint := fmt.Sprintf("projects/%s/repos/%s/raw/%s%s",
+			project, slug, name,
+			queryString(map[string]string{"at": ref}),
+		)
+		req, err := s.client.NewRequest("GET", endpoint, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Accept", "text/plain")
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			resp.Body.Close()
+			continue
+		}
+		b, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		return string(b), nil
+	}
+	return "", nil
+}
+
 // Bitbucket Server does not have a built-in pipelines system; CI is
 // reported via build-status. Trigger/cancel are CI-system specific.
 func (s *serverService) TriggerPipeline(project, slug, ref string) (*Build, error) {

@@ -647,6 +647,97 @@ func (c *cloudService) CancelPipeline(workspace, slug, idOrUUID string) error {
 	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pipelines/%s/stopPipeline", workspace, slug, id), nil, nil)
 }
 
+// ListMyReviewPRs returns open PRs the configured user is involved in
+// (Cloud's /pullrequests/{user} returns PRs the user authored or
+// reviews; we filter to reviewer-role using participants).
+func (c *cloudService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	user := c.client.cfg.Username
+	if user == "" {
+		return nil, fmt.Errorf("no username configured for host %s", c.host)
+	}
+	type clRepoLite struct {
+		FullName string `json:"full_name"`
+	}
+	type clMyPR struct {
+		clPR
+		Destination struct {
+			clBranch
+			Repository clRepoLite `json:"repository"`
+		} `json:"destination"`
+	}
+	endpoint := fmt.Sprintf("pullrequests/%s%s", user,
+		queryString(map[string]string{"state": "OPEN", "pagelen": itoa(limit)}))
+	var page clPaged[clMyPR]
+	if err := c.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]ReviewPR, 0, len(page.Values))
+	for _, p := range page.Values {
+		// Only keep PRs where the user appears as a REVIEWER (skip
+		// pure authorship — those aren't "to review").
+		isReviewer := false
+		for _, pa := range p.Participants {
+			if pa.Role == "REVIEWER" && (pa.User.Nickname == user || pa.User.UUID == user) {
+				isReviewer = true
+				break
+			}
+		}
+		if !isReviewer && p.Author.Nickname == user {
+			// Author-only — skip.
+			continue
+		}
+		pr := p.clPR.toPR()
+		ws, sl := splitFullName(p.Destination.Repository.FullName)
+		out = append(out, ReviewPR{PR: pr, Project: ws, Slug: sl})
+	}
+	return out, nil
+}
+
+func splitFullName(s string) (ws, slug string) {
+	if i := strings.Index(s, "/"); i > 0 {
+		return s[:i], s[i+1:]
+	}
+	return "", s
+}
+
+// GetReadme fetches a README from the repo's default branch.
+func (c *cloudService) GetReadme(workspace, slug string) (string, error) {
+	repo, err := c.GetRepo(workspace, slug)
+	if err != nil {
+		return "", err
+	}
+	ref := repo.DefaultRef
+	if ref == "" {
+		ref = "main"
+	}
+	for _, name := range []string{"README.md", "README.MD", "Readme.md", "README", "README.txt"} {
+		req, err := c.client.NewRequest("GET",
+			fmt.Sprintf("repositories/%s/%s/src/%s/%s", workspace, slug, ref, name), nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Accept", "text/plain")
+		resp, err := c.client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			resp.Body.Close()
+			continue
+		}
+		b, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		return string(b), nil
+	}
+	return "", nil
+}
+
 func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) ([]Build, error) {
 	if limit <= 0 {
 		limit = 25

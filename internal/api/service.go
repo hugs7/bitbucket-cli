@@ -53,6 +53,23 @@ type Service interface {
 	TriggerPipeline(project, slug, ref string) (*Build, error)
 	CancelPipeline(project, slug, idOrUUID string) error
 	PipelineLogs(project, slug, idOrUUID string) (string, error)
+
+	// ListMyReviewPRs returns open PRs the current authenticated user
+	// is a reviewer on (Cloud uses participant filtering; Server uses
+	// the inbox endpoint).
+	ListMyReviewPRs(limit int) ([]ReviewPR, error)
+
+	// GetReadme returns the rendered README markdown for a repo's
+	// default branch. Returns ("", nil) if no README is found.
+	GetReadme(project, slug string) (string, error)
+}
+
+// ReviewPR carries enough context to display and act on a PR pulled
+// from the cross-repo "my reviews" feed.
+type ReviewPR struct {
+	PR      PullRequest
+	Project string // workspace key (Cloud) or project key (Server)
+	Slug    string // repo slug
 }
 
 // InlineCommentInput describes a file/line-anchored review comment.
