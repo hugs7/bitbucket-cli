@@ -167,9 +167,9 @@ func (k keyMap) detailHelp() modeKeyMap {
 }
 func (k keyMap) commentsHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.AddComment, k.ReplyComment, k.EditComment, k.DeleteComment, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.AddComment, k.ReplyComment, k.EditComment, k.DeleteComment, k.Back, k.Quit}},
 		full: [][]key.Binding{
-			{k.Up, k.Down, k.AddComment, k.ReplyComment},
+			{k.Up, k.Down, k.Enter, k.AddComment, k.ReplyComment},
 			{k.EditComment, k.DeleteComment, k.Refresh},
 			{k.Help, k.Back, k.Quit},
 		},
@@ -285,6 +285,11 @@ type model struct {
 	diffTreeCursor int
 	diffFocus      string // "diff" or "tree"
 
+	// diffPendingJump, when set, tells the diffLoadedMsg handler to
+	// place the cursor on the row matching this anchor instead of the
+	// first commentable row. Used for "jump from comments view".
+	diffPendingJump *diffJumpTarget
+
 	// Vim-style count prefix accumulator (e.g. "15j"). Consumed by the
 	// next motion key and reset.
 	numBuf string
@@ -300,6 +305,15 @@ type model struct {
 type diffFile struct {
 	path   string
 	rowIdx int // first row in m.diffRows belonging to this file
+}
+
+// diffJumpTarget identifies a specific anchor (path/side/line) the
+// diff cursor should be placed on after the next diff load. This is
+// used when entering the diff view from a comment thread.
+type diffJumpTarget struct {
+	path string
+	side string
+	line int
 }
 
 // treeNode is one row in the hierarchical file-tree view: either a
@@ -403,7 +417,11 @@ func (i commentItem) Title() string {
 	if !i.c.CreatedAt.IsZero() {
 		when = "  · " + humanTime(i.c.CreatedAt)
 	}
-	return fmt.Sprintf("#%d  %s%s", i.c.ID, i.c.Author, when)
+	anchor := ""
+	if i.c.Inline != nil {
+		anchor = fmt.Sprintf("  · %s:%d (%s)", i.c.Inline.Path, i.c.Inline.Line, i.c.Inline.Side)
+	}
+	return fmt.Sprintf("#%d  %s%s%s", i.c.ID, i.c.Author, when, anchor)
 }
 func (i commentItem) Description() string {
 	first := strings.SplitN(strings.ReplaceAll(i.c.Text, "\r", ""), "\n", 2)[0]
@@ -612,6 +630,22 @@ func buildPaletteItems(mode viewMode) []list.Item {
 		}
 	case viewComments:
 		items = []list.Item{
+			paletteItem{label: "Jump to diff at this comment", hint: "enter", run: func(m *model) tea.Cmd {
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					if it.c.Inline == nil {
+						m.status = "no inline anchor — comment is PR-level"
+						return nil
+					}
+					m.diffPendingJump = &diffJumpTarget{
+						path: it.c.Inline.Path,
+						side: it.c.Inline.Side,
+						line: it.c.Inline.Line,
+					}
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.fetchDiff(m.commentsPRID))
+				}
+				return nil
+			}},
 			paletteItem{label: "Add comment", hint: "n", run: func(m *model) tea.Cmd {
 				if m.commentsPRID > 0 {
 					return editInTUI("add-comment",
@@ -859,16 +893,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.diffCursor = 0
 		m.rebuildDiffRows()
-		// Place cursor on the first commentable row.
-		for i, r := range m.diffRows {
-			if r.fullWidth || r.annotation {
-				continue
-			}
-			if r.cells[0].commentable() || r.cells[1].commentable() {
-				m.diffCursor = i
-				break
+		// If a jump target was queued (e.g. from "Enter on a comment"),
+		// place the cursor on the matching row. Otherwise fall back to
+		// the first commentable row in the diff.
+		jumped := false
+		if m.diffPendingJump != nil {
+			t := *m.diffPendingJump
+			m.diffPendingJump = nil
+			for i, r := range m.diffRows {
+				if r.fullWidth || r.annotation {
+					continue
+				}
+				for _, c := range r.cells {
+					if c.commentable() && c.path == t.path && c.side == t.side && c.line == t.line {
+						m.diffCursor = i
+						jumped = true
+						break
+					}
+				}
+				if jumped {
+					break
+				}
 			}
 		}
+		if !jumped {
+			for i, r := range m.diffRows {
+				if r.fullWidth || r.annotation {
+					continue
+				}
+				if r.cells[0].commentable() || r.cells[1].commentable() {
+					m.diffCursor = i
+					break
+				}
+			}
+		}
+		m.syncTreeCursor()
 		m.diff.SetContent(m.renderDiffRows())
 		m.diff.GotoTop()
 		m.ensureDiffCursorVisible()
@@ -1323,6 +1382,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			switch {
+			case key.Matches(msg, m.keys.Enter):
+				// Jump to the diff at the comment's anchor (if inline).
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					if it.c.Inline == nil {
+						m.status = "no inline anchor — comment is PR-level"
+						return m, nil
+					}
+					m.diffPendingJump = &diffJumpTarget{
+						path: it.c.Inline.Path,
+						side: it.c.Inline.Side,
+						line: it.c.Inline.Line,
+					}
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.fetchDiff(m.commentsPRID))
+				}
 			case key.Matches(msg, m.keys.AddComment):
 				if m.commentsPRID > 0 {
 					return m, editInTUI("add-comment",
