@@ -28,11 +28,8 @@ func newAuthLoginCmd() *cobra.Command {
 		Use:   "login",
 		Short: "Log in to a Bitbucket host",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Build a single form. Each field shows previous flag values as
-			// the default, so flags + interactive can be mixed.
-			if host == "" {
-				host = "bitbucket.org"
-			}
+			// Build a single form. Flags pre-fill values; otherwise the host
+			// field shows a placeholder and defaults to bitbucket.org if blank.
 			if hostType == "" {
 				hostType = "cloud"
 			}
@@ -42,13 +39,8 @@ func newAuthLoginCmd() *cobra.Command {
 					huh.NewInput().
 						Title("Bitbucket host").
 						Description("Hostname only, e.g. bitbucket.org or bitbucket.mycorp.example").
-						Value(&host).
-						Validate(func(s string) error {
-							if s == "" {
-								return fmt.Errorf("host is required")
-							}
-							return nil
-						}),
+						Placeholder("bitbucket.org").
+						Value(&host),
 					huh.NewSelect[string]().
 						Title("Host type").
 						Options(
@@ -80,6 +72,9 @@ func newAuthLoginCmd() *cobra.Command {
 
 			if err := form.Run(); err != nil {
 				return err
+			}
+			if host == "" {
+				host = "bitbucket.org"
 			}
 
 			h := config.Host{Type: hostType, Username: username, Token: token}
