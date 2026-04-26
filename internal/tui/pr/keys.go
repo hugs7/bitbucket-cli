@@ -18,10 +18,14 @@ type keyMap struct {
 	Help             key.Binding
 	Back, Quit       key.Binding
 	ClearStatus      key.Binding
+	Settings         key.Binding
 
 	Approve, Unapprove, NeedsWork, Merge key.Binding
 	EditDesc, Comments, AddComment       key.Binding
 	CreatePR, DeclinePR                  key.Binding
+
+	// settings-mode actions
+	SettingsToggle key.Binding
 
 	// comments-mode actions
 	EditComment, DeleteComment, ReplyComment, ConfirmYes, ConfirmNo key.Binding
@@ -53,6 +57,11 @@ func defaultKeys() keyMap {
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Back:      key.NewBinding(key.WithKeys("esc", "h"), key.WithHelp("esc/h", "back")),
 		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+
+		ClearStatus: key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "clear status")),
+		Settings:    key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
+
+		SettingsToggle: key.NewBinding(key.WithKeys("enter", " "), key.WithHelp("enter/space", "toggle / cycle")),
 
 		Approve:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "approve")),
 		Unapprove:  key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "unapprove")),
@@ -108,13 +117,13 @@ func (m modeKeyMap) FullHelp() [][]key.Binding { return m.full }
 
 func (k keyMap) listHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Merge, k.CreatePR, k.DeclinePR, k.PaletteOpen, k.Help, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Merge, k.CreatePR, k.DeclinePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
 			{k.EditDesc, k.Comments, k.Refresh, k.State},
 			{k.CreatePR, k.DeclinePR},
-			{k.PaletteOpen, k.Help, k.Back, k.Quit},
+			{k.PaletteOpen, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
 		},
 	}
 }
@@ -163,5 +172,14 @@ func (k keyMap) paletteHelp() modeKeyMap {
 	return modeKeyMap{
 		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Back}},
 		full:  [][]key.Binding{{k.Up, k.Down, k.Enter, k.Back}},
+	}
+}
+
+// settingsHelp surfaces only the keys that make sense in the settings
+// overlay: navigate, toggle, clear status, back/quit.
+func (k keyMap) settingsHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.SettingsToggle, k.ClearStatus, k.Back, k.Quit}},
+		full:  [][]key.Binding{{k.Up, k.Down, k.SettingsToggle, k.ClearStatus, k.Back, k.Quit}},
 	}
 }

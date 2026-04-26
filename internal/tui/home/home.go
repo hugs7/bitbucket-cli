@@ -509,6 +509,12 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.ClearStatus):
+			// Clear any transient toast / error so it stops shadowing
+			// the help bar at the bottom of the screen.
+			m.status = ""
+			m.err = nil
+			return m, nil
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()

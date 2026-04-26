@@ -379,6 +379,10 @@ func buildPaletteItems(mode viewMode) []list.Item {
 	}
 	// Universal items appended last so per-mode actions surface first.
 	items = append(items,
+		paletteItem{label: "Open settings", hint: ",", run: func(m *model) tea.Cmd {
+			m.openSettings()
+			return nil
+		}},
 		paletteItem{label: "Switch theme (cycle)", hint: "palette", run: func(m *model) tea.Cmd {
 			next := theme.Next(theme.Current.Name)
 			theme.Apply(theme.Lookup(next))
@@ -387,6 +391,11 @@ func buildPaletteItems(mode viewMode) []list.Item {
 		paletteItem{label: "Toggle help footer", hint: "?", run: func(m *model) tea.Cmd {
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()
+			return nil
+		}},
+		paletteItem{label: "Clear status / error", hint: "ctrl+l", run: func(m *model) tea.Cmd {
+			m.status = ""
+			m.err = nil
 			return nil
 		}},
 		paletteItem{label: "Quit bb", hint: "q / ctrl+c", run: func(m *model) tea.Cmd {

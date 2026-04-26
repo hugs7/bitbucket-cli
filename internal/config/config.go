@@ -165,6 +165,14 @@ func SetTheme(name string) error {
 	return save()
 }
 
+// SetInlineEditor persists the inline (PIP) editor preference. When
+// true, comment / description edits open in an in-process textarea
+// overlay; when false, they shell out to the user's $EDITOR.
+func SetInlineEditor(on bool) error {
+	loaded.InlineEditor = on
+	return save()
+}
+
 // IsFavourite reports whether a repo is pinned.
 func IsFavourite(host, project, slug string) bool {
 	for _, f := range loaded.Favourites {

@@ -49,6 +49,7 @@ const (
 	viewConfirmDecline
 	viewPalette
 	viewEditor
+	viewSettings
 )
 
 // buildDot is a thin alias for theme.BuildDot so the dozens of
@@ -159,6 +160,12 @@ type model struct {
 	editor         inlineEditor
 	editorActive   bool
 	editorReturnTo viewMode
+
+	// settings overlay: a list of toggle/cycle items backed by the
+	// persisted config. settingsReturnTo is the mode we came from so
+	// esc drops back to where the user opened it.
+	settings         list.Model
+	settingsReturnTo viewMode
 }
 
 // diffFile is one entry in the file-tree side panel.
@@ -251,6 +258,14 @@ func newPRModel(svc api.Service, project, slug string) model {
 	pl.SetShowHelp(false)
 	pl.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
+	sdel := list.NewDefaultDelegate()
+	sl := list.New(nil, sdel, 0, 0)
+	sl.Title = "Settings"
+	sl.SetShowStatusBar(false)
+	sl.SetFilteringEnabled(false)
+	sl.SetShowHelp(false)
+	sl.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+
 	cfg := config.Get()
 	return model{
 		svc: svc, project: project, slug: slug,
@@ -260,6 +275,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		diff:           viewport.New(0, 0),
 		comments:       cl,
 		palette:        pl,
+		settings:       sl,
 		spinner:        sp,
 		help:           help.New(),
 		keys:           defaultKeys(),
@@ -792,10 +808,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleEditorKey(msg)
 		}
 
+		// Settings overlay owns the keymap while open.
+		if m.mode == viewSettings {
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Back):
+				m.mode = m.settingsReturnTo
+				return m, nil
+			case key.Matches(msg, m.keys.ClearStatus):
+				m.status = ""
+				m.err = nil
+				return m, nil
+			case key.Matches(msg, m.keys.SettingsToggle):
+				if it, ok := m.settings.SelectedItem().(settingItem); ok {
+					cmd := it.toggleFn(&m)
+					m.refreshSettings()
+					return m, cmd
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.settings, cmd = m.settings.Update(msg)
+			return m, cmd
+		}
+
 		// Mode-independent keys come first.
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.ClearStatus):
+			// Clear any transient toast / error so it stops shadowing
+			// the help bar at the bottom of the screen.
+			m.status = ""
+			m.err = nil
+			return m, nil
+		case key.Matches(msg, m.keys.Settings):
+			// Don't intercept "," when the user is mid-count in the
+			// diff view (numBuf != "") so digit motions stay clean.
+			if m.mode == viewDiff && m.numBuf != "" {
+				break
+			}
+			m.openSettings()
+			return m, nil
 		case key.Matches(msg, m.keys.PaletteOpen):
 			// ":" colon also opens the palette but we must not let it
 			// trigger when the user is filtering a list (see top-of
@@ -1558,6 +1613,7 @@ func (m *model) layout() {
 	}
 	m.diff.Height = m.height - helpHeight - 1
 	m.comments.SetSize(m.width, m.height-helpHeight-2)
+	m.settings.SetSize(m.width, m.height-helpHeight-4)
 }
 
 // treeWidth picks a sensible width for the diff file-tree side panel.

@@ -30,6 +30,8 @@ func (m model) helpView() string {
 		km = m.keys.confirmHelp()
 	case viewPalette:
 		km = m.keys.paletteHelp()
+	case viewSettings:
+		km = m.keys.settingsHelp()
 	default:
 		km = m.keys.listHelp()
 	}
@@ -106,6 +108,11 @@ func (m model) View() string {
 			theme.TitleChipDim.Render("type to filter"),
 			theme.TitleChipDim.Render("enter runs · esc closes"))
 		body = header + "\n" + m.palette.View()
+	case viewSettings:
+		header := titleBar("SETTINGS",
+			theme.TitleChipDim.Render("persisted to ~/.config/bb/config.yml"),
+			theme.TitleChipDim.Render("enter / space toggles · esc closes"))
+		body = header + "\n" + m.settings.View()
 	case viewEditor:
 		// The inline editor is centred on top of nothing — we let
 		// the overlay own the whole frame so the textarea has room
