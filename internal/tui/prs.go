@@ -68,6 +68,9 @@ type keyMap struct {
 	InlineComment, ToggleSide, ToggleSplit, ToggleInline key.Binding
 	TreeFocus, TreeSelect, NextFile, PrevFile            key.Binding
 
+	// file-level comment in diff
+	DiffFileComment key.Binding
+
 	// palette
 	PaletteOpen key.Binding
 }
@@ -110,6 +113,8 @@ func defaultKeys() keyMap {
 		NextFile:   key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "next file")),
 		PrevFile:   key.NewBinding(key.WithKeys("["), key.WithHelp("[", "prev file")),
 
+		DiffFileComment: key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "file comment")),
+
 		PaletteOpen: key.NewBinding(key.WithKeys("ctrl+k", ":"), key.WithHelp("ctrl+k", "command palette")),
 	}
 }
@@ -142,9 +147,9 @@ func (k keyMap) listHelp() modeKeyMap {
 }
 func (k keyMap) viewerHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.TreeFocus, k.NextFile, k.InlineComment, k.ReplyComment, k.ToggleSplit, k.ToggleInline, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.DiffFileComment, k.ReplyComment, k.TreeFocus, k.NextFile, k.ToggleSplit, k.ToggleInline, k.Back, k.Quit}},
 		full: [][]key.Binding{
-			{k.Up, k.Down, k.InlineComment, k.ReplyComment, k.ToggleSide},
+			{k.Up, k.Down, k.InlineComment, k.DiffFileComment, k.ReplyComment, k.ToggleSide},
 			{k.TreeFocus, k.TreeSelect, k.PrevFile, k.NextFile},
 			{k.ToggleSplit, k.ToggleInline},
 			{k.Help, k.Back, k.Quit},
@@ -581,6 +586,14 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				}
 				return editInlineInTUI(m.diffID, c.path, c.line, c.side)
 			}},
+			paletteItem{label: "Comment on file (no line)", hint: "N", run: func(m *model) tea.Cmd {
+				path := m.currentFilePath()
+				if path == "" {
+					m.status = "no file under cursor"
+					return nil
+				}
+				return editInlineInTUI(m.diffID, path, 0, "new")
+			}},
 			paletteItem{label: "Toggle split / unified", hint: "v", run: func(m *model) tea.Cmd {
 				m.diffSplit = !m.diffSplit
 				m.rebuildDiffRows()
@@ -787,6 +800,19 @@ func (m *model) isOwnPR(pr api.PullRequest) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(pr.Author), me)
+}
+
+// currentFilePath returns the path of the file the diff cursor is
+// currently inside, by walking the file-header index. Empty when
+// no diff is loaded.
+func (m *model) currentFilePath() string {
+	activePath := ""
+	for _, f := range m.diffFiles {
+		if f.rowIdx <= m.diffCursor {
+			activePath = f.path
+		}
+	}
+	return activePath
 }
 
 // applyDiffJump moves the diff cursor to the first commentable row
@@ -1093,6 +1119,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			side := msg.side
 			prID := msg.prID
 			label := fmt.Sprintf("inline comment on %s:%d (%s)", path, line, side)
+			if line == 0 {
+				label = fmt.Sprintf("file comment on %s", path)
+			}
 			m.loading = true
 			// After posting, refresh the overlay so the new annotation
 			// appears under the diff line right away.
@@ -1553,6 +1582,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, editInlineInTUI(m.diffID, c.path, c.line, c.side)
+			case key.Matches(msg, m.keys.DiffFileComment):
+				path := m.currentFilePath()
+				if path == "" {
+					m.status = "no file under cursor"
+					return m, nil
+				}
+				return m, editInlineInTUI(m.diffID, path, 0, "new")
 			case key.Matches(msg, m.keys.ReplyComment):
 				c, ok := m.activeDiffCell()
 				if !ok {
@@ -2704,32 +2740,66 @@ func buildSplitRows(lines []diffLine) []diffRow {
 // anchor. Comments are word-wrapped to wrapW so the full body is
 // visible (rather than truncated to one line); each emitted row is
 // one wrapped line so cursor / viewport maths stay row-accurate.
+//
+// File-level comments (Inline.Line == 0) are emitted right after the
+// "diff --git" header for the matching file, so the entire file's
+// general feedback shows at the top.
 func injectInlineComments(rows []diffRow, comments []api.Comment, wrapW int) []diffRow {
 	if len(comments) == 0 {
 		return rows
 	}
 	// Index comments by (path, side, line) → []Comment so we can
-	// attach multiple replies to the same anchor.
+	// attach multiple replies to the same anchor. Line==0 entries
+	// land in fileComments instead.
 	type key struct {
 		path string
 		side string
 		line int
 	}
 	byAnchor := map[key][]api.Comment{}
+	fileComments := map[string][]api.Comment{}
 	for _, c := range comments {
 		if c.Inline == nil {
+			continue
+		}
+		if c.Inline.Line == 0 {
+			fileComments[c.Inline.Path] = append(fileComments[c.Inline.Path], c)
 			continue
 		}
 		k := key{c.Inline.Path, c.Inline.Side, c.Inline.Line}
 		byAnchor[k] = append(byAnchor[k], c)
 	}
-	if len(byAnchor) == 0 {
+	if len(byAnchor) == 0 && len(fileComments) == 0 {
 		return rows
+	}
+	emitAnnotation := func(out *[]diffRow, c api.Comment, side int) {
+		for _, line := range formatInlineAnnotationLines(c, wrapW) {
+			*out = append(*out, diffRow{
+				annotation:   true,
+				annoText:     line.text,
+				annoStyle:    line.style,
+				annoSide:     side,
+				annoIsHeader: line.header,
+			})
+		}
 	}
 	out := make([]diffRow, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, row)
 		if row.fullWidth {
+			// On the "diff --git" header for a file, attach any
+			// file-level comments so they appear at the top of the
+			// file's diff in the overlay.
+			raw := row.cells[0].raw
+			if strings.HasPrefix(raw, "diff ") {
+				parts := strings.Fields(raw)
+				if len(parts) >= 4 {
+					path := cleanDiffPath(parts[3])
+					for _, c := range fileComments[path] {
+						emitAnnotation(&out, c, 0)
+					}
+				}
+			}
 			continue
 		}
 		for idx, cell := range row.cells {
@@ -2737,15 +2807,7 @@ func injectInlineComments(rows []diffRow, comments []api.Comment, wrapW int) []d
 				continue
 			}
 			for _, c := range byAnchor[key{cell.path, cell.side, cell.line}] {
-				for _, line := range formatInlineAnnotationLines(c, wrapW) {
-					out = append(out, diffRow{
-						annotation:   true,
-						annoText:     line.text,
-						annoStyle:    line.style,
-						annoSide:     idx,
-						annoIsHeader: line.header,
-					})
-				}
+				emitAnnotation(&out, c, idx)
 			}
 		}
 	}
@@ -3101,9 +3163,13 @@ func inlineSide(dl diffLine) (string, int) {
 }
 
 // editInlineInTUI is editInTUI's cousin for line-anchored comments —
-// it carries path/line/side through to the result message.
+// it carries path/line/side through to the result message. lineNo == 0
+// means a file-level comment (no specific line).
 func editInlineInTUI(prID int, path string, lineNo int, side string) tea.Cmd {
 	hint := fmt.Sprintf("pr-%d-inline-L%d-%s", prID, lineNo, side)
+	if lineNo == 0 {
+		hint = fmt.Sprintf("pr-%d-file-%s", prID, sanitizeForFilename(path))
+	}
 	f, err := os.CreateTemp("", "bb-edit-*-"+sanitizeForFilename(hint)+".md")
 	if err != nil {
 		return func() tea.Msg {
@@ -3112,6 +3178,9 @@ func editInlineInTUI(prID int, path string, lineNo int, side string) tea.Cmd {
 	}
 	tmp := f.Name()
 	header := fmt.Sprintf("<!-- inline comment on %s:%d (%s side) -->\n", path, lineNo, side)
+	if lineNo == 0 {
+		header = fmt.Sprintf("<!-- file-level comment on %s -->\n", path)
+	}
 	_, _ = f.WriteString(header)
 	f.Close()
 
