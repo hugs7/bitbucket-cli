@@ -62,6 +62,7 @@ type keyMap struct {
 
 	// diff-mode actions
 	InlineComment, ToggleSide, ToggleSplit, ToggleInline key.Binding
+	TreeFocus, TreeSelect, NextFile, PrevFile            key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -96,6 +97,11 @@ func defaultKeys() keyMap {
 		ToggleSide:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle side")),
 		ToggleSplit:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "split/unified")),
 		ToggleInline:  key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "show/hide comments")),
+
+		TreeFocus:  key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "focus tree/diff")),
+		TreeSelect: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open file")),
+		NextFile:   key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "next file")),
+		PrevFile:   key.NewBinding(key.WithKeys("["), key.WithHelp("[", "prev file")),
 	}
 }
 
@@ -127,9 +133,10 @@ func (k keyMap) listHelp() modeKeyMap {
 }
 func (k keyMap) viewerHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.ToggleSplit, k.ToggleInline, k.ToggleSide, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.TreeFocus, k.NextFile, k.InlineComment, k.ToggleSplit, k.ToggleInline, k.Back, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.InlineComment, k.ToggleSide},
+			{k.TreeFocus, k.TreeSelect, k.PrevFile, k.NextFile},
 			{k.ToggleSplit, k.ToggleInline},
 			{k.Help, k.Back, k.Quit},
 		},
@@ -245,14 +252,31 @@ type model struct {
 	// we can anchor inline comments to the correct (path, side, line).
 	// The viewport itself only knows how to scroll a string, so we
 	// re-render with a row marker each time the cursor moves.
-	diffLines       []diffLine
-	diffRows        []diffRow
-	diffCursor      int
-	diffCursorSide  int  // 0=old (LHS), 1=new (RHS); split mode only
-	diffSplit       bool // false=unified, true=side-by-side
-	diffShowInline  bool // overlay inline review comments
-	diffComments    []api.Comment
+	diffLines        []diffLine
+	diffRows         []diffRow
+	diffCursor       int
+	diffCursorSide   int  // 0=old (LHS), 1=new (RHS); split mode only
+	diffSplit        bool // false=unified, true=side-by-side
+	diffShowInline   bool // overlay inline review comments
+	diffComments     []api.Comment
 	diffCommentsPRID int
+
+	// File-tree side panel: list of files in the diff with the row
+	// index of each file's first display row, so 'enter' / next-file
+	// jumps the diff cursor to the right place.
+	diffFiles      []diffFile
+	diffFileCursor int
+	diffFocus      string // "diff" or "tree"
+
+	// Vim-style count prefix accumulator (e.g. "15j"). Consumed by the
+	// next motion key and reset.
+	numBuf string
+}
+
+// diffFile is one entry in the file-tree side panel.
+type diffFile struct {
+	path   string
+	rowIdx int // first row in m.diffRows belonging to this file
 }
 
 func newPRModel(svc api.Service, project, slug string) model {
@@ -603,59 +627,160 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Per-mode handling.
 		switch m.mode {
 		case viewDiff:
-			// Cursor-based navigation across display rows. 'c' fires
-			// an inline comment editor on the current cell; 't' flips
-			// side (split column or context-line preference); 'v'
-			// toggles unified ↔ split; 'i' shows/hides comment overlay.
+			s := msg.String()
 			n := len(m.diffRows)
-			switch {
-			case key.Matches(msg, m.keys.Up):
-				if m.diffCursor > 0 {
-					m.diffCursor--
-				}
-				m.diff.SetContent(m.renderDiffRows())
-				m.ensureDiffCursorVisible()
+
+			// Vim-style count prefix: digits accumulate into m.numBuf
+			// and the next motion key consumes them. "0" with an empty
+			// buffer is ignored so it can later be repurposed as a
+			// motion if needed (currently no-op).
+			if len(s) == 1 && s[0] >= '0' && s[0] <= '9' && !(s == "0" && m.numBuf == "") {
+				m.numBuf += s
 				return m, nil
-			case key.Matches(msg, m.keys.Down):
-				if m.diffCursor < n-1 {
-					m.diffCursor++
+			}
+			count := 1
+			if m.numBuf != "" {
+				if v, err := strconv.Atoi(m.numBuf); err == nil && v > 0 {
+					count = v
 				}
-				m.diff.SetContent(m.renderDiffRows())
-				m.ensureDiffCursorVisible()
+				m.numBuf = ""
+			}
+
+			// Tree-focused navigation: j/k pick a file, enter or l
+			// jumps the diff cursor to that file's first row.
+			if m.diffFocus == "tree" {
+				switch {
+				case key.Matches(msg, m.keys.Up):
+					m.diffFileCursor -= count
+					if m.diffFileCursor < 0 {
+						m.diffFileCursor = 0
+					}
+					return m, nil
+				case key.Matches(msg, m.keys.Down):
+					m.diffFileCursor += count
+					if m.diffFileCursor >= len(m.diffFiles) {
+						m.diffFileCursor = len(m.diffFiles) - 1
+					}
+					return m, nil
+				case key.Matches(msg, m.keys.TreeSelect), s == "l":
+					if m.diffFileCursor < len(m.diffFiles) {
+						m.diffCursor = m.diffFiles[m.diffFileCursor].rowIdx
+						m.diffFocus = "diff"
+						m.diff.SetContent(m.renderDiffRows())
+						m.ensureDiffCursorVisible()
+					}
+					return m, nil
+				case key.Matches(msg, m.keys.TreeFocus):
+					m.diffFocus = "diff"
+					return m, nil
+				}
+				// In tree focus, swallow other keys silently so they
+				// don't drift into the diff viewport.
 				return m, nil
-			case msg.String() == "pgup":
-				step := m.diff.Height
-				if step < 1 {
-					step = 1
-				}
-				m.diffCursor -= step
+			}
+
+			move := func(delta int) {
+				m.diffCursor += delta
 				if m.diffCursor < 0 {
 					m.diffCursor = 0
 				}
+				if m.diffCursor > n-1 {
+					m.diffCursor = n - 1
+				}
+				m.syncTreeCursor()
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
+			}
+
+			switch {
+			case key.Matches(msg, m.keys.Up):
+				move(-count)
 				return m, nil
-			case msg.String() == "pgdown", msg.String() == " ":
+			case key.Matches(msg, m.keys.Down):
+				move(count)
+				return m, nil
+			case s == "pgup":
 				step := m.diff.Height
 				if step < 1 {
 					step = 1
 				}
-				m.diffCursor += step
-				if m.diffCursor > n-1 {
-					m.diffCursor = n - 1
+				move(-step * count)
+				return m, nil
+			case s == "pgdown", s == " ":
+				step := m.diff.Height
+				if step < 1 {
+					step = 1
 				}
-				m.diff.SetContent(m.renderDiffRows())
-				m.ensureDiffCursorVisible()
+				move(step * count)
 				return m, nil
-			case msg.String() == "g":
+			case s == "ctrl+d":
+				step := m.diff.Height / 2
+				if step < 1 {
+					step = 1
+				}
+				move(step * count)
+				return m, nil
+			case s == "ctrl+u":
+				step := m.diff.Height / 2
+				if step < 1 {
+					step = 1
+				}
+				move(-step * count)
+				return m, nil
+			case s == "g":
 				m.diffCursor = 0
+				m.syncTreeCursor()
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
-			case msg.String() == "G":
+			case s == "G":
 				m.diffCursor = n - 1
+				m.syncTreeCursor()
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
+				return m, nil
+			case key.Matches(msg, m.keys.NextFile):
+				idx := -1
+				for i, f := range m.diffFiles {
+					if f.rowIdx > m.diffCursor {
+						idx = i
+						break
+					}
+				}
+				if idx < 0 && len(m.diffFiles) > 0 {
+					idx = len(m.diffFiles) - 1
+				}
+				if idx >= 0 {
+					m.diffCursor = m.diffFiles[idx].rowIdx
+					m.diffFileCursor = idx
+					m.diff.SetContent(m.renderDiffRows())
+					m.ensureDiffCursorVisible()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.PrevFile):
+				idx := -1
+				for i := len(m.diffFiles) - 1; i >= 0; i-- {
+					if m.diffFiles[i].rowIdx < m.diffCursor {
+						idx = i
+						break
+					}
+				}
+				if idx < 0 && len(m.diffFiles) > 0 {
+					idx = 0
+				}
+				if idx >= 0 {
+					m.diffCursor = m.diffFiles[idx].rowIdx
+					m.diffFileCursor = idx
+					m.diff.SetContent(m.renderDiffRows())
+					m.ensureDiffCursorVisible()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.TreeFocus):
+				if len(m.diffFiles) == 0 {
+					m.status = "no files in diff"
+					return m, nil
+				}
+				m.diffFocus = "tree"
 				return m, nil
 			case key.Matches(msg, m.keys.ToggleSplit):
 				m.diffSplit = !m.diffSplit
@@ -964,9 +1089,100 @@ func (m *model) layout() {
 	m.list.SetSize(listW, contentH)
 	m.detail.Width = detailW
 	m.detail.Height = contentH
-	m.diff.Width = m.width
+	// Diff view always reserves space for the file-tree side panel so
+	// split column widths stay stable between toggles.
+	m.diff.Width = m.width - m.treeWidth() - 3
+	if m.diff.Width < 20 {
+		m.diff.Width = m.width
+	}
 	m.diff.Height = m.height - helpHeight - 1
 	m.comments.SetSize(m.width, m.height-helpHeight-2)
+}
+
+// treeWidth picks a sensible width for the diff file-tree side panel.
+func (m model) treeWidth() int {
+	w := m.width / 4
+	if w < 24 {
+		w = 24
+	}
+	if w > 40 {
+		w = 40
+	}
+	if w > m.width/2 {
+		w = m.width / 2
+	}
+	if w < 0 {
+		w = 0
+	}
+	return w
+}
+
+// renderDiffTree formats the file-tree side panel: one row per file
+// touched by the diff. The currently-focused file gets a ▶ marker; the
+// file containing the diff cursor gets a coloured highlight.
+func (m model) renderDiffTree() string {
+	w := m.treeWidth()
+	h := m.diff.Height
+	if h <= 0 {
+		h = 10
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Width(w).MaxWidth(w)
+	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	rowStyle := lipgloss.NewStyle().Width(w).MaxWidth(w)
+
+	var lines []string
+	lines = append(lines, titleStyle.Render(fmt.Sprintf("Files (%d)", len(m.diffFiles))))
+
+	// Determine which file the diff cursor currently sits in so the
+	// tree highlight follows the diff scroll position.
+	activeFile := -1
+	for i, f := range m.diffFiles {
+		if f.rowIdx <= m.diffCursor {
+			activeFile = i
+		}
+	}
+
+	// Visible window of files: we don't currently scroll the tree, so
+	// long file lists just clip — fine for typical PRs (<100 files).
+	for i, f := range m.diffFiles {
+		marker := "  "
+		text := truncatePath(f.path, w-2)
+		switch {
+		case m.diffFocus == "tree" && i == m.diffFileCursor:
+			marker = "▶ "
+			lines = append(lines, rowStyle.Render(cursorStyle.Render(marker+text)))
+		case i == activeFile:
+			lines = append(lines, rowStyle.Render(activeStyle.Render(marker+text)))
+		default:
+			lines = append(lines, rowStyle.Render(marker+text))
+		}
+	}
+	// Pad to viewport height so JoinHorizontal doesn't shift the
+	// diff content up.
+	for len(lines) < h+1 {
+		lines = append(lines, dimStyle.Render(strings.Repeat(" ", w)))
+	}
+	if len(lines) > h+1 {
+		lines = lines[:h+1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// truncatePath shows the last components of a long path, with a leading
+// ellipsis so the file name (the bit you usually need) stays visible.
+func truncatePath(p string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if len(p) <= w {
+		return p
+	}
+	if w <= 1 {
+		return "…"
+	}
+	return "…" + p[len(p)-(w-1):]
 }
 
 func (m model) helpView() string {
@@ -1009,9 +1225,21 @@ func (m model) View() string {
 		if !m.diffShowInline {
 			overlay = "comments off"
 		}
+		focus := ""
+		if m.diffFocus == "tree" {
+			focus = "  ·  [tree]"
+		}
+		count := ""
+		if m.numBuf != "" {
+			count = "  ·  ×" + m.numBuf
+		}
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
-			Render(fmt.Sprintf("Diff · PR #%d  ·  %s  ·  %s%s", m.diffID, mode, overlay, anchor))
-		body = header + "\n" + m.diff.View()
+			Render(fmt.Sprintf("Diff · PR #%d  ·  %s  ·  %s%s%s%s", m.diffID, mode, overlay, anchor, focus, count))
+		tree := m.renderDiffTree()
+		sep := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
+			Render(strings.Repeat("│\n", lipgloss.Height(tree)))
+		split := lipgloss.JoinHorizontal(lipgloss.Top, tree, sep, m.diff.View())
+		body = header + "\n" + split
 	case viewDetail:
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("PR detail")
 		body = header + "\n" + m.detail.View()
@@ -1132,6 +1360,21 @@ func (d diffLine) styled() string { return d.style.Render(d.raw) }
 // commentable reports whether this row can carry an inline comment.
 func (d diffLine) commentable() bool { return d.path != "" && d.side != "" && d.lineNo > 0 }
 
+// cleanDiffPath strips the various prefix conventions that show up in
+// unified diff headers so the result is a plain repo-relative path
+// matching what inline-comment anchors use. Bitbucket Server emits
+// `src://` and `dst://` for some diffs in addition to git's `a/`/`b/`.
+func cleanDiffPath(s string) string {
+	s = strings.TrimSpace(s)
+	for _, p := range []string{"src://", "dst://", "a/", "b/"} {
+		if strings.HasPrefix(s, p) {
+			s = strings.TrimPrefix(s, p)
+			break
+		}
+	}
+	return s
+}
+
 // parseDiff walks a unified diff and produces one diffLine per text
 // line, decorated with file/line/side metadata where applicable.
 func parseDiff(diff string) []diffLine {
@@ -1146,12 +1389,11 @@ func parseDiff(diff string) []diffLine {
 			// "diff --git a/foo b/foo" — take the b/ side as the post-image path.
 			parts := strings.Fields(line)
 			if len(parts) >= 4 {
-				path = strings.TrimPrefix(parts[3], "b/")
+				path = cleanDiffPath(parts[3])
 			}
 			dl.style = diffMetaStyle
 		case strings.HasPrefix(line, "+++ "):
-			p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
-			p = strings.TrimPrefix(p, "b/")
+			p := cleanDiffPath(strings.TrimPrefix(line, "+++ "))
 			if p != "/dev/null" {
 				path = p
 			}
@@ -1241,8 +1483,45 @@ func (m *model) rebuildDiffRows() {
 	if m.diffShowInline {
 		m.diffRows = injectInlineComments(m.diffRows, m.diffComments, m.diffSplit, m.diff.Width)
 	}
+	m.diffFiles = computeDiffFiles(m.diffRows)
 	m.diff.SetContent(m.renderDiffRows())
 	m.clampDiffCursor()
+	m.syncTreeCursor()
+}
+
+// computeDiffFiles scans the rendered rows and records the position of
+// each file's "diff --git" header so the tree can jump-scroll there.
+func computeDiffFiles(rows []diffRow) []diffFile {
+	var out []diffFile
+	for i, r := range rows {
+		if !r.fullWidth {
+			continue
+		}
+		raw := r.cells[0].raw
+		if !strings.HasPrefix(raw, "diff ") {
+			continue
+		}
+		parts := strings.Fields(raw)
+		if len(parts) < 4 {
+			continue
+		}
+		out = append(out, diffFile{path: cleanDiffPath(parts[3]), rowIdx: i})
+	}
+	return out
+}
+
+// syncTreeCursor moves the tree cursor to whichever file the diff
+// cursor currently sits inside.
+func (m *model) syncTreeCursor() {
+	idx := -1
+	for i, f := range m.diffFiles {
+		if f.rowIdx <= m.diffCursor {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		m.diffFileCursor = idx
+	}
 }
 
 func buildUnifiedRows(lines []diffLine) []diffRow {
@@ -1521,17 +1800,6 @@ func (m *model) ensureDiffCursorVisible() {
 	case m.diffCursor > bot:
 		m.diff.SetYOffset(m.diffCursor - h + 1)
 	}
-}
-
-// firstCommentableLine returns the first row that an inline comment
-// can attach to, or 0 if none.
-func firstCommentableLine(lines []diffLine) int {
-	for i, dl := range lines {
-		if dl.commentable() {
-			return i
-		}
-	}
-	return 0
 }
 
 // inlineSide normalises a row's side into the API value. "both" rows
