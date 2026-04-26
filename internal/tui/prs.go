@@ -40,6 +40,7 @@ const (
 	viewDetail
 	viewDiff
 	viewComments
+	viewConfirmDelete
 )
 
 type keyMap struct {
@@ -54,6 +55,9 @@ type keyMap struct {
 
 	Approve, Unapprove, NeedsWork, Merge key.Binding
 	EditDesc, Comments, AddComment       key.Binding
+
+	// comments-mode actions
+	EditComment, DeleteComment, ReplyComment, ConfirmYes, ConfirmNo key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -77,6 +81,12 @@ func defaultKeys() keyMap {
 		EditDesc:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit description")),
 		Comments:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comments")),
 		AddComment: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new comment")),
+
+		EditComment:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+		DeleteComment: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		ReplyComment:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
+		ConfirmYes:    key.NewBinding(key.WithKeys("y", "Y"), key.WithHelp("y", "yes")),
+		ConfirmNo:     key.NewBinding(key.WithKeys("n", "N"), key.WithHelp("n", "no")),
 	}
 }
 
@@ -114,8 +124,18 @@ func (k keyMap) viewerHelp() modeKeyMap {
 }
 func (k keyMap) commentsHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.AddComment, k.Refresh, k.Back, k.Quit}},
-		full:  [][]key.Binding{{k.Up, k.Down, k.AddComment, k.Refresh, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.AddComment, k.ReplyComment, k.EditComment, k.DeleteComment, k.Back, k.Quit}},
+		full: [][]key.Binding{
+			{k.Up, k.Down, k.AddComment, k.ReplyComment},
+			{k.EditComment, k.DeleteComment, k.Refresh},
+			{k.Help, k.Back, k.Quit},
+		},
+	}
+}
+func (k keyMap) confirmHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.ConfirmYes, k.ConfirmNo, k.Back}},
+		full:  [][]key.Binding{{k.ConfirmYes, k.ConfirmNo, k.Back}},
 	}
 }
 
@@ -145,10 +165,11 @@ type actionDoneMsg struct {
 	reload bool
 }
 type editorResultMsg struct {
-	purpose string // "edit-description" | "add-comment"
-	prID    int
-	text    string
-	err     error
+	purpose   string // "edit-description" | "add-comment" | "reply-comment" | "edit-comment"
+	prID      int
+	commentID int // for reply-comment (parent) and edit-comment
+	text      string
+	err       error
 }
 type errMsg struct{ err error }
 
@@ -162,13 +183,16 @@ type model struct {
 
 	mode viewMode
 
-	list    list.Model
-	detail  viewport.Model
-	diff    viewport.Model
-	comments viewport.Model
+	list     list.Model
+	detail   viewport.Model
+	diff     viewport.Model
+	comments list.Model
 
 	commentsList []api.Comment
 	commentsPRID int
+
+	// when set, we're in a delete-comment confirm sub-mode
+	pendingDeleteCommentID int
 
 	spinner spinner.Model
 	help    help.Model
@@ -194,18 +218,43 @@ func newPRModel(svc api.Service, project, slug string) model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 
+	cdel := list.NewDefaultDelegate()
+	cl := list.New(nil, cdel, 0, 0)
+	cl.SetShowTitle(false)
+	cl.SetShowStatusBar(false)
+	cl.SetFilteringEnabled(true)
+
 	return model{
 		svc: svc, project: project, slug: slug,
 		state:    "OPEN",
 		list:     l,
 		detail:   viewport.New(0, 0),
 		diff:     viewport.New(0, 0),
-		comments: viewport.New(0, 0),
+		comments: cl,
 		spinner:  sp,
 		help:     help.New(),
 		keys:     defaultKeys(),
 		loading:  true,
 	}
+}
+
+// commentItem is the list.Item for the comments view.
+type commentItem struct{ c api.Comment }
+
+func (i commentItem) FilterValue() string { return i.c.Text }
+func (i commentItem) Title() string {
+	when := ""
+	if !i.c.CreatedAt.IsZero() {
+		when = "  · " + humanTime(i.c.CreatedAt)
+	}
+	return fmt.Sprintf("#%d  %s%s", i.c.ID, i.c.Author, when)
+}
+func (i commentItem) Description() string {
+	first := strings.SplitN(strings.ReplaceAll(i.c.Text, "\r", ""), "\n", 2)[0]
+	if len(first) > 200 {
+		first = first[:197] + "…"
+	}
+	return first
 }
 
 func (m model) Init() tea.Cmd {
@@ -248,18 +297,38 @@ func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
 	}
 }
 
+// commentMutation runs a comment-changing API call, then re-fetches the
+// comments list and returns commentsLoadedMsg (so the view updates).
+func (m *model) commentMutation(prID int, label string, fn func() error) tea.Cmd {
+	m.loading = true
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		if err := fn(); err != nil {
+			return actionDoneMsg{text: label, err: err}
+		}
+		cs, err := m.svc.ListComments(m.project, m.slug, prID)
+		if err != nil {
+			return actionDoneMsg{text: label + " (reload failed)", err: err}
+		}
+		return commentsLoadedMsg{id: prID, comments: cs}
+	})
+}
+
 // editInTUI suspends the program, opens the user's editor on a temp file
 // pre-filled with `initial`, then resumes and dispatches editorResultMsg.
-func editInTUI(purpose, hint string, prID int, initial string) tea.Cmd {
+func editInTUI(purpose, hint string, prID, commentID int, initial string) tea.Cmd {
 	f, err := os.CreateTemp("", "bb-edit-*-"+hint+".md")
 	if err != nil {
-		return func() tea.Msg { return editorResultMsg{purpose: purpose, prID: prID, err: err} }
+		return func() tea.Msg {
+			return editorResultMsg{purpose: purpose, prID: prID, commentID: commentID, err: err}
+		}
 	}
 	tmp := f.Name()
 	if _, err := f.WriteString(initial); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return func() tea.Msg { return editorResultMsg{purpose: purpose, prID: prID, err: err} }
+		return func() tea.Msg {
+			return editorResultMsg{purpose: purpose, prID: prID, commentID: commentID, err: err}
+		}
 	}
 	f.Close()
 
@@ -268,7 +337,7 @@ func editInTUI(purpose, hint string, prID int, initial string) tea.Cmd {
 	if len(parts) == 0 {
 		os.Remove(tmp)
 		return func() tea.Msg {
-			return editorResultMsg{purpose: purpose, prID: prID, err: fmt.Errorf("no editor configured")}
+			return editorResultMsg{purpose: purpose, prID: prID, commentID: commentID, err: fmt.Errorf("no editor configured")}
 		}
 	}
 	args := append(parts[1:], tmp)
@@ -276,10 +345,10 @@ func editInTUI(purpose, hint string, prID int, initial string) tea.Cmd {
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		defer os.Remove(tmp)
 		if err != nil {
-			return editorResultMsg{purpose: purpose, prID: prID, err: err}
+			return editorResultMsg{purpose: purpose, prID: prID, commentID: commentID, err: err}
 		}
 		data, rerr := os.ReadFile(tmp)
-		return editorResultMsg{purpose: purpose, prID: prID, text: string(data), err: rerr}
+		return editorResultMsg{purpose: purpose, prID: prID, commentID: commentID, text: string(data), err: rerr}
 	})
 }
 
@@ -323,8 +392,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.commentsList = msg.comments
 		m.commentsPRID = msg.id
-		m.comments.SetContent(renderComments(msg.comments))
-		m.comments.GotoTop()
+		items := make([]list.Item, 0, len(msg.comments))
+		for _, c := range msg.comments {
+			items = append(items, commentItem{c})
+		}
+		m.comments.SetItems(items)
 		m.mode = viewComments
 		return m, nil
 
@@ -358,18 +430,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.svc.UpdatePRDescription(m.project, m.slug, msg.prID, text)
 			}))
 		case "add-comment":
-			m.loading = true
-			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+			return m, m.commentMutation(msg.prID, "added comment", func() error {
 				_, err := m.svc.AddComment(m.project, m.slug, msg.prID, text)
-				if err != nil {
-					return actionDoneMsg{text: "add comment", err: err}
-				}
-				// refresh comments view
-				cs, err := m.svc.ListComments(m.project, m.slug, msg.prID)
-				if err != nil {
-					return actionDoneMsg{text: "comment added (reload failed)", err: err}
-				}
-				return commentsLoadedMsg{id: msg.prID, comments: cs}
+				return err
+			})
+		case "reply-comment":
+			parent := msg.commentID
+			return m, m.commentMutation(msg.prID, fmt.Sprintf("replied to #%d", parent), func() error {
+				_, err := m.svc.ReplyComment(m.project, m.slug, msg.prID, parent, text)
+				return err
+			})
+		case "edit-comment":
+			cID := msg.commentID
+			return m, m.commentMutation(msg.prID, fmt.Sprintf("edited #%d", cID), func() error {
+				_, err := m.svc.EditComment(m.project, m.slug, msg.prID, cID, text)
+				return err
 			})
 		}
 		return m, nil
@@ -410,11 +485,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.detail, cmd = m.detail.Update(msg)
 			return m, cmd
+		case viewConfirmDelete:
+			switch {
+			case key.Matches(msg, m.keys.ConfirmYes):
+				cID := m.pendingDeleteCommentID
+				prID := m.commentsPRID
+				m.pendingDeleteCommentID = 0
+				m.mode = viewComments
+				return m, m.commentMutation(prID, fmt.Sprintf("deleted #%d", cID), func() error {
+					return m.svc.DeleteComment(m.project, m.slug, prID, cID)
+				})
+			case key.Matches(msg, m.keys.ConfirmNo):
+				m.pendingDeleteCommentID = 0
+				m.mode = viewComments
+				m.status = "delete cancelled"
+				return m, nil
+			}
+			return m, nil
+
 		case viewComments:
+			// Filtering input: don't intercept keys.
+			if m.comments.FilterState() == list.Filtering {
+				break
+			}
 			switch {
 			case key.Matches(msg, m.keys.AddComment):
 				if m.commentsPRID > 0 {
-					return m, editInTUI("add-comment", fmt.Sprintf("pr-%d-comment", m.commentsPRID), m.commentsPRID, "")
+					return m, editInTUI("add-comment",
+						fmt.Sprintf("pr-%d-comment", m.commentsPRID), m.commentsPRID, 0, "")
+				}
+			case key.Matches(msg, m.keys.ReplyComment):
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					return m, editInTUI("reply-comment",
+						fmt.Sprintf("pr-%d-reply-to-%d", m.commentsPRID, it.c.ID),
+						m.commentsPRID, it.c.ID, "")
+				}
+			case key.Matches(msg, m.keys.EditComment):
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					return m, editInTUI("edit-comment",
+						fmt.Sprintf("pr-%d-comment-%d", m.commentsPRID, it.c.ID),
+						m.commentsPRID, it.c.ID, it.c.Text)
+				}
+			case key.Matches(msg, m.keys.DeleteComment):
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					m.pendingDeleteCommentID = it.c.ID
+					m.mode = viewConfirmDelete
+					return m, nil
 				}
 			case key.Matches(msg, m.keys.Refresh):
 				if m.commentsPRID > 0 {
@@ -497,7 +613,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.EditDesc):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				return m, editInTUI("edit-description",
-					fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, it.pr.Description)
+					fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, 0, it.pr.Description)
 			}
 		}
 	}
@@ -573,8 +689,7 @@ func (m *model) layout() {
 	m.detail.Height = contentH
 	m.diff.Width = m.width
 	m.diff.Height = m.height - helpHeight - 1
-	m.comments.Width = m.width
-	m.comments.Height = m.height - helpHeight - 1
+	m.comments.SetSize(m.width, m.height-helpHeight-2)
 }
 
 func (m model) helpView() string {
@@ -584,6 +699,8 @@ func (m model) helpView() string {
 		km = m.keys.viewerHelp()
 	case viewComments:
 		km = m.keys.commentsHelp()
+	case viewConfirmDelete:
+		km = m.keys.confirmHelp()
 	default:
 		km = m.keys.listHelp()
 	}
@@ -611,6 +728,9 @@ func (m model) View() string {
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
 			Render(fmt.Sprintf("Comments · PR #%d", m.commentsPRID))
 		body = header + "\n" + m.comments.View()
+	case viewConfirmDelete:
+		warn := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+		body = "\n  " + warn.Render(fmt.Sprintf("Delete comment #%d? (y/n)", m.pendingDeleteCommentID))
 	default:
 		left := lipgloss.NewStyle().Padding(0, 1).Render(m.list.View())
 		right := lipgloss.NewStyle().Padding(0, 1).Render(m.detail.View())
