@@ -55,7 +55,7 @@ nfpms:
   - id: bb
     package_name: bb
     vendor: bb contributors
-    homepage: https://github.com/hugo/bb
+    homepage: https://github.com/hugs7/bitbucket-cli
     maintainer: bb contributors
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
@@ -67,9 +67,9 @@ nfpms:
 brews:
   - name: bb
     repository:
-      owner: hugo
+      owner: hugs7
       name: homebrew-tap
-    homepage: https://github.com/hugo/bb
+    homepage: https://github.com/hugs7/bitbucket-cli
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
     test: |
@@ -78,19 +78,19 @@ brews:
 scoops:
   - name: bb
     repository:
-      owner: hugo
+      owner: hugs7
       name: scoop-bucket
-    homepage: https://github.com/hugo/bb
+    homepage: https://github.com/hugs7/bitbucket-cli
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
 
 winget:
   - name: bb
-    publisher: hugo
+    publisher: hugs7
     license: MIT
-    homepage: https://github.com/hugo/bb
+    homepage: https://github.com/hugs7/bitbucket-cli
     short_description: A comprehensive command-line interface for Bitbucket.
     repository:
-      owner: hugo
+      owner: hugs7
       name: winget-pkgs
       branch: bb-{{.Version}}

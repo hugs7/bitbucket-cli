@@ -27,7 +27,7 @@ Works against:
 > Not yet published. For now:
 
 ```sh
-git clone https://github.com/hugo/bb
+git clone https://github.com/hugs7/bitbucket-cli
 cd bb
 go build -o bb ./cmd/bb
 ./bb --help

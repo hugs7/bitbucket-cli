@@ -22,8 +22,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/hugo/bb/internal/api"
-	"github.com/hugo/bb/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 // PRs launches the interactive pull-requests TUI.
@@ -1716,62 +1716,82 @@ func (m model) View() string {
 	var body string
 	switch m.mode {
 	case viewDiff:
+		mode := titleChip.Render("unified")
+		if m.diffSplit {
+			mode = titleChip.Render("split")
+		}
+		overlay := titleChipDim.Render("comments off")
+		if m.diffShowInline {
+			overlay = titleChip.Render("comments on")
+		}
 		anchor := ""
 		if c, ok := m.activeDiffCell(); ok {
-			anchor = fmt.Sprintf("  ·  %s:%d (%s)", c.path, c.line, c.side)
-		}
-		mode := "unified"
-		if m.diffSplit {
-			mode = "split"
-		}
-		overlay := "comments on"
-		if !m.diffShowInline {
-			overlay = "comments off"
+			anchor = titleChipDim.Render(fmt.Sprintf("%s:%d (%s)", c.path, c.line, c.side))
 		}
 		focus := ""
 		if m.diffFocus == "tree" {
-			focus = "  ·  [tree]"
+			focus = titleChipWarn.Render("[tree]")
 		}
 		count := ""
 		if m.numBuf != "" {
-			count = "  ·  ×" + m.numBuf
+			count = titleChipWarn.Render("×" + m.numBuf)
 		}
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
-			Render(fmt.Sprintf("Diff · PR #%d  ·  %s  ·  %s%s%s%s", m.diffID, mode, overlay, anchor, focus, count))
+		header := titleBar(
+			fmt.Sprintf("DIFF · PR #%d", m.diffID),
+			mode, overlay, anchor, focus, count,
+		)
 		tree := m.renderDiffTree()
 		sep := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
 			Render(strings.Repeat("│\n", lipgloss.Height(tree)))
 		split := lipgloss.JoinHorizontal(lipgloss.Top, tree, sep, m.diff.View())
 		body = header + "\n" + split
 	case viewDetail:
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("PR detail")
-		body = header + "\n" + m.detail.View()
+		label := "PR DETAIL"
+		if it, ok := m.list.SelectedItem().(prItem); ok {
+			label = fmt.Sprintf("PR #%d · %s", it.pr.ID, styleState(it.pr.State))
+		}
+		body = titleBar(label) + "\n" + m.detail.View()
 	case viewComments:
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
-			Render(fmt.Sprintf("Comments · PR #%d", m.commentsPRID))
-		body = header + "\n" + m.comments.View()
+		body = titleBar(fmt.Sprintf("COMMENTS · PR #%d", m.commentsPRID),
+			titleChipDim.Render(fmt.Sprintf("%d total", len(m.commentsList)))) + "\n" + m.comments.View()
 	case viewConfirmDelete:
-		warn := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-		body = "\n  " + warn.Render(fmt.Sprintf("Delete comment #%d? (y/n)", m.pendingDeleteCommentID))
+		warn := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("9")).
+			Bold(true).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("9")).
+			Padding(0, 2)
+		body = "\n  " + warn.Render(fmt.Sprintf("Delete comment #%d?  [y/n]", m.pendingDeleteCommentID))
 	case viewPalette:
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
-			Render("Command palette · type to filter · enter to run · esc to close")
+		header := titleBar("COMMAND PALETTE",
+			titleChipDim.Render("type to filter"),
+			titleChipDim.Render("enter runs · esc closes"))
 		body = header + "\n" + m.palette.View()
 	default:
+		header := titleBar(fmt.Sprintf("PULL REQUESTS · %s/%s", m.project, m.slug),
+			titleChip.Render(strings.ToUpper(m.state)),
+			titleChipDim.Render(fmt.Sprintf("%d shown", len(m.list.Items()))))
 		left := lipgloss.NewStyle().Padding(0, 1).Render(m.list.View())
 		right := lipgloss.NewStyle().Padding(0, 1).Render(m.detail.View())
-		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+		body = header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
 	footer := m.helpView()
 	statusLine := ""
 	if m.loading {
-		statusLine = m.spinner.View() + " loading…"
+		statusLine = statusInfo.Render(m.spinner.View() + " loading…")
 	} else if m.status != "" {
-		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(m.status)
+		switch {
+		case strings.HasPrefix(m.status, "✗"):
+			statusLine = statusErr.Render(m.status)
+		case strings.HasPrefix(m.status, "✓"):
+			statusLine = statusOK.Render(m.status)
+		default:
+			statusLine = statusInfo.Render(m.status)
+		}
 	}
 	if statusLine != "" {
-		footer = statusLine + "  " + footer
+		footer = statusLine + "  " + titleSep + "  " + footer
 	}
 	return body + "\n" + footer
 }
@@ -1847,7 +1867,43 @@ var (
 	diffHunkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	diffMetaStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
 	diffCtxStyle  = lipgloss.NewStyle()
+
+	// Inline-comment annotation styling. Header carries author +
+	// timestamp in bold magenta; body lines are softer and italic so
+	// they read as overlays on top of the diff rather than as code.
+	annoHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
+	annoBodyStyle   = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("219"))
+	annoGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+
+	// Title bar / chip styling — used to give each view a consistent
+	// "header chrome" with a coloured pill, dim separators, and
+	// muted secondary chips for context (mode, file, focus, ×count).
+	titleBarPad   = lipgloss.NewStyle().Padding(0, 1)
+	titleBadge    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12")).Padding(0, 1)
+	titleAccent   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	titleSep      = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(" • ")
+	titleChip     = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	titleChipDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	titleChipWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	statusOK      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	statusErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	statusInfo    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 )
+
+// titleBar composes a uniform header line: a coloured badge with the
+// section name, followed by optional context "chips" separated by dim
+// bullets. Empty chips are skipped so callers can pass conditional
+// strings without worrying about double-separators.
+func titleBar(section string, chips ...string) string {
+	parts := []string{titleBadge.Render(section)}
+	for _, c := range chips {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		parts = append(parts, titleSep, c)
+	}
+	return titleBarPad.Render(strings.Join(parts, ""))
+}
 
 // diffLine is the parsed form of one line of a unified diff. We hold
 // the raw text and style separately so we can re-render it at any
@@ -1970,12 +2026,13 @@ func (c diffCell) commentable() bool { return c.path != "" && c.side != "" && c.
 // side and cells[1] is the new (RHS) side. Hunk and file headers use
 // fullWidth=true to span both columns.
 type diffRow struct {
-	cells      [2]diffCell
-	fullWidth  bool
-	annotation bool           // comment annotation row (no anchor of its own)
-	annoText   string         // plain text (no ANSI) for annotation
-	annoStyle  lipgloss.Style // style applied at render time at the right width
-	annoSide   int            // 0 = old column, 1 = new column (split only)
+	cells        [2]diffCell
+	fullWidth    bool
+	annotation   bool           // comment annotation row (no anchor of its own)
+	annoText     string         // plain text (no ANSI) for annotation
+	annoStyle    lipgloss.Style // style applied at render time at the right width
+	annoSide     int            // 0 = old column, 1 = new column (split only)
+	annoIsHeader bool           // header (author/timestamp) vs body line of a comment
 }
 
 // rebuildDiffRows regenerates the display row sequence from the parsed
@@ -1989,13 +2046,40 @@ func (m *model) rebuildDiffRows() {
 		m.diffRows = buildUnifiedRows(m.diffLines)
 	}
 	if m.diffShowInline {
-		m.diffRows = injectInlineComments(m.diffRows, m.diffComments)
+		m.diffRows = injectInlineComments(m.diffRows, m.diffComments, m.annotationWidth())
 	}
 	m.diffFiles = computeDiffFiles(m.diffRows)
 	m.diffTree = computeFileTree(m.diffFiles)
 	m.diff.SetContent(m.renderDiffRows())
 	m.clampDiffCursor()
 	m.syncTreeCursor()
+}
+
+// annotationWidth returns the wrap width (in cells) for inline-comment
+// annotation text in the current layout. Reserves space for the row
+// marker, gutter glyphs and indent so wrapped lines line up with the
+// code they're attached to.
+func (m model) annotationWidth() int {
+	width := m.diff.Width
+	if width <= 0 {
+		width = 80
+	}
+	if m.diffSplit {
+		// Same column maths as renderDiffRows, minus the gutter
+		// glyphs we prepend ("│  " = 3 cells, plus 1 cell of slack).
+		colW := (width - 5) / 2
+		w := colW - 4
+		if w < 12 {
+			w = 12
+		}
+		return w
+	}
+	// Unified: 2 cells marker + 4 cells indent + 2 cells gutter glyphs.
+	w := width - 8
+	if w < 20 {
+		w = 20
+	}
+	return w
 }
 
 // computeDiffFiles scans the rendered rows and records the position of
@@ -2125,10 +2209,12 @@ func buildSplitRows(lines []diffLine) []diffRow {
 	return rows
 }
 
-// injectInlineComments walks the row list and inserts an annotation
-// row (or two, for split) immediately after each row that has a
-// matching inline comment anchor.
-func injectInlineComments(rows []diffRow, comments []api.Comment) []diffRow {
+// injectInlineComments walks the row list and inserts annotation rows
+// immediately after each row that has a matching inline comment
+// anchor. Comments are word-wrapped to wrapW so the full body is
+// visible (rather than truncated to one line); each emitted row is
+// one wrapped line so cursor / viewport maths stay row-accurate.
+func injectInlineComments(rows []diffRow, comments []api.Comment, wrapW int) []diffRow {
 	if len(comments) == 0 {
 		return rows
 	}
@@ -2160,36 +2246,131 @@ func injectInlineComments(rows []diffRow, comments []api.Comment) []diffRow {
 			if !cell.commentable() {
 				continue
 			}
-			cs := byAnchor[key{cell.path, cell.side, cell.line}]
-			for _, c := range cs {
-				text, style := formatInlineAnnotation(c)
-				out = append(out, diffRow{
-					annotation: true,
-					annoText:   text,
-					annoStyle:  style,
-					annoSide:   idx,
-				})
+			for _, c := range byAnchor[key{cell.path, cell.side, cell.line}] {
+				for _, line := range formatInlineAnnotationLines(c, wrapW) {
+					out = append(out, diffRow{
+						annotation:   true,
+						annoText:     line.text,
+						annoStyle:    line.style,
+						annoSide:     idx,
+						annoIsHeader: line.header,
+					})
+				}
 			}
 		}
 	}
 	return out
 }
 
-// formatInlineAnnotation returns the plain (no-ANSI) text plus the
-// style to apply at render time. Keeping these separate lets us
-// truncate or wrap the text correctly per layout (split column width
-// vs full unified width) without garbling embedded escape codes.
-func formatInlineAnnotation(c api.Comment) (string, lipgloss.Style) {
+type annoTextLine struct {
+	text   string
+	style  lipgloss.Style
+	header bool
+}
+
+// formatInlineAnnotationLines splits a comment into a header line
+// (author + relative timestamp) followed by word-wrapped body lines.
+// Each returned line carries its own style so the renderer can draw
+// the header bold and the body soft/italic.
+func formatInlineAnnotationLines(c api.Comment, wrapW int) []annoTextLine {
+	if wrapW < 8 {
+		wrapW = 8
+	}
 	body := strings.TrimSpace(c.Text)
 	if body == "" {
 		body = "(empty)"
 	}
-	first := strings.SplitN(body, "\n", 2)[0]
-	if len(first) > 500 {
-		first = first[:497] + "…"
+	header := "💬 " + c.Author
+	if !c.CreatedAt.IsZero() {
+		header += "  " + humanTime(c.CreatedAt)
 	}
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	return "💬 " + c.Author + ": " + first, style
+
+	out := []annoTextLine{}
+	for _, w := range wrapText(header, wrapW) {
+		out = append(out, annoTextLine{text: w, style: annoHeaderStyle, header: true})
+	}
+	for _, raw := range strings.Split(body, "\n") {
+		wrapped := wrapText(raw, wrapW)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+		for _, w := range wrapped {
+			out = append(out, annoTextLine{text: w, style: annoBodyStyle})
+		}
+	}
+	return out
+}
+
+// wrapText word-wraps s to fit width w (in terminal cells), breaking
+// on whitespace where possible and falling back to hard rune-level
+// breaks for tokens longer than w. Empty input yields one empty line.
+func wrapText(s string, w int) []string {
+	if w <= 0 {
+		return []string{s}
+	}
+	if lipgloss.Width(s) <= w {
+		return []string{s}
+	}
+	var out []string
+	var cur strings.Builder
+	curW := 0
+	flush := func() {
+		out = append(out, cur.String())
+		cur.Reset()
+		curW = 0
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	for _, word := range words {
+		ww := lipgloss.Width(word)
+		// Break long words across multiple lines.
+		if ww > w {
+			if curW > 0 {
+				flush()
+			}
+			runes := []rune(word)
+			for len(runes) > 0 {
+				take := 0
+				wAcc := 0
+				for take < len(runes) {
+					rw := lipgloss.Width(string(runes[take]))
+					if wAcc+rw > w {
+						break
+					}
+					wAcc += rw
+					take++
+				}
+				if take == 0 {
+					take = 1
+				}
+				out = append(out, string(runes[:take]))
+				runes = runes[take:]
+			}
+			continue
+		}
+		extra := ww
+		if curW > 0 {
+			extra++ // leading space
+		}
+		if curW+extra > w {
+			flush()
+			cur.WriteString(word)
+			curW = ww
+		} else {
+			if curW > 0 {
+				cur.WriteByte(' ')
+				curW++
+			}
+			cur.WriteString(word)
+			curW += ww
+		}
+	}
+	if curW > 0 {
+		flush()
+	}
+	return out
 }
 
 // renderDiffRows produces the final string fed to the viewport.
@@ -2217,8 +2398,23 @@ func (m *model) renderDiffRows() string {
 		switch {
 		case row.annotation:
 			b.WriteString(leftPad)
+			glyph := "│ "
+			if row.annoIsHeader {
+				glyph = "▎ "
+			}
+			gutter := annoGutterStyle.Render(glyph)
 			if m.diffSplit {
-				cell := row.annoStyle.Width(colW).MaxWidth(colW).Render(truncateForCell(row.annoText, colW))
+				inner := colW - lipgloss.Width(glyph)
+				if inner < 1 {
+					inner = 1
+				}
+				text := truncateForCell(row.annoText, inner)
+				styled := row.annoStyle.Render(text)
+				pad := inner - lipgloss.Width(text)
+				if pad < 0 {
+					pad = 0
+				}
+				cell := gutter + styled + strings.Repeat(" ", pad)
 				blank := strings.Repeat(" ", colW)
 				if row.annoSide == 0 {
 					b.WriteString(cell)
@@ -2230,7 +2426,9 @@ func (m *model) renderDiffRows() string {
 					b.WriteString(cell)
 				}
 			} else {
-				b.WriteString("    " + row.annoStyle.Render(row.annoText))
+				b.WriteString("    ")
+				b.WriteString(gutter)
+				b.WriteString(row.annoStyle.Render(row.annoText))
 			}
 		case row.fullWidth:
 			b.WriteString(marker)

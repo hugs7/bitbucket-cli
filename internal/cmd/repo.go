@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/hugo/bb/internal/api"
-	"github.com/hugo/bb/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 func newRepoCmd() *cobra.Command {

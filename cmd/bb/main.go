@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hugo/bb/internal/cmd"
+	"github.com/hugs7/bitbucket-cli/internal/cmd"
 )
 
 // Set via -ldflags at release time by GoReleaser.

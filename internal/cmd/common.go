@@ -8,9 +8,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/hugo/bb/internal/api"
-	"github.com/hugo/bb/internal/config"
-	"github.com/hugo/bb/internal/gitctx"
+	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 )
 
 // resolveContext resolves which (host, project, slug) the command should

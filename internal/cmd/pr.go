@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/hugo/bb/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/api"
 )
 
 func newPRCmd() *cobra.Command {

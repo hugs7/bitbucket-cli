@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hugo/bb/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 // Service is the high-level API that bb commands talk to. Implementations

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/hugo/bb/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 // editText launches the user's editor on a temporary file pre-populated

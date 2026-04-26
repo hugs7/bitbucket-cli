@@ -1,4 +1,4 @@
-module github.com/hugo/bb
+module github.com/hugs7/bitbucket-cli
 
 go 1.24.2
 

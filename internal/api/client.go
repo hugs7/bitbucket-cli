@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hugo/bb/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 type Client struct {

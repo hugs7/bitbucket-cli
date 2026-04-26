@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/hugo/bb/internal/tui"
+	"github.com/hugs7/bitbucket-cli/internal/tui"
 )
 
 // newPRsCmd is a top-level shortcut for the interactive PR browser.
