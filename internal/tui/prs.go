@@ -1331,14 +1331,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
-			case s == "ctrl+i", s == "tab":
-				// ctrl-i reverses ctrl-o. Note "tab" also matches
-				// here per the terminal — we already handle Tab as
-				// TreeFocus above (matched first), so this branch
-				// only fires for explicit ctrl-i.
-				if s == "tab" {
-					break
-				}
+			case s == "ctrl+i":
+				// ctrl-i reverses ctrl-o. (Many terminals send the
+				// same byte for Tab and Ctrl-I; bubbletea normalises
+				// Tab to "tab" and only "real" ctrl-i to "ctrl+i",
+				// so we don't need to disambiguate here.)
 				if len(m.jumpFwd) == 0 {
 					m.status = "no forward jumps"
 					return m, nil
