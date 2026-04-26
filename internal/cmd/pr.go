@@ -84,14 +84,23 @@ func newPRViewCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			w, done := withPager()
+			defer done()
 			b := lipgloss.NewStyle().Bold(true)
 			muted := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-			fmt.Printf("%s  %s\n", b.Render(fmt.Sprintf("#%d", p.ID)), b.Render(p.Title))
-			fmt.Printf("%s · %s · %s → %s\n", styleState(p.State), p.Author, p.SourceRef, p.TargetRef)
-			fmt.Println(muted.Render(p.WebURL))
+			branch := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+			author := lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+			fmt.Fprintf(w, "%s  %s\n", b.Render(fmt.Sprintf("#%d", p.ID)), b.Render(p.Title))
+			fmt.Fprintf(w, "%s · %s · %s → %s\n",
+				styleState(p.State),
+				author.Render(p.Author),
+				branch.Render(p.SourceRef),
+				branch.Render(p.TargetRef),
+			)
+			fmt.Fprintln(w, muted.Render(p.WebURL))
 			if p.Description != "" {
-				fmt.Println()
-				fmt.Println(p.Description)
+				fmt.Fprintln(w)
+				fmt.Fprintln(w, p.Description)
 			}
 			return nil
 		},
@@ -272,7 +281,9 @@ func newPRDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Print(d)
+			w, done := withPager()
+			defer done()
+			fmt.Fprint(w, colorizeDiff(d))
 			return nil
 		},
 	}
