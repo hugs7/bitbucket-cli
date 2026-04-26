@@ -71,6 +71,9 @@ type keyMap struct {
 	// file-level comment in diff
 	DiffFileComment key.Binding
 
+	// diff-mode comment actions on the comment under the cursor
+	DiffAddComment, DiffEditComment, DiffDeleteComment, DiffReactComment key.Binding
+
 	// palette
 	PaletteOpen key.Binding
 }
@@ -115,6 +118,11 @@ func defaultKeys() keyMap {
 
 		DiffFileComment: key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "file comment")),
 
+		DiffAddComment:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "PR comment")),
+		DiffEditComment:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit comment")),
+		DiffDeleteComment: key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete comment")),
+		DiffReactComment:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "react 👍")),
+
 		PaletteOpen: key.NewBinding(key.WithKeys("ctrl+k", ":"), key.WithHelp("ctrl+k", "command palette")),
 	}
 }
@@ -147,12 +155,12 @@ func (k keyMap) listHelp() modeKeyMap {
 }
 func (k keyMap) viewerHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.DiffFileComment, k.ReplyComment, k.TreeFocus, k.NextFile, k.ToggleSplit, k.ToggleInline, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.ReplyComment, k.DiffEditComment, k.DiffDeleteComment, k.DiffReactComment, k.DiffFileComment, k.TreeFocus, k.Back, k.Quit}},
 		full: [][]key.Binding{
-			{k.Up, k.Down, k.InlineComment, k.DiffFileComment, k.ReplyComment, k.ToggleSide},
-			{k.TreeFocus, k.TreeSelect, k.PrevFile, k.NextFile},
-			{k.ToggleSplit, k.ToggleInline},
-			{k.Help, k.Back, k.Quit},
+			{k.Up, k.Down, k.InlineComment, k.DiffAddComment, k.DiffFileComment},
+			{k.ReplyComment, k.DiffEditComment, k.DiffDeleteComment, k.DiffReactComment},
+			{k.ToggleSide, k.TreeFocus, k.TreeSelect, k.PrevFile, k.NextFile},
+			{k.ToggleSplit, k.ToggleInline, k.PaletteOpen, k.Help, k.Back, k.Quit},
 		},
 	}
 }
@@ -256,6 +264,10 @@ type model struct {
 
 	// when set, we're in a delete-comment confirm sub-mode
 	pendingDeleteCommentID int
+	// pendingDeleteFromDiff indicates the delete was triggered from
+	// viewDiff (vs viewComments) so the post-delete reload should refresh
+	// the diff overlay and stay in the diff view.
+	pendingDeleteFromDiff bool
 
 	spinner spinner.Model
 	help    help.Model
@@ -594,6 +606,58 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				}
 				return editInlineInTUI(m.diffID, path, 0, "new")
 			}},
+			paletteItem{label: "PR-level comment", hint: "n", run: func(m *model) tea.Cmd {
+				if m.diffID == 0 {
+					return nil
+				}
+				return editInTUI("add-comment-diff",
+					fmt.Sprintf("pr-%d-comment", m.diffID), m.diffID, 0, "")
+			}},
+			paletteItem{label: "Reply to comment at cursor", hint: "r", run: func(m *model) tea.Cmd {
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor"
+					return nil
+				}
+				return editInTUI("reply-inline-comment",
+					fmt.Sprintf("pr-%d-reply-to-%d", m.diffID, cm.ID),
+					m.diffID, cm.ID, "")
+			}},
+			paletteItem{label: "Edit comment at cursor", hint: "e", run: func(m *model) tea.Cmd {
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor"
+					return nil
+				}
+				return editInTUI("edit-comment-diff",
+					fmt.Sprintf("pr-%d-comment-%d", m.diffID, cm.ID),
+					m.diffID, cm.ID, cm.Text)
+			}},
+			paletteItem{label: "Delete comment at cursor", hint: "D", run: func(m *model) tea.Cmd {
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor"
+					return nil
+				}
+				m.pendingDeleteCommentID = cm.ID
+				m.commentsPRID = m.diffID
+				m.pendingDeleteFromDiff = true
+				m.mode = viewConfirmDelete
+				m.paletteReturnTo = viewDiff
+				return nil
+			}},
+			paletteItem{label: "React 👍 to comment at cursor", hint: "R", run: func(m *model) tea.Cmd {
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor"
+					return nil
+				}
+				prID := m.diffID
+				cID := cm.ID
+				return m.diffCommentMutation(prID, fmt.Sprintf("reacted 👍 to #%d", cID), func() error {
+					return m.svc.AddReaction(m.project, m.slug, prID, cID, "thumbsup")
+				})
+			}},
 			paletteItem{label: "Toggle split / unified", hint: "v", run: func(m *model) tea.Cmd {
 				m.diffSplit = !m.diffSplit
 				m.rebuildDiffRows()
@@ -813,6 +877,69 @@ func (m *model) currentFilePath() string {
 		}
 	}
 	return activePath
+}
+
+// commentAtCursor returns the latest inline comment threaded at the
+// diff cursor's current anchor (walking back through any annotation
+// rows the cursor may be sitting on), or false if none exists.
+func (m *model) commentAtCursor() (api.Comment, bool) {
+	if m.diffCursor < 0 || m.diffCursor >= len(m.diffRows) {
+		return api.Comment{}, false
+	}
+	idx := m.diffCursor
+	for idx >= 0 && m.diffRows[idx].annotation {
+		idx--
+	}
+	if idx < 0 {
+		return api.Comment{}, false
+	}
+	row := m.diffRows[idx]
+	if row.fullWidth {
+		return api.Comment{}, false
+	}
+	sideIdx := 0
+	if m.diffSplit {
+		sideIdx = m.diffCursorSide
+	}
+	cell := row.cells[sideIdx]
+	if !cell.commentable() {
+		cell = row.cells[1-sideIdx]
+		if !cell.commentable() {
+			return api.Comment{}, false
+		}
+	}
+	var found *api.Comment
+	for i := range m.diffComments {
+		cm := m.diffComments[i]
+		if cm.Inline != nil &&
+			cm.Inline.Path == cell.path &&
+			cm.Inline.Side == cell.side &&
+			cm.Inline.Line == cell.line {
+			cmCopy := cm
+			found = &cmCopy
+		}
+	}
+	if found == nil {
+		return api.Comment{}, false
+	}
+	return *found, true
+}
+
+// diffCommentMutation runs a comment-changing API call, then re-fetches
+// comments and posts diffCommentsLoadedMsg so the diff overlay updates
+// without leaving the diff view.
+func (m *model) diffCommentMutation(prID int, label string, fn func() error) tea.Cmd {
+	m.loading = true
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		if err := fn(); err != nil {
+			return actionDoneMsg{text: label, err: err}
+		}
+		cs, err := m.svc.ListComments(m.project, m.slug, prID)
+		if err != nil {
+			return actionDoneMsg{text: label + " (overlay reload failed)", err: err}
+		}
+		return diffCommentsLoadedMsg{id: prID, comments: cs}
+	})
 }
 
 // applyDiffJump moves the diff cursor to the first commentable row
@@ -1111,6 +1238,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cID := msg.commentID
 			return m, m.commentMutation(msg.prID, fmt.Sprintf("edited #%d", cID), func() error {
 				_, err := m.svc.EditComment(m.project, m.slug, msg.prID, cID, text)
+				return err
+			})
+		case "edit-comment-diff":
+			cID := msg.commentID
+			prID := msg.prID
+			return m, m.diffCommentMutation(prID, fmt.Sprintf("edited #%d", cID), func() error {
+				_, err := m.svc.EditComment(m.project, m.slug, prID, cID, text)
+				return err
+			})
+		case "add-comment-diff":
+			prID := msg.prID
+			return m, m.diffCommentMutation(prID, "added PR comment", func() error {
+				_, err := m.svc.AddComment(m.project, m.slug, prID, text)
 				return err
 			})
 		case "add-inline-comment":
@@ -1589,6 +1729,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, editInlineInTUI(m.diffID, path, 0, "new")
+			case key.Matches(msg, m.keys.DiffAddComment):
+				if m.diffID > 0 {
+					return m, editInTUI("add-comment-diff",
+						fmt.Sprintf("pr-%d-comment", m.diffID), m.diffID, 0, "")
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.DiffEditComment):
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor — move to a commented line"
+					return m, nil
+				}
+				return m, editInTUI("edit-comment-diff",
+					fmt.Sprintf("pr-%d-comment-%d", m.diffID, cm.ID),
+					m.diffID, cm.ID, cm.Text)
+			case key.Matches(msg, m.keys.DiffDeleteComment):
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor — move to a commented line"
+					return m, nil
+				}
+				m.pendingDeleteCommentID = cm.ID
+				m.commentsPRID = m.diffID
+				m.pendingDeleteFromDiff = true
+				m.mode = viewConfirmDelete
+				return m, nil
+			case key.Matches(msg, m.keys.DiffReactComment):
+				cm, ok := m.commentAtCursor()
+				if !ok {
+					m.status = "no comment at cursor — move to a commented line"
+					return m, nil
+				}
+				prID := m.diffID
+				cID := cm.ID
+				return m, m.diffCommentMutation(prID, fmt.Sprintf("reacted 👍 to #%d", cID), func() error {
+					return m.svc.AddReaction(m.project, m.slug, prID, cID, "thumbsup")
+				})
 			case key.Matches(msg, m.keys.ReplyComment):
 				c, ok := m.activeDiffCell()
 				if !ok {
@@ -1679,14 +1856,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.ConfirmYes):
 				cID := m.pendingDeleteCommentID
 				prID := m.commentsPRID
+				fromDiff := m.pendingDeleteFromDiff
 				m.pendingDeleteCommentID = 0
+				m.pendingDeleteFromDiff = false
+				if fromDiff {
+					m.mode = viewDiff
+					return m, m.diffCommentMutation(prID, fmt.Sprintf("deleted #%d", cID), func() error {
+						return m.svc.DeleteComment(m.project, m.slug, prID, cID)
+					})
+				}
 				m.mode = viewComments
 				return m, m.commentMutation(prID, fmt.Sprintf("deleted #%d", cID), func() error {
 					return m.svc.DeleteComment(m.project, m.slug, prID, cID)
 				})
 			case key.Matches(msg, m.keys.ConfirmNo):
 				m.pendingDeleteCommentID = 0
-				m.mode = viewComments
+				if m.pendingDeleteFromDiff {
+					m.mode = viewDiff
+					m.pendingDeleteFromDiff = false
+				} else {
+					m.mode = viewComments
+				}
 				m.status = "delete cancelled"
 				return m, nil
 			}
