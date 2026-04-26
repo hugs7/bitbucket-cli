@@ -526,10 +526,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (e.g. switching OPEN → MERGED) doesn't linger on a PR that
 		// no longer matches.
 		m.prBuilds = make(map[int]string, len(msg.prs))
+		// Compute stacks once per load so each list item can render
+		// its position cheaply via map lookup.
+		stackPos := computeStackPositions(msg.prs)
 		items := make([]list.Item, 0, len(msg.prs))
 		var buildCmds []tea.Cmd
 		for _, p := range msg.prs {
-			items = append(items, prItem{pr: p})
+			it := prItem{pr: p}
+			if sp, ok := stackPos[p.ID]; ok {
+				it.stackPos, it.stackTotal = sp.pos, sp.total
+			}
+			items = append(items, it)
 			buildCmds = append(buildCmds, m.fetchBuildForPR(p))
 		}
 		m.list.SetItems(items)
@@ -1537,6 +1544,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Refresh):
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchPRs())
+		case key.Matches(msg, m.keys.NextFile):
+			// In the list view, ]/[ jump within the current stack
+			// (next / prev PR by source-target chain). Falls through
+			// to the list (default Update) when the selected PR is
+			// standalone so users still get any list-default keybind.
+			if m.jumpStack(+1) {
+				return m, nil
+			}
+		case key.Matches(msg, m.keys.PrevFile):
+			if m.jumpStack(-1) {
+				return m, nil
+			}
 		case key.Matches(msg, m.keys.StatePrev):
 			m.state = prevState(m.state)
 			m.list.Title = fmt.Sprintf("Pull Requests · %s/%s · %s", m.project, m.slug, m.state)
