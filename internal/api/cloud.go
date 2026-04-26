@@ -274,6 +274,11 @@ func (c *cloudService) ListComments(workspace, slug string, id int) ([]Comment, 
 		User    clUser `json:"user"`
 		Created string `json:"created_on"`
 		Updated string `json:"updated_on"`
+		Inline  *struct {
+			Path string `json:"path"`
+			From *int   `json:"from"` // line on old (LHS) side
+			To   *int   `json:"to"`   // line on new (RHS) side
+		} `json:"inline"`
 	}
 	var page clPaged[cc]
 	if err := c.client.getJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments?pagelen=100", workspace, slug, id), &page); err != nil {
@@ -281,10 +286,26 @@ func (c *cloudService) ListComments(workspace, slug string, id int) ([]Comment, 
 	}
 	out := make([]Comment, 0, len(page.Values))
 	for _, x := range page.Values {
-		out = append(out, Comment{
+		comment := Comment{
 			ID: x.ID, Author: x.User.DisplayName, Text: x.Content.Raw,
 			CreatedAt: parseTime(x.Created), UpdatedAt: parseTime(x.Updated),
-		})
+		}
+		if x.Inline != nil && x.Inline.Path != "" {
+			// Cloud sets either `to` (new side) or `from` (old side).
+			ic := &CommentInline{Path: x.Inline.Path, Side: "new"}
+			switch {
+			case x.Inline.To != nil:
+				ic.Line = *x.Inline.To
+				ic.Side = "new"
+			case x.Inline.From != nil:
+				ic.Line = *x.Inline.From
+				ic.Side = "old"
+			}
+			if ic.Line > 0 {
+				comment.Inline = ic
+			}
+		}
+		out = append(out, comment)
 	}
 	return out, nil
 }

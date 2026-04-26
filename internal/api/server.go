@@ -313,10 +313,19 @@ type srvComment struct {
 	CreatedDate int64   `json:"createdDate"`
 	UpdatedDate int64   `json:"updatedDate"`
 }
+type srvCommentAnchor struct {
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	LineType string `json:"lineType"` // ADDED | REMOVED | CONTEXT
+	FileType string `json:"fileType"` // TO (new) | FROM (old)
+	DiffType string `json:"diffType"`
+}
+
 type srvActivity struct {
-	ID      int        `json:"id"`
-	Action  string     `json:"action"`
-	Comment srvComment `json:"comment"`
+	ID            int               `json:"id"`
+	Action        string            `json:"action"`
+	Comment       srvComment        `json:"comment"`
+	CommentAnchor *srvCommentAnchor `json:"commentAnchor"`
 }
 
 func (s *serverService) ListComments(project, slug string, id int) ([]Comment, error) {
@@ -333,13 +342,28 @@ func (s *serverService) ListComments(project, slug string, id int) ([]Comment, e
 		if a.Action != "COMMENTED" || a.Comment.ID == 0 {
 			continue
 		}
-		out = append(out, Comment{
+		c := Comment{
 			ID:        a.Comment.ID,
 			Author:    a.Comment.Author.DisplayName,
 			Text:      a.Comment.Text,
 			CreatedAt: time.UnixMilli(a.Comment.CreatedDate),
 			UpdatedAt: time.UnixMilli(a.Comment.UpdatedDate),
-		})
+		}
+		if a.CommentAnchor != nil && a.CommentAnchor.Path != "" {
+			// LineType ADDED → new side; REMOVED → old side; CONTEXT
+			// can sit on either, default to new. fileType FROM is a
+			// stronger signal that the comment is on the old side.
+			side := "new"
+			if a.CommentAnchor.LineType == "REMOVED" || a.CommentAnchor.FileType == "FROM" {
+				side = "old"
+			}
+			c.Inline = &CommentInline{
+				Path: a.CommentAnchor.Path,
+				Line: a.CommentAnchor.Line,
+				Side: side,
+			}
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }

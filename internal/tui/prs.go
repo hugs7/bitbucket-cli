@@ -61,7 +61,7 @@ type keyMap struct {
 	EditComment, DeleteComment, ReplyComment, ConfirmYes, ConfirmNo key.Binding
 
 	// diff-mode actions
-	InlineComment, ToggleSide key.Binding
+	InlineComment, ToggleSide, ToggleSplit, ToggleInline key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -93,7 +93,9 @@ func defaultKeys() keyMap {
 		ConfirmNo:     key.NewBinding(key.WithKeys("n", "N"), key.WithHelp("n", "no")),
 
 		InlineComment: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comment line")),
-		ToggleSide:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle side (context lines)")),
+		ToggleSide:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle side")),
+		ToggleSplit:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "split/unified")),
+		ToggleInline:  key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "show/hide comments")),
 	}
 }
 
@@ -125,9 +127,10 @@ func (k keyMap) listHelp() modeKeyMap {
 }
 func (k keyMap) viewerHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.ToggleSide, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.ToggleSplit, k.ToggleInline, k.ToggleSide, k.Back, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.InlineComment, k.ToggleSide},
+			{k.ToggleSplit, k.ToggleInline},
 			{k.Help, k.Back, k.Quit},
 		},
 	}
@@ -179,6 +182,10 @@ type diffLoadedMsg struct {
 	diff string
 }
 type commentsLoadedMsg struct {
+	id       int
+	comments []api.Comment
+}
+type diffCommentsLoadedMsg struct {
 	id       int
 	comments []api.Comment
 }
@@ -234,12 +241,18 @@ type model struct {
 	width, height int
 	diffID        int
 
-	// Diff navigation: parsed lines + cursor position so we can anchor
-	// inline comments to the correct (path, side, line). The viewport
-	// itself only knows how to scroll a string, so we re-render with a
-	// row marker each time the cursor moves.
-	diffLines  []diffLine
-	diffCursor int
+	// Diff navigation: parsed lines + display rows + cursor position so
+	// we can anchor inline comments to the correct (path, side, line).
+	// The viewport itself only knows how to scroll a string, so we
+	// re-render with a row marker each time the cursor moves.
+	diffLines       []diffLine
+	diffRows        []diffRow
+	diffCursor      int
+	diffCursorSide  int  // 0=old (LHS), 1=new (RHS); split mode only
+	diffSplit       bool // false=unified, true=side-by-side
+	diffShowInline  bool // overlay inline review comments
+	diffComments    []api.Comment
+	diffCommentsPRID int
 }
 
 func newPRModel(svc api.Service, project, slug string) model {
@@ -262,15 +275,16 @@ func newPRModel(svc api.Service, project, slug string) model {
 
 	return model{
 		svc: svc, project: project, slug: slug,
-		state:    "OPEN",
-		list:     l,
-		detail:   viewport.New(0, 0),
-		diff:     viewport.New(0, 0),
-		comments: cl,
-		spinner:  sp,
-		help:     help.New(),
-		keys:     defaultKeys(),
-		loading:  true,
+		state:          "OPEN",
+		list:           l,
+		detail:         viewport.New(0, 0),
+		diff:           viewport.New(0, 0),
+		comments:       cl,
+		spinner:        sp,
+		help:           help.New(),
+		keys:           defaultKeys(),
+		loading:        true,
+		diffShowInline: true,
 	}
 }
 
@@ -324,6 +338,20 @@ func (m *model) fetchComments(id int) tea.Cmd {
 			return errMsg{err}
 		}
 		return commentsLoadedMsg{id: id, comments: cs}
+	}
+}
+
+// fetchDiffComments loads comments for the diff overlay. We use a
+// dedicated message so an in-flight comments-view fetch doesn't get
+// hijacked into the diff (and vice versa).
+func (m *model) fetchDiffComments(id int) tea.Cmd {
+	return func() tea.Msg {
+		cs, err := m.svc.ListComments(m.project, m.slug, id)
+		if err != nil {
+			// Silently ignore — diff still useful without the overlay.
+			return diffCommentsLoadedMsg{id: id, comments: nil}
+		}
+		return diffCommentsLoadedMsg{id: id, comments: cs}
 	}
 }
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
@@ -396,6 +424,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.layout()
+		// Re-flow the diff so split columns reshape to the new width.
+		if len(m.diffLines) > 0 {
+			m.rebuildDiffRows()
+			m.ensureDiffCursorVisible()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -419,12 +452,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffLoadedMsg:
 		m.loading = false
 		m.diffLines = parseDiff(msg.diff)
-		m.diffCursor = firstCommentableLine(m.diffLines)
-		m.diff.SetContent(m.renderDiff())
+		m.diffID = msg.id
+		// Pre-fetch comments only the first time we open this PR's
+		// diff (or when the PR id changes); cached results are reused
+		// on subsequent toggles.
+		needComments := m.diffCommentsPRID != msg.id
+		if needComments {
+			m.diffComments = nil
+		}
+		m.diffCursor = 0
+		m.rebuildDiffRows()
+		// Place cursor on the first commentable row.
+		for i, r := range m.diffRows {
+			if r.fullWidth || r.annotation {
+				continue
+			}
+			if r.cells[0].commentable() || r.cells[1].commentable() {
+				m.diffCursor = i
+				break
+			}
+		}
+		m.diff.SetContent(m.renderDiffRows())
 		m.diff.GotoTop()
 		m.ensureDiffCursorVisible()
-		m.diffID = msg.id
 		m.mode = viewDiff
+		if needComments {
+			return m, m.fetchDiffComments(msg.id)
+		}
+		return m, nil
+
+	case diffCommentsLoadedMsg:
+		m.loading = false
+		m.diffCommentsPRID = msg.id
+		m.diffComments = msg.comments
+		if m.mode == viewDiff && m.diffID == msg.id {
+			m.rebuildDiffRows()
+			m.ensureDiffCursorVisible()
+		}
 		return m, nil
 
 	case commentsLoadedMsg:
@@ -492,15 +556,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			prID := msg.prID
 			label := fmt.Sprintf("inline comment on %s:%d (%s)", path, line, side)
 			m.loading = true
-			// Inline comments don't appear in the comments list view
-			// (it filters to general activity comments), so we don't
-			// re-fetch — just toast the result.
-			return m, tea.Batch(m.spinner.Tick, m.doAction(label, false, func() error {
+			// After posting, refresh the overlay so the new annotation
+			// appears under the diff line right away.
+			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
 				_, err := m.svc.AddInlineComment(m.project, m.slug, prID, api.InlineCommentInput{
 					Text: text, Path: path, Line: line, Side: side,
 				})
-				return err
-			}))
+				if err != nil {
+					return actionDoneMsg{text: label, err: err}
+				}
+				cs, lerr := m.svc.ListComments(m.project, m.slug, prID)
+				if lerr != nil {
+					return actionDoneMsg{text: label + " (overlay reload failed)", err: lerr}
+				}
+				return diffCommentsLoadedMsg{id: prID, comments: cs}
+			})
 		}
 		return m, nil
 
@@ -533,25 +603,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Per-mode handling.
 		switch m.mode {
 		case viewDiff:
-			// Cursor-based navigation: we manage the highlighted line
-			// ourselves so 'c' has a precise (path, side, line) anchor.
-			// Up/down/k/j move by one row; pgup/pgdown by a viewport
-			// page. 't' flips the side on a context line. 'c' opens
-			// the editor for an inline comment.
-			n := len(m.diffLines)
+			// Cursor-based navigation across display rows. 'c' fires
+			// an inline comment editor on the current cell; 't' flips
+			// side (split column or context-line preference); 'v'
+			// toggles unified ↔ split; 'i' shows/hides comment overlay.
+			n := len(m.diffRows)
 			switch {
 			case key.Matches(msg, m.keys.Up):
 				if m.diffCursor > 0 {
 					m.diffCursor--
 				}
-				m.diff.SetContent(m.renderDiff())
+				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
 			case key.Matches(msg, m.keys.Down):
 				if m.diffCursor < n-1 {
 					m.diffCursor++
 				}
-				m.diff.SetContent(m.renderDiff())
+				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
 			case msg.String() == "pgup":
@@ -563,7 +632,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.diffCursor < 0 {
 					m.diffCursor = 0
 				}
-				m.diff.SetContent(m.renderDiff())
+				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
 			case msg.String() == "pgdown", msg.String() == " ":
@@ -575,42 +644,70 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.diffCursor > n-1 {
 					m.diffCursor = n - 1
 				}
-				m.diff.SetContent(m.renderDiff())
+				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
 			case msg.String() == "g":
 				m.diffCursor = 0
-				m.diff.SetContent(m.renderDiff())
+				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
 			case msg.String() == "G":
 				m.diffCursor = n - 1
-				m.diff.SetContent(m.renderDiff())
+				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
+			case key.Matches(msg, m.keys.ToggleSplit):
+				m.diffSplit = !m.diffSplit
+				m.rebuildDiffRows()
+				m.ensureDiffCursorVisible()
+				if m.diffSplit {
+					m.status = "split view"
+				} else {
+					m.status = "unified view"
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.ToggleInline):
+				m.diffShowInline = !m.diffShowInline
+				m.rebuildDiffRows()
+				m.ensureDiffCursorVisible()
+				if m.diffShowInline {
+					m.status = "inline comments shown"
+				} else {
+					m.status = "inline comments hidden"
+				}
+				return m, nil
 			case key.Matches(msg, m.keys.ToggleSide):
-				if m.diffCursor < n {
-					dl := &m.diffLines[m.diffCursor]
-					if dl.side == "both" {
-						dl.preferOld = !dl.preferOld
-						side, lineNo := inlineSide(*dl)
-						m.status = fmt.Sprintf("anchor → %s side L%d", side, lineNo)
-					} else {
-						m.status = "side toggle only applies to context lines"
+				if m.diffSplit {
+					m.diffCursorSide = 1 - m.diffCursorSide
+					m.diff.SetContent(m.renderDiffRows())
+					if c, ok := m.activeDiffCell(); ok {
+						m.status = fmt.Sprintf("anchor → %s:%d (%s)", c.path, c.line, c.side)
+					}
+				} else if m.diffCursor < len(m.diffLines) {
+					// Unified mode: only context lines have two sides.
+					// We need to find the source diffLine corresponding
+					// to this row. In unified, rows map 1:1 to lines.
+					if m.diffCursor < len(m.diffLines) {
+						dl := &m.diffLines[m.diffCursor]
+						if dl.side == "both" {
+							dl.preferOld = !dl.preferOld
+							m.rebuildDiffRows()
+							side, lineNo := inlineSide(*dl)
+							m.status = fmt.Sprintf("anchor → %s side L%d", side, lineNo)
+						} else {
+							m.status = "side toggle only applies to context lines"
+						}
 					}
 				}
 				return m, nil
 			case key.Matches(msg, m.keys.InlineComment):
-				if m.diffCursor >= n {
-					return m, nil
-				}
-				dl := m.diffLines[m.diffCursor]
-				if !dl.commentable() {
+				c, ok := m.activeDiffCell()
+				if !ok {
 					m.status = "no file/line under cursor — move to a +/-/context line"
 					return m, nil
 				}
-				side, lineNo := inlineSide(dl)
-				return m, editInlineInTUI(m.diffID, dl.path, lineNo, side)
+				return m, editInlineInTUI(m.diffID, c.path, c.line, c.side)
 			}
 			// Anything else (including raw scroll keys we didn't match)
 			// falls through to the viewport for default behaviour.
@@ -901,15 +998,19 @@ func (m model) View() string {
 	switch m.mode {
 	case viewDiff:
 		anchor := ""
-		if m.diffCursor < len(m.diffLines) {
-			dl := m.diffLines[m.diffCursor]
-			if dl.commentable() {
-				side, lineNo := inlineSide(dl)
-				anchor = fmt.Sprintf("  ·  %s:%d (%s)", dl.path, lineNo, side)
-			}
+		if c, ok := m.activeDiffCell(); ok {
+			anchor = fmt.Sprintf("  ·  %s:%d (%s)", c.path, c.line, c.side)
+		}
+		mode := "unified"
+		if m.diffSplit {
+			mode = "split"
+		}
+		overlay := "comments on"
+		if !m.diffShowInline {
+			overlay = "comments off"
 		}
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
-			Render(fmt.Sprintf("Diff · PR #%d%s", m.diffID, anchor))
+			Render(fmt.Sprintf("Diff · PR #%d  ·  %s  ·  %s%s", m.diffID, mode, overlay, anchor))
 		body = header + "\n" + m.diff.View()
 	case viewDetail:
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("PR detail")
@@ -1003,35 +1104,43 @@ func styleState(s string) string {
 	return s
 }
 
-// diffLine carries both the on-screen styled text and metadata so we
-// know where to anchor an inline comment when the user presses 'c'.
+// Diff styling — package-level so both unified and split renderers
+// share the same colour palette without re-allocating per call.
+var (
+	diffAddStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	diffDelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	diffHunkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	diffMetaStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
+	diffCtxStyle  = lipgloss.NewStyle()
+)
+
+// diffLine is the parsed form of one line of a unified diff. We hold
+// the raw text and style separately so we can re-render it at any
+// width when laying out a split view.
 type diffLine struct {
-	styled    string
+	raw       string
+	style     lipgloss.Style
 	path      string
 	side      string // "new", "old", "" (header / hunk / unknown), or "both" (context)
-	lineNo    int   // file line number on the new side (or sole side)
-	oldNo     int   // for "both" rows, the line on the old side
-	preferOld bool  // for "both" rows, anchor on the old side
+	lineNo    int    // file line number on the new side (or sole side)
+	oldNo     int    // for "both" rows, the line on the old side
+	preferOld bool   // for "both" rows, anchor on the old side
 }
+
+func (d diffLine) styled() string { return d.style.Render(d.raw) }
 
 // commentable reports whether this row can carry an inline comment.
 func (d diffLine) commentable() bool { return d.path != "" && d.side != "" && d.lineNo > 0 }
 
 // parseDiff walks a unified diff and produces one diffLine per text
-// line, decorated with file/line/side metadata where applicable. The
-// styling mirrors the previous colorizeDiff colours.
+// line, decorated with file/line/side metadata where applicable.
 func parseDiff(diff string) []diffLine {
-	add := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	del := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	hunk := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	meta := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-
 	var out []diffLine
 	var path string
 	var oldLine, newLine int
 
 	for _, line := range strings.Split(diff, "\n") {
-		dl := diffLine{styled: line}
+		dl := diffLine{raw: line, style: diffCtxStyle}
 		switch {
 		case strings.HasPrefix(line, "diff "):
 			// "diff --git a/foo b/foo" — take the b/ side as the post-image path.
@@ -1039,35 +1148,35 @@ func parseDiff(diff string) []diffLine {
 			if len(parts) >= 4 {
 				path = strings.TrimPrefix(parts[3], "b/")
 			}
-			dl.styled = meta.Render(line)
+			dl.style = diffMetaStyle
 		case strings.HasPrefix(line, "+++ "):
 			p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
 			p = strings.TrimPrefix(p, "b/")
 			if p != "/dev/null" {
 				path = p
 			}
-			dl.styled = meta.Render(line)
+			dl.style = diffMetaStyle
 		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "index "):
-			dl.styled = meta.Render(line)
+			dl.style = diffMetaStyle
 		case strings.HasPrefix(line, "@@"):
 			oldLine, newLine = parseHunkHeader(line)
-			dl.styled = hunk.Render(line)
+			dl.style = diffHunkStyle
 		case strings.HasPrefix(line, "+"):
-			dl.styled = add.Render(line)
+			dl.style = diffAddStyle
 			dl.path, dl.side, dl.lineNo = path, "new", newLine
 			newLine++
 		case strings.HasPrefix(line, "-"):
-			dl.styled = del.Render(line)
+			dl.style = diffDelStyle
 			dl.path, dl.side, dl.lineNo = path, "old", oldLine
 			oldLine++
 		case strings.HasPrefix(line, " "):
 			// Context: exists on both sides. We default to "new" for
-			// commenting; user can press 't' to flip to "old".
+			// commenting; user can press 't' to flip.
 			dl.path, dl.side, dl.lineNo, dl.oldNo = path, "both", newLine, oldLine
 			oldLine++
 			newLine++
 		case strings.HasPrefix(line, `\`):
-			// "\ No newline at end of file" — leave as-is.
+			// "\ No newline at end of file" — leave plain.
 		}
 		out = append(out, dl)
 	}
@@ -1094,21 +1203,307 @@ func parseHunkHeader(line string) (oldStart, newStart int) {
 	return parseRange(fields[0]), parseRange(fields[1])
 }
 
-// renderDiff joins the parsed lines, prefixing the cursor row with a
-// pointer so it's visually obvious where 'c' will land.
-func (m *model) renderDiff() string {
+// diffCell is one column of one display row. Cells carry both visual
+// content and the (path, side, line) anchor needed when the user fires
+// 'c' to add an inline comment from this position.
+type diffCell struct {
+	raw   string
+	style lipgloss.Style
+	path  string
+	side  string
+	line  int
+}
+
+func (c diffCell) commentable() bool { return c.path != "" && c.side != "" && c.line > 0 }
+
+// diffRow is one logical row in the rendered diff. In unified mode
+// only cells[0] is populated; in split mode cells[0] is the old (LHS)
+// side and cells[1] is the new (RHS) side. Hunk and file headers use
+// fullWidth=true to span both columns.
+type diffRow struct {
+	cells      [2]diffCell
+	fullWidth  bool
+	annotation bool   // comment annotation row (no anchor of its own)
+	annoText   string // pre-styled annotation block
+	annoSide   int    // 0 = old column, 1 = new column (split only)
+}
+
+// rebuildDiffRows regenerates the display row sequence from the parsed
+// diff lines + comments according to the current toggles. Called after
+// the diff loads, the comments load, the user toggles split / inline,
+// or the viewport resizes.
+func (m *model) rebuildDiffRows() {
+	if m.diffSplit {
+		m.diffRows = buildSplitRows(m.diffLines)
+	} else {
+		m.diffRows = buildUnifiedRows(m.diffLines)
+	}
+	if m.diffShowInline {
+		m.diffRows = injectInlineComments(m.diffRows, m.diffComments, m.diffSplit, m.diff.Width)
+	}
+	m.diff.SetContent(m.renderDiffRows())
+	m.clampDiffCursor()
+}
+
+func buildUnifiedRows(lines []diffLine) []diffRow {
+	rows := make([]diffRow, 0, len(lines))
+	for _, dl := range lines {
+		c := diffCell{raw: dl.raw, style: dl.style}
+		if dl.commentable() {
+			side, lineNo := inlineSide(dl)
+			c.path, c.side, c.line = dl.path, side, lineNo
+		}
+		rows = append(rows, diffRow{cells: [2]diffCell{c}})
+	}
+	return rows
+}
+
+// buildSplitRows pairs runs of "-" with "+" so removed and added text
+// sit on opposite columns of the same display row. Context lines
+// appear identically on both sides; headers / hunk markers use
+// fullWidth so they span the full width of the viewport.
+func buildSplitRows(lines []diffLine) []diffRow {
+	rows := []diffRow{}
+	emptyOld := diffCell{}
+	emptyNew := diffCell{}
+	for i := 0; i < len(lines); {
+		dl := lines[i]
+		switch dl.side {
+		case "":
+			rows = append(rows, diffRow{cells: [2]diffCell{{raw: dl.raw, style: dl.style}}, fullWidth: true})
+			i++
+		case "both":
+			body := strings.TrimPrefix(dl.raw, " ")
+			oldCell := diffCell{raw: " " + body, style: diffCtxStyle, path: dl.path, side: "old", line: dl.oldNo}
+			newCell := diffCell{raw: " " + body, style: diffCtxStyle, path: dl.path, side: "new", line: dl.lineNo}
+			rows = append(rows, diffRow{cells: [2]diffCell{oldCell, newCell}})
+			i++
+		case "old":
+			dels := []diffLine{dl}
+			i++
+			for i < len(lines) && lines[i].side == "old" {
+				dels = append(dels, lines[i])
+				i++
+			}
+			adds := []diffLine{}
+			for i < len(lines) && lines[i].side == "new" {
+				adds = append(adds, lines[i])
+				i++
+			}
+			n := len(dels)
+			if len(adds) > n {
+				n = len(adds)
+			}
+			for j := 0; j < n; j++ {
+				row := diffRow{cells: [2]diffCell{emptyOld, emptyNew}}
+				if j < len(dels) {
+					d := dels[j]
+					row.cells[0] = diffCell{raw: d.raw, style: d.style, path: d.path, side: "old", line: d.lineNo}
+				}
+				if j < len(adds) {
+					a := adds[j]
+					row.cells[1] = diffCell{raw: a.raw, style: a.style, path: a.path, side: "new", line: a.lineNo}
+				}
+				rows = append(rows, row)
+			}
+		case "new":
+			adds := []diffLine{dl}
+			i++
+			for i < len(lines) && lines[i].side == "new" {
+				adds = append(adds, lines[i])
+				i++
+			}
+			for _, a := range adds {
+				rows = append(rows, diffRow{cells: [2]diffCell{
+					emptyOld,
+					{raw: a.raw, style: a.style, path: a.path, side: "new", line: a.lineNo},
+				}})
+			}
+		default:
+			i++
+		}
+	}
+	return rows
+}
+
+// injectInlineComments walks the row list and inserts an annotation
+// row (or two, for split) immediately after each row that has a
+// matching inline comment anchor.
+func injectInlineComments(rows []diffRow, comments []api.Comment, split bool, width int) []diffRow {
+	if len(comments) == 0 {
+		return rows
+	}
+	// Index comments by (path, side, line) → []Comment so we can
+	// attach multiple replies to the same anchor.
+	type key struct {
+		path string
+		side string
+		line int
+	}
+	byAnchor := map[key][]api.Comment{}
+	for _, c := range comments {
+		if c.Inline == nil {
+			continue
+		}
+		k := key{c.Inline.Path, c.Inline.Side, c.Inline.Line}
+		byAnchor[k] = append(byAnchor[k], c)
+	}
+	if len(byAnchor) == 0 {
+		return rows
+	}
+	out := make([]diffRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
+		if row.fullWidth {
+			continue
+		}
+		for idx, cell := range row.cells {
+			if !cell.commentable() {
+				continue
+			}
+			cs := byAnchor[key{cell.path, cell.side, cell.line}]
+			for _, c := range cs {
+				out = append(out, diffRow{
+					annotation: true,
+					annoText:   formatInlineAnnotation(c, split, width),
+					annoSide:   idx,
+				})
+			}
+		}
+	}
+	return out
+}
+
+func formatInlineAnnotation(c api.Comment, split bool, _ int) string {
+	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true).Render("💬 " + c.Author + ":")
+	body := strings.TrimSpace(c.Text)
+	if body == "" {
+		body = "(empty)"
+	}
+	// Collapse to a single styled line; long bodies wrap naturally
+	// when the viewport renders. Prefix with bullet so it stands out.
+	first := strings.SplitN(body, "\n", 2)[0]
+	if len(first) > 200 {
+		first = first[:197] + "…"
+	}
+	_ = split
+	return bullet + " " + first
+}
+
+// renderDiffRows produces the final string fed to the viewport.
+// For split rows it formats two columns; for unified one. The cursor
+// row gets a "▶" marker at the start.
+func (m *model) renderDiffRows() string {
 	var b strings.Builder
 	pointer := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("▶ ")
-	for i, dl := range m.diffLines {
+	leftPad := "  "
+
+	width := m.diff.Width
+	if width <= 0 {
+		width = 80
+	}
+	colW := (width - 5) / 2 // 2 for marker, 3 for separator " │ "
+	if colW < 10 {
+		colW = 10
+	}
+
+	for i, row := range m.diffRows {
+		marker := leftPad
 		if i == m.diffCursor {
-			b.WriteString(pointer)
-		} else {
-			b.WriteString("  ")
+			marker = pointer
 		}
-		b.WriteString(dl.styled)
+		switch {
+		case row.annotation:
+			b.WriteString(leftPad)
+			if m.diffSplit {
+				if row.annoSide == 0 {
+					b.WriteString(padOrTruncate(row.annoText, colW))
+					b.WriteString(" │ ")
+					b.WriteString(strings.Repeat(" ", colW))
+				} else {
+					b.WriteString(strings.Repeat(" ", colW))
+					b.WriteString(" │ ")
+					b.WriteString(padOrTruncate(row.annoText, colW))
+				}
+			} else {
+				b.WriteString("    " + row.annoText)
+			}
+		case row.fullWidth:
+			b.WriteString(marker)
+			b.WriteString(row.cells[0].style.Render(row.cells[0].raw))
+		case m.diffSplit:
+			b.WriteString(marker)
+			b.WriteString(renderSplitCell(row.cells[0], colW, i == m.diffCursor && m.diffCursorSide == 0))
+			b.WriteString(" │ ")
+			b.WriteString(renderSplitCell(row.cells[1], colW, i == m.diffCursor && m.diffCursorSide == 1))
+		default:
+			b.WriteString(marker)
+			b.WriteString(row.cells[0].style.Render(row.cells[0].raw))
+		}
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// renderSplitCell renders one cell of a split row, padding/truncating
+// to width. The active-side flag draws an underline so the user can
+// see which column 'c' will target.
+func renderSplitCell(c diffCell, w int, active bool) string {
+	style := c.style.Width(w).MaxWidth(w)
+	if active {
+		style = style.Underline(true)
+	}
+	if c.raw == "" {
+		return strings.Repeat(" ", w)
+	}
+	return style.Render(c.raw)
+}
+
+// padOrTruncate handles plain (non-styled) annotation text without
+// confusing lipgloss with prerendered ANSI.
+func padOrTruncate(s string, w int) string {
+	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(s)
+}
+
+// clampDiffCursor keeps the cursor within bounds after the row list
+// is rebuilt.
+func (m *model) clampDiffCursor() {
+	if len(m.diffRows) == 0 {
+		m.diffCursor = 0
+		return
+	}
+	if m.diffCursor < 0 {
+		m.diffCursor = 0
+	}
+	if m.diffCursor >= len(m.diffRows) {
+		m.diffCursor = len(m.diffRows) - 1
+	}
+}
+
+// activeDiffCell returns the cell the cursor is currently pointing to,
+// honouring the column selection in split mode.
+func (m *model) activeDiffCell() (diffCell, bool) {
+	if m.diffCursor >= len(m.diffRows) {
+		return diffCell{}, false
+	}
+	row := m.diffRows[m.diffCursor]
+	if row.fullWidth || row.annotation {
+		return diffCell{}, false
+	}
+	idx := 0
+	if m.diffSplit {
+		idx = m.diffCursorSide
+	}
+	c := row.cells[idx]
+	if !c.commentable() {
+		// Fall back to the other side if active side is empty (e.g.
+		// pure addition row in split, cursor on old side).
+		other := row.cells[1-idx]
+		if other.commentable() {
+			return other, true
+		}
+	}
+	return c, c.commentable()
 }
 
 // ensureDiffCursorVisible scrolls the viewport if the cursor would

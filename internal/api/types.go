@@ -44,6 +44,18 @@ type Comment struct {
 	Text      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// Inline is set when the comment is anchored to a specific
+	// file/line in the PR diff (vs a general PR-level comment).
+	Inline *CommentInline
+}
+
+// CommentInline describes the file/line/side anchor of an inline review
+// comment, mirroring the InlineCommentInput shape used to create them.
+type CommentInline struct {
+	Path string
+	Line int
+	Side string // "new" (added/RHS) or "old" (removed/LHS)
 }
 
 // Webhook represents a repository webhook subscription.
