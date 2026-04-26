@@ -605,13 +605,14 @@ func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 // response. The endpoint is provided by Bitbucket's bundled "search"
 // plugin (the same one that powers the dashboard's quick-search UI)
 // and is dramatically faster than paginating /rest/api/1.0/repos.
+//
+// Repositories are returned as flat srvRepo objects (NOT wrapped in
+// `{"repository": {...}}` like the audit-style search APIs).
 type srvSearchResponse struct {
 	Repositories struct {
-		Values []struct {
-			Repository srvRepo `json:"repository"`
-		} `json:"values"`
-		IsLastPage bool `json:"isLastPage"`
-		Size       int  `json:"size"`
+		Values     []srvRepo `json:"values"`
+		IsLastPage bool      `json:"isLastPage"`
+		Count      int       `json:"count"`
 	} `json:"repositories"`
 }
 
@@ -656,8 +657,16 @@ func (s *serverService) searchReposViaPlugin(query string, limit int) ([]Repo, b
 		return nil, false
 	}
 	repos := make([]Repo, 0, len(out.Repositories.Values))
-	for _, v := range out.Repositories.Values {
-		repos = append(repos, v.Repository.toRepo())
+	for _, r := range out.Repositories.Values {
+		repo := r.toRepo()
+		// The search-plugin response omits Links, so synthesise the
+		// browse URL from the host root + project/slug so the `o`
+		// (open in browser) action still works on search results.
+		if repo.WebURL == "" && repo.Project != "" && repo.Slug != "" {
+			repo.WebURL = fmt.Sprintf("%s/projects/%s/repos/%s/browse",
+				s.client.HostRoot(), repo.Project, repo.Slug)
+		}
+		repos = append(repos, repo)
 		if len(repos) >= limit {
 			break
 		}

@@ -185,6 +185,11 @@ type homeModel struct {
 	// effectively cancelling stale in-flight requests for free.
 	searchVersion int
 
+	// searchCache memoises results per query for the lifetime of
+	// this home session so re-typing or re-searching the same query
+	// is instant and doesn't re-hit the API.
+	searchCache map[string][]api.Repo
+
 	// restore carries cursor positions / search to re-apply after the
 	// underlying lists have been populated (Init / load callbacks).
 	// Cleared after each field is consumed.
@@ -245,17 +250,18 @@ func newHomeModel(svc api.Service) homeModel {
 	sp.Spinner = spinner.Dot
 
 	m := homeModel{
-		svc:     svc,
-		tab:     tabReviews,
-		keys:    defaultHomeKeys(),
-		help:    help.New(),
-		reviews: rl,
-		favs:    fl,
-		browse:  bl,
-		search:  ti,
-		preview: pv,
-		spinner: sp,
-		loading: true,
+		svc:         svc,
+		tab:         tabReviews,
+		keys:        defaultHomeKeys(),
+		help:        help.New(),
+		reviews:     rl,
+		favs:        fl,
+		browse:      bl,
+		search:      ti,
+		preview:     pv,
+		spinner:     sp,
+		loading:     true,
+		searchCache: map[string][]api.Repo{},
 	}
 	m.refreshFavourites()
 	return m
@@ -328,14 +334,42 @@ func (m homeModel) fetchReviews() tea.Cmd {
 
 // runSearchNow fires a search immediately (used for explicit Enter on
 // the search input). Bumps the version so any in-flight debounced
-// tick is invalidated.
+// tick is invalidated. Returns immediately with cached results if we
+// already searched for this query in this session.
 func (m *homeModel) runSearchNow(q string) tea.Cmd {
 	m.searchVersion++
 	m.browseQ = q
+	if cached, ok := m.searchCache[q]; ok {
+		m.applyCachedResults(cached)
+		return nil
+	}
 	m.loading = true
 	m.searching = true
 	m.browse.SetItems(nil)
 	return tea.Batch(m.spinner.Tick, m.fetchRepos(q))
+}
+
+// applyCachedResults reseats the browse list from a cached slice
+// without going through the API, then loads the README for whichever
+// item happens to be selected.
+func (m *homeModel) applyCachedResults(repos []api.Repo) tea.Cmd {
+	items := make([]list.Item, 0, len(repos))
+	for _, r := range repos {
+		items = append(items, repoBrowseItem{r})
+	}
+	m.browse.SetItems(items)
+	m.loading = false
+	m.searching = false
+	if len(items) == 0 {
+		m.preview.SetContent(homeMuted.Render("No repos found in " + m.browseQ))
+		return nil
+	}
+	m.browse.Select(0)
+	if it, ok := items[0].(repoBrowseItem); ok {
+		m.loading = true
+		return tea.Batch(m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
+	}
+	return nil
 }
 
 // scheduleHotSearch schedules a debounced search 250ms after the last
@@ -436,6 +470,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reposLoadedMsg:
 		m.loading = false
 		m.searching = false
+		// Cache by the query that produced these results so the
+		// next time the user types it (or hits Enter on it) we
+		// don't refetch.
+		m.searchCache[m.browseQ] = msg.repos
 		items := make([]list.Item, 0, len(msg.repos))
 		for _, r := range msg.repos {
 			items = append(items, repoBrowseItem{r})
@@ -487,6 +525,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.browseQ = msg.q
+		// Cache hit — no API round-trip needed.
+		if cached, ok := m.searchCache[msg.q]; ok {
+			return m, m.applyCachedResults(cached)
+		}
 		m.loading = true
 		m.searching = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchRepos(msg.q))
@@ -498,16 +540,30 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// If the search input is focused, route keys there until the
-		// user hits enter or esc. Ctrl-U clears the buffer in place
-		// (vim-style) so users can re-search without manually
-		// backspacing the previous query. Every other keystroke
-		// schedules a debounced "hot search" so results update as
-		// the user types.
+		// If the search input is focused, route most keys there until
+		// the user hits enter or esc. Arrow keys / PgUp / PgDn /
+		// Home / End fall through to the browse list so users can
+		// navigate results without having to blur the input first.
+		// Enter on the search input drills into the highlighted
+		// repo if results are already loaded (no re-search). Ctrl-U
+		// clears the buffer in place so users can re-search without
+		// manually backspacing. Every other keystroke schedules a
+		// debounced "hot search" so results update as the user types.
 		if m.search.Focused() {
 			switch msg.String() {
 			case "enter":
 				q := strings.TrimSpace(m.search.Value())
+				// If we have results and the field still matches
+				// the last executed query, treat Enter as
+				// "open the selected repo" — never re-search.
+				if q == m.browseQ && len(m.browse.Items()) > 0 {
+					m.search.Blur()
+					if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
+						m.next = &HomeAction{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+						return m, tea.Quit
+					}
+					return m, nil
+				}
 				m.search.Blur()
 				if q == "" {
 					return m, nil
@@ -521,6 +577,19 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.browse.SetItems(nil)
 				m.browseQ = ""
 				return m, nil
+			case "up", "down", "pgup", "pgdown", "home", "end":
+				// Navigate the results list while keeping the
+				// input focused so the user can continue typing.
+				var cmd tea.Cmd
+				prev := m.browse.Index()
+				m.browse, cmd = m.browse.Update(msg)
+				if m.browse.Index() != prev {
+					if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
+						m.loading = true
+						return m, tea.Batch(cmd, m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
+					}
+				}
+				return m, cmd
 			}
 			var cmd tea.Cmd
 			m.search, cmd = m.search.Update(msg)
