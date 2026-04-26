@@ -215,10 +215,11 @@ func newAuthCheckCmd() *cobra.Command {
 func checkHost(h config.Host) error {
 	client := api.New("", h)
 
-	// Cloud uses /user; Server uses /users/{slug}.
+	// Cloud: /user. Server: /projects?limit=1 — works with HTTP access
+	// tokens (the user-context endpoints reject project-scoped tokens).
 	endpoint := "user"
 	if h.Type == "server" {
-		endpoint = "users/" + h.Username
+		endpoint = "projects?limit=1"
 	}
 
 	req, err := client.NewRequest("GET", endpoint, nil)
