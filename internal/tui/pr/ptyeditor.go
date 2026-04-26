@@ -16,14 +16,13 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	pty "github.com/aymanbagabas/go-pty"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/creack/pty"
 	"github.com/hinshun/vt10x"
 
 	"github.com/hugs7/bitbucket-cli/internal/config"
@@ -42,8 +41,8 @@ type ptyEditor struct {
 	cols int
 	rows int
 
-	tty  *os.File       // PTY master
-	cmd  *exec.Cmd      // running editor
+	pt   pty.Pty        // pseudo-terminal (Unix or Windows ConPTY)
+	cmd  *pty.Cmd       // running editor process
 	term vt10x.Terminal // virtual terminal consuming PTY output
 
 	// done is closed when the editor process exits so the Update
@@ -112,12 +111,28 @@ func newPTYEditor(req editorRequest, cols, rows int) (*ptyEditor, tea.Cmd, error
 	}
 	tmp := f.Name()
 	if req.header != "" {
-		_, _ = f.WriteString(req.header)
+		if _, werr := f.WriteString(req.header); werr != nil {
+			f.Close()
+			os.Remove(tmp)
+			return nil, nil, fmt.Errorf("write header: %w", werr)
+		}
 	}
 	if req.initial != "" {
-		_, _ = f.WriteString(req.initial)
+		if _, werr := f.WriteString(req.initial); werr != nil {
+			f.Close()
+			os.Remove(tmp)
+			return nil, nil, fmt.Errorf("write initial: %w", werr)
+		}
 	}
-	f.Close()
+	// Sync to flush kernel buffers BEFORE the editor opens the file.
+	// Without this the editor sometimes sees an empty file because
+	// our writes are still in the OS write-back cache when the child
+	// process opens it for reading.
+	_ = f.Sync()
+	if cerr := f.Close(); cerr != nil {
+		os.Remove(tmp)
+		return nil, nil, fmt.Errorf("close temp: %w", cerr)
+	}
 
 	editor := config.Get().EditorCmd()
 	parts := strings.Fields(editor)
@@ -126,15 +141,26 @@ func newPTYEditor(req editorRequest, cols, rows int) (*ptyEditor, tea.Cmd, error
 		return nil, nil, fmt.Errorf("no editor configured")
 	}
 	args := append(parts[1:], tmp)
-	cmd := exec.Command(parts[0], args...)
+
+	pt, err := pty.New()
+	if err != nil {
+		os.Remove(tmp)
+		return nil, nil, fmt.Errorf("open pty: %w", err)
+	}
+	if err := pt.Resize(cols, rows); err != nil {
+		_ = pt.Close()
+		os.Remove(tmp)
+		return nil, nil, fmt.Errorf("resize pty: %w", err)
+	}
+	cmd := pt.Command(parts[0], args...)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 	)
-	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
-	if err != nil {
+	if err := cmd.Start(); err != nil {
+		_ = pt.Close()
 		os.Remove(tmp)
-		return nil, nil, fmt.Errorf("start pty: %w", err)
+		return nil, nil, fmt.Errorf("start editor: %w", err)
 	}
 
 	term := vt10x.New(vt10x.WithSize(cols, rows))
@@ -143,7 +169,7 @@ func newPTYEditor(req editorRequest, cols, rows int) (*ptyEditor, tea.Cmd, error
 		tmpFile: tmp,
 		cols:    cols,
 		rows:    rows,
-		tty:     tty,
+		pt:      pt,
 		cmd:     cmd,
 		term:    term,
 		done:    make(chan struct{}),
@@ -153,7 +179,7 @@ func newPTYEditor(req editorRequest, cols, rows int) (*ptyEditor, tea.Cmd, error
 	// vt10x's state always reflects the editor's screen. vt10x.Parse
 	// blocks per chunk — runs until the PTY is closed (editor exit).
 	go func() {
-		_ = term.Parse(bufio.NewReader(tty))
+		_ = term.Parse(bufio.NewReader(pt))
 	}()
 
 	// Wait for the editor to exit, then signal done so Update can
@@ -212,7 +238,7 @@ func (pe *ptyEditor) Resize(cols, rows int) {
 		rows = 6
 	}
 	pe.cols, pe.rows = cols, rows
-	_ = pty.Setsize(pe.tty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	_ = pe.pt.Resize(cols, rows)
 	pe.term.Resize(cols, rows)
 }
 
@@ -225,8 +251,8 @@ func (pe *ptyEditor) Close() {
 	if pe.cmd != nil && pe.cmd.Process != nil {
 		_ = pe.cmd.Process.Kill()
 	}
-	if pe.tty != nil {
-		_ = pe.tty.Close()
+	if pe.pt != nil {
+		_ = pe.pt.Close()
 	}
 	if pe.tmpFile != "" {
 		_ = os.Remove(pe.tmpFile)
@@ -260,14 +286,14 @@ func (pe *ptyEditor) ReadResult() (string, error) {
 // common special keys (arrows, function keys, ctrl+letters); the
 // default case forwards the key's runes verbatim.
 func (pe *ptyEditor) SendKey(msg tea.KeyMsg) {
-	if pe == nil || pe.tty == nil {
+	if pe == nil || pe.pt == nil {
 		return
 	}
 	bs := keyToBytes(msg)
 	if len(bs) == 0 {
 		return
 	}
-	_, _ = pe.tty.Write(bs)
+	_, _ = pe.pt.Write(bs)
 }
 
 // keyToBytes maps a bubbletea KeyMsg to the raw bytes a terminal
