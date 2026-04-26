@@ -35,6 +35,12 @@ type Service interface {
 
 	ListComments(project, slug string, id int) ([]Comment, error)
 	AddComment(project, slug string, id int, text string) (*Comment, error)
+	EditComment(project, slug string, prID, commentID int, text string) (*Comment, error)
+	DeleteComment(project, slug string, prID, commentID int) error
+	ReplyComment(project, slug string, prID, parentID int, text string) (*Comment, error)
+
+	AddReviewers(project, slug string, prID int, usernames []string) error
+	RemoveReviewers(project, slug string, prID int, usernames []string) error
 
 	ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error)
 }

@@ -45,6 +45,12 @@ type srvRef struct {
 	DisplayID   string `json:"displayId"`
 }
 
+type srvParticipant struct {
+	User     srvUser `json:"user"`
+	Approved bool    `json:"approved"`
+	Status   string  `json:"status"`
+}
+
 type srvPR struct {
 	ID          int     `json:"id"`
 	Title       string  `json:"title"`
@@ -55,6 +61,7 @@ type srvPR struct {
 	FromRef     srvRef  `json:"fromRef"`
 	ToRef       srvRef  `json:"toRef"`
 	Author      struct{ User srvUser } `json:"author"`
+	Reviewers   []srvParticipant `json:"reviewers"`
 	Links       srvLinks `json:"links"`
 }
 
@@ -108,6 +115,14 @@ func (p srvPR) toPR() PullRequest {
 		TargetRef:   p.ToRef.DisplayID,
 		CreatedAt:   time.UnixMilli(p.CreatedDate),
 		UpdatedAt:   time.UnixMilli(p.UpdatedDate),
+	}
+	for _, r := range p.Reviewers {
+		out.Reviewers = append(out.Reviewers, Reviewer{
+			Username:    r.User.Name,
+			DisplayName: r.User.DisplayName,
+			Status:      r.Status,
+			Approved:    r.Approved,
+		})
 	}
 	if len(p.Links.Self) > 0 {
 		out.WebURL = p.Links.Self[0].Href
@@ -342,6 +357,114 @@ func (s *serverService) AddComment(project, slug string, id int, text string) (*
 		CreatedAt: time.UnixMilli(c.CreatedDate),
 		UpdatedAt: time.UnixMilli(c.UpdatedDate),
 	}, nil
+}
+
+// commentVersion fetches the current version of a comment, needed for
+// edit/delete on Bitbucket Server.
+func (s *serverService) commentVersion(project, slug string, prID, commentID int) (int, error) {
+	var raw struct{ Version int `json:"version"` }
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d", project, slug, prID, commentID), &raw); err != nil {
+		return 0, err
+	}
+	return raw.Version, nil
+}
+
+func (s *serverService) EditComment(project, slug string, prID, commentID int, text string) (*Comment, error) {
+	v, err := s.commentVersion(project, slug, prID, commentID)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"version": v, "text": text}
+	var c srvComment
+	if err := s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d", project, slug, prID, commentID), body, &c); err != nil {
+		return nil, err
+	}
+	return &Comment{
+		ID: c.ID, Author: c.Author.DisplayName, Text: c.Text,
+		CreatedAt: time.UnixMilli(c.CreatedDate), UpdatedAt: time.UnixMilli(c.UpdatedDate),
+	}, nil
+}
+
+func (s *serverService) DeleteComment(project, slug string, prID, commentID int) error {
+	v, err := s.commentVersion(project, slug, prID, commentID)
+	if err != nil {
+		return err
+	}
+	return s.client.deleteJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d?version=%d", project, slug, prID, commentID, v))
+}
+
+func (s *serverService) ReplyComment(project, slug string, prID, parentID int, text string) (*Comment, error) {
+	body := map[string]any{
+		"text":   text,
+		"parent": map[string]int{"id": parentID},
+	}
+	var c srvComment
+	if err := s.client.postJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments", project, slug, prID), body, &c); err != nil {
+		return nil, err
+	}
+	return &Comment{
+		ID: c.ID, Author: c.Author.DisplayName, Text: c.Text,
+		CreatedAt: time.UnixMilli(c.CreatedDate), UpdatedAt: time.UnixMilli(c.UpdatedDate),
+	}, nil
+}
+
+// AddReviewers / RemoveReviewers update the PR's reviewers list. Server
+// requires the full set in a PUT against the PR (with version).
+func (s *serverService) updateReviewers(project, slug string, prID int, mutate func([]string) []string) error {
+	pr, err := s.GetPR(project, slug, prID)
+	if err != nil {
+		return err
+	}
+	current := make([]string, 0, len(pr.Reviewers))
+	for _, r := range pr.Reviewers {
+		if r.Username != "" {
+			current = append(current, r.Username)
+		}
+	}
+	updated := mutate(current)
+
+	v, err := s.prVersion(project, slug, prID)
+	if err != nil {
+		return err
+	}
+	reviewers := make([]map[string]any, 0, len(updated))
+	for _, u := range updated {
+		reviewers = append(reviewers, map[string]any{"user": map[string]string{"name": u}})
+	}
+	body := map[string]any{"version": v, "reviewers": reviewers}
+	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, prID), body, nil)
+}
+
+func (s *serverService) AddReviewers(project, slug string, prID int, usernames []string) error {
+	return s.updateReviewers(project, slug, prID, func(cur []string) []string {
+		seen := map[string]bool{}
+		for _, u := range cur {
+			seen[u] = true
+		}
+		for _, u := range usernames {
+			if u != "" && !seen[u] {
+				cur = append(cur, u)
+				seen[u] = true
+			}
+		}
+		return cur
+	})
+}
+
+func (s *serverService) RemoveReviewers(project, slug string, prID int, usernames []string) error {
+	return s.updateReviewers(project, slug, prID, func(cur []string) []string {
+		drop := map[string]bool{}
+		for _, u := range usernames {
+			drop[u] = true
+		}
+		out := cur[:0]
+		for _, u := range cur {
+			if !drop[u] {
+				out = append(out, u)
+			}
+		}
+		return out
+	})
 }
 
 // ListBuildsForRef hits the build-status API. Server gives us builds keyed

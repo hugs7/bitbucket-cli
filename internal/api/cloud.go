@@ -277,6 +277,55 @@ func (c *cloudService) AddComment(workspace, slug string, id int, text string) (
 	}, nil
 }
 
+type cloudCC struct {
+	ID      int    `json:"id"`
+	Content struct{ Raw string `json:"raw"` } `json:"content"`
+	User    clUser `json:"user"`
+	Created string `json:"created_on"`
+	Updated string `json:"updated_on"`
+}
+
+func (cc cloudCC) toComment() Comment {
+	return Comment{
+		ID: cc.ID, Author: cc.User.DisplayName, Text: cc.Content.Raw,
+		CreatedAt: parseTime(cc.Created), UpdatedAt: parseTime(cc.Updated),
+	}
+}
+
+func (c *cloudService) EditComment(workspace, slug string, prID, commentID int, text string) (*Comment, error) {
+	body := map[string]any{"content": map[string]string{"raw": text}}
+	var resp cloudCC
+	if err := c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments/%d", workspace, slug, prID, commentID), body, &resp); err != nil {
+		return nil, err
+	}
+	out := resp.toComment()
+	return &out, nil
+}
+
+func (c *cloudService) DeleteComment(workspace, slug string, prID, commentID int) error {
+	return c.client.deleteJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments/%d", workspace, slug, prID, commentID))
+}
+
+func (c *cloudService) ReplyComment(workspace, slug string, prID, parentID int, text string) (*Comment, error) {
+	body := map[string]any{
+		"content": map[string]string{"raw": text},
+		"parent":  map[string]int{"id": parentID},
+	}
+	var resp cloudCC
+	if err := c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/comments", workspace, slug, prID), body, &resp); err != nil {
+		return nil, err
+	}
+	out := resp.toComment()
+	return &out, nil
+}
+
+func (c *cloudService) AddReviewers(workspace, slug string, prID int, usernames []string) error {
+	return errCloudTodo // Cloud needs UUIDs, not usernames; deferred
+}
+func (c *cloudService) RemoveReviewers(workspace, slug string, prID int, usernames []string) error {
+	return errCloudTodo
+}
+
 func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) ([]Build, error) {
 	if limit <= 0 {
 		limit = 25

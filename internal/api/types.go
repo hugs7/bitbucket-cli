@@ -24,8 +24,17 @@ type PullRequest struct {
 	TargetRef   string
 	WebURL      string
 	Description string
+	Reviewers   []Reviewer
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// Reviewer represents a PR reviewer and their current review status.
+type Reviewer struct {
+	Username    string // login / slug
+	DisplayName string
+	Status      string // APPROVED / UNAPPROVED / NEEDS_WORK
+	Approved    bool
 }
 
 // Comment is a unified PR comment representation.
