@@ -567,6 +567,37 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				}
 				return nil
 			}},
+			paletteItem{label: "Add reviewer", hint: "palette", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					return editInTUI("add-reviewer",
+						fmt.Sprintf("pr-%d-add-reviewer", it.pr.ID), it.pr.ID, 0,
+						"# Enter one or more usernames (Server) or UUIDs/emails\n"+
+							"# (Cloud), separated by space or comma. First non-comment\n"+
+							"# line is used. Save & exit to submit; empty cancels.\n")
+				}
+				return nil
+			}},
+			paletteItem{label: "Remove reviewer", hint: "palette", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					hint := ""
+					for _, r := range it.pr.Reviewers {
+						hint += "# " + r.Username
+						if r.DisplayName != "" && r.DisplayName != r.Username {
+							hint += "  (" + r.DisplayName + ")"
+						}
+						hint += "\n"
+					}
+					if hint == "" {
+						hint = "# (no reviewers on this PR)\n"
+					}
+					return editInTUI("remove-reviewer",
+						fmt.Sprintf("pr-%d-remove-reviewer", it.pr.ID), it.pr.ID, 0,
+						"# Enter one or more usernames/UUIDs to remove,\n"+
+							"# separated by space or comma. Current reviewers:\n"+
+							hint)
+				}
+				return nil
+			}},
 			paletteItem{label: "Refresh PR list", hint: "r", run: func(m *model) tea.Cmd {
 				m.loading = true
 				return tea.Batch(m.spinner.Tick, m.fetchPRs())
@@ -1253,6 +1284,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, err := m.svc.AddComment(m.project, m.slug, prID, text)
 				return err
 			})
+		case "add-reviewer":
+			prID := msg.prID
+			users := splitFirstLineTokens(text)
+			if len(users) == 0 {
+				m.status = "no reviewer username provided"
+				return m, nil
+			}
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("added reviewer(s) %s", strings.Join(users, ", ")), true, func() error {
+				return m.svc.AddReviewers(m.project, m.slug, prID, users)
+			}))
+		case "remove-reviewer":
+			prID := msg.prID
+			users := splitFirstLineTokens(text)
+			if len(users) == 0 {
+				m.status = "no reviewer username provided"
+				return m, nil
+			}
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("removed reviewer(s) %s", strings.Join(users, ", ")), true, func() error {
+				return m.svc.RemoveReviewers(m.project, m.slug, prID, users)
+			}))
 		case "add-inline-comment":
 			path := msg.path
 			line := msg.line
@@ -3402,6 +3455,30 @@ func editInlineInTUI(prID int, path string, lineNo int, side string) tea.Cmd {
 func sanitizeForFilename(s string) string {
 	r := strings.NewReplacer("/", "-", "\\", "-", " ", "_")
 	return r.Replace(s)
+}
+
+// splitFirstLineTokens reads the first non-blank, non-comment line of
+// the editor buffer and returns its whitespace- and comma-separated
+// tokens. Used to parse one or more reviewer usernames from a single
+// editor session.
+func splitFirstLineTokens(s string) []string {
+	for _, line := range strings.Split(s, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "<!--") {
+			continue
+		}
+		fields := strings.FieldsFunc(l, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t'
+		})
+		out := make([]string, 0, len(fields))
+		for _, f := range fields {
+			if f != "" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // (colorizeDiff removed — parseDiff produces both metadata and styled
