@@ -122,6 +122,20 @@ func (k keyMap) viewerHelp() modeKeyMap {
 		full:  [][]key.Binding{{k.Up, k.Down, k.Back, k.Quit}},
 	}
 }
+
+// detailHelp surfaces the same action keys as the list, plus scroll/back.
+// We want users to act on a PR straight from the detail viewport without
+// hopping back to the list first.
+func (k keyMap) detailHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.Diff, k.Comments, k.Approve, k.Merge, k.Back, k.Quit}},
+		full: [][]key.Binding{
+			{k.Up, k.Down, k.Diff, k.Comments, k.Open},
+			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
+			{k.EditDesc, k.Help, k.Back, k.Quit},
+		},
+	}
+}
 func (k keyMap) commentsHelp() modeKeyMap {
 	return modeKeyMap{
 		short: [][]key.Binding{{k.Up, k.Down, k.AddComment, k.ReplyComment, k.EditComment, k.DeleteComment, k.Back, k.Quit}},
@@ -482,6 +496,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.diff, cmd = m.diff.Update(msg)
 			return m, cmd
 		case viewDetail:
+			// Intercept PR action keys so users can act directly from
+			// the detail view (mirroring viewList behaviour) without
+			// going back to the list first. Scroll keys (↑/↓ j/k pgup/
+			// pgdown) don't collide with our action keys, so anything
+			// not handled below falls through to the viewport.
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				id := it.pr.ID
+				switch {
+				case key.Matches(msg, m.keys.Diff):
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.fetchDiff(id))
+				case key.Matches(msg, m.keys.Comments):
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.fetchComments(id))
+				case key.Matches(msg, m.keys.Open):
+					if it.pr.WebURL != "" {
+						_ = openInBrowser(it.pr.WebURL)
+					}
+					return m, nil
+				case key.Matches(msg, m.keys.Approve):
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("approved #%d", id), true, func() error {
+						return m.svc.ApprovePR(m.project, m.slug, id)
+					}))
+				case key.Matches(msg, m.keys.Unapprove):
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("unapproved #%d", id), true, func() error {
+						return m.svc.UnapprovePR(m.project, m.slug, id)
+					}))
+				case key.Matches(msg, m.keys.NeedsWork):
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("#%d needs work", id), true, func() error {
+						return m.svc.NeedsWorkPR(m.project, m.slug, id)
+					}))
+				case key.Matches(msg, m.keys.Merge):
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("merged #%d", id), true, func() error {
+						return m.svc.MergePR(m.project, m.slug, id)
+					}))
+				case key.Matches(msg, m.keys.EditDesc):
+					return m, editInTUI("edit-description",
+						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
+				}
+			}
 			var cmd tea.Cmd
 			m.detail, cmd = m.detail.Update(msg)
 			return m, cmd
@@ -695,8 +753,10 @@ func (m *model) layout() {
 func (m model) helpView() string {
 	var km help.KeyMap
 	switch m.mode {
-	case viewDiff, viewDetail:
+	case viewDiff:
 		km = m.keys.viewerHelp()
+	case viewDetail:
+		km = m.keys.detailHelp()
 	case viewComments:
 		km = m.keys.commentsHelp()
 	case viewConfirmDelete:
