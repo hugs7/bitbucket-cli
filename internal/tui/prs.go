@@ -900,6 +900,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffLoadedMsg:
 		m.loading = false
 		m.diffLines = parseDiff(msg.diff)
+		computeWordHighlights(m.diffLines)
 		m.diffID = msg.id
 		// Pre-fetch comments only the first time we open this PR's
 		// diff (or when the PR id changes); cached results are reused
@@ -2153,6 +2154,170 @@ type diffLine struct {
 	lineNo    int    // file line number on the new side (or sole side)
 	oldNo     int    // for "both" rows, the line on the old side
 	preferOld bool   // for "both" rows, anchor on the old side
+	// highlights are byte ranges within raw that should be painted in
+	// a brighter "word-diff" colour to draw attention to the actual
+	// edited tokens within an otherwise-shaded line.
+	highlights []hlRange
+}
+
+// hlRange is a [start, end) byte span within a diffLine.raw or
+// diffCell.raw used to overlay word-diff highlights.
+type hlRange struct{ start, end int }
+
+// Word-diff overlay colours: brighter shades of the line backgrounds
+// so the changed tokens within an added/removed line read as the
+// "edit" while the surrounding text reads as "context for the edit".
+var (
+	diffAddHL = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("28"))
+	diffDelHL = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("124"))
+)
+
+// tokenizeForDiff splits s into a stream of tokens — runs of word
+// characters and individual non-word characters. Stable byte offsets
+// let us map LCS results back to ranges in the original string.
+func tokenizeForDiff(s string) []string {
+	var out []string
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		isWord := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+		if isWord {
+			j := i + 1
+			for j < len(s) {
+				d := s[j]
+				if !((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z') || (d >= '0' && d <= '9') || d == '_') {
+					break
+				}
+				j++
+			}
+			out = append(out, s[i:j])
+			i = j
+		} else {
+			out = append(out, s[i:i+1])
+			i++
+		}
+	}
+	return out
+}
+
+// wordDiffRanges computes the byte ranges within a and b that differ
+// by tokens (LCS-based). Ignored when either side is empty.
+func wordDiffRanges(a, b string) (aRanges, bRanges []hlRange) {
+	if a == "" || b == "" {
+		return nil, nil
+	}
+	ta := tokenizeForDiff(a)
+	tb := tokenizeForDiff(b)
+	n, m := len(ta), len(tb)
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, m+1)
+	}
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			if ta[i-1] == tb[j-1] {
+				dp[i][j] = dp[i-1][j-1] + 1
+			} else if dp[i-1][j] >= dp[i][j-1] {
+				dp[i][j] = dp[i-1][j]
+			} else {
+				dp[i][j] = dp[i][j-1]
+			}
+		}
+	}
+	sameA := make([]bool, n)
+	sameB := make([]bool, m)
+	i, j := n, m
+	for i > 0 && j > 0 {
+		switch {
+		case ta[i-1] == tb[j-1]:
+			sameA[i-1] = true
+			sameB[j-1] = true
+			i--
+			j--
+		case dp[i-1][j] >= dp[i][j-1]:
+			i--
+		default:
+			j--
+		}
+	}
+	pos := 0
+	for k, t := range ta {
+		if !sameA[k] {
+			aRanges = append(aRanges, hlRange{pos, pos + len(t)})
+		}
+		pos += len(t)
+	}
+	pos = 0
+	for k, t := range tb {
+		if !sameB[k] {
+			bRanges = append(bRanges, hlRange{pos, pos + len(t)})
+		}
+		pos += len(t)
+	}
+	return coalesceHL(aRanges), coalesceHL(bRanges)
+}
+
+func coalesceHL(rs []hlRange) []hlRange {
+	if len(rs) <= 1 {
+		return rs
+	}
+	out := []hlRange{rs[0]}
+	for _, r := range rs[1:] {
+		last := &out[len(out)-1]
+		if r.start <= last.end {
+			if r.end > last.end {
+				last.end = r.end
+			}
+		} else {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// computeWordHighlights walks parsed diff lines, finds runs of "-"
+// followed by "+" (the typical hunk shape), and pair-wise computes
+// word-diff ranges into each line's .highlights field. Ranges include
+// the leading "+"/"-" prefix offset so renderers can apply them
+// directly against raw.
+func computeWordHighlights(lines []diffLine) {
+	i := 0
+	for i < len(lines) {
+		if lines[i].side != "old" {
+			i++
+			continue
+		}
+		dStart := i
+		for i < len(lines) && lines[i].side == "old" {
+			i++
+		}
+		aStart := i
+		for i < len(lines) && lines[i].side == "new" {
+			i++
+		}
+		dels := lines[dStart:aStart]
+		adds := lines[aStart:i]
+		n := len(dels)
+		if len(adds) < n {
+			n = len(adds)
+		}
+		for k := 0; k < n; k++ {
+			oldBody := strings.TrimPrefix(dels[k].raw, "-")
+			newBody := strings.TrimPrefix(adds[k].raw, "+")
+			oR, nR := wordDiffRanges(oldBody, newBody)
+			// Shift back to include the leading "-"/"+" character.
+			for r := range oR {
+				oR[r].start++
+				oR[r].end++
+			}
+			for r := range nR {
+				nR[r].start++
+				nR[r].end++
+			}
+			dels[k].highlights = oR
+			adds[k].highlights = nR
+		}
+	}
 }
 
 func (d diffLine) styled() string { return d.style.Render(d.raw) }
@@ -2254,6 +2419,12 @@ type diffCell struct {
 	path  string
 	side  string
 	line  int
+
+	// Word-diff overlay: highlights are byte ranges within raw and
+	// hlStyle is the style to paint over them. Empty highlights → no
+	// overlay (the cell renders as a single styled run).
+	highlights []hlRange
+	hlStyle    lipgloss.Style
 }
 
 func (c diffCell) commentable() bool { return c.path != "" && c.side != "" && c.line > 0 }
@@ -2361,6 +2532,17 @@ func (m *model) syncTreeCursor() {
 	}
 }
 
+// hlStyleFor maps a diff side to its word-diff overlay style.
+func hlStyleFor(side string) lipgloss.Style {
+	switch side {
+	case "new":
+		return diffAddHL
+	case "old":
+		return diffDelHL
+	}
+	return lipgloss.NewStyle()
+}
+
 func buildUnifiedRows(lines []diffLine) []diffRow {
 	rows := make([]diffRow, 0, len(lines))
 	for _, dl := range lines {
@@ -2368,6 +2550,10 @@ func buildUnifiedRows(lines []diffLine) []diffRow {
 		if dl.commentable() {
 			side, lineNo := inlineSide(dl)
 			c.path, c.side, c.line = dl.path, side, lineNo
+		}
+		if len(dl.highlights) > 0 {
+			c.highlights = dl.highlights
+			c.hlStyle = hlStyleFor(dl.side)
 		}
 		// Header / hunk rows have no side; mark as fullWidth so the
 		// file-tree builder can locate file boundaries (and so future
@@ -2418,11 +2604,19 @@ func buildSplitRows(lines []diffLine) []diffRow {
 				row := diffRow{cells: [2]diffCell{emptyOld, emptyNew}}
 				if j < len(dels) {
 					d := dels[j]
-					row.cells[0] = diffCell{raw: d.raw, style: d.style, path: d.path, side: "old", line: d.lineNo}
+					row.cells[0] = diffCell{
+						raw: d.raw, style: d.style,
+						path: d.path, side: "old", line: d.lineNo,
+						highlights: d.highlights, hlStyle: diffDelHL,
+					}
 				}
 				if j < len(adds) {
 					a := adds[j]
-					row.cells[1] = diffCell{raw: a.raw, style: a.style, path: a.path, side: "new", line: a.lineNo}
+					row.cells[1] = diffCell{
+						raw: a.raw, style: a.style,
+						path: a.path, side: "new", line: a.lineNo,
+						highlights: a.highlights, hlStyle: diffAddHL,
+					}
 				}
 				rows = append(rows, row)
 			}
@@ -2695,7 +2889,7 @@ func (m *model) renderDiffRows() string {
 			if body < 1 {
 				body = 1
 			}
-			b.WriteString(row.cells[0].style.Width(body).MaxWidth(body).Render(row.cells[0].raw))
+			b.WriteString(renderCellWithHL(row.cells[0], body))
 		}
 		b.WriteByte('\n')
 	}
@@ -2706,14 +2900,55 @@ func (m *model) renderDiffRows() string {
 // to width. The active-side flag draws an underline so the user can
 // see which column 'c' will target.
 func renderSplitCell(c diffCell, w int, active bool) string {
-	style := c.style.Width(w).MaxWidth(w)
-	if active {
-		style = style.Underline(true)
-	}
 	if c.raw == "" {
 		return strings.Repeat(" ", w)
 	}
-	return style.Render(c.raw)
+	if active {
+		c.style = c.style.Underline(true)
+		if len(c.highlights) > 0 {
+			c.hlStyle = c.hlStyle.Underline(true)
+		}
+	}
+	return renderCellWithHL(c, w)
+}
+
+// renderCellWithHL renders a diff cell honouring its word-diff
+// highlight ranges. Falls back to the cheap "single styled run with
+// width padding" when there are no highlights or when the line is
+// wider than the column (in which case lipgloss handles truncation
+// for us).
+func renderCellWithHL(c diffCell, w int) string {
+	if len(c.highlights) == 0 || lipgloss.Width(c.raw) > w {
+		return c.style.Width(w).MaxWidth(w).Render(c.raw)
+	}
+	var b strings.Builder
+	cur := 0
+	for _, h := range c.highlights {
+		if h.start < cur {
+			h.start = cur
+		}
+		if h.start > len(c.raw) {
+			break
+		}
+		if h.end > len(c.raw) {
+			h.end = len(c.raw)
+		}
+		if h.start > cur {
+			b.WriteString(c.style.Render(c.raw[cur:h.start]))
+		}
+		if h.end > h.start {
+			b.WriteString(c.hlStyle.Render(c.raw[h.start:h.end]))
+		}
+		cur = h.end
+	}
+	if cur < len(c.raw) {
+		b.WriteString(c.style.Render(c.raw[cur:]))
+	}
+	have := lipgloss.Width(b.String())
+	if w > have {
+		b.WriteString(c.style.Render(strings.Repeat(" ", w-have)))
+	}
+	return b.String()
 }
 
 // truncateForCell trims plain text to fit a column of width w in
