@@ -657,40 +657,58 @@ func (s *serverService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {
 	return out, nil
 }
 
-// GetReadme fetches a README from the repo's default branch.
+// GetReadme fetches a README from the repo's default branch. Tries
+// multiple ref + filename combinations so it works whether the
+// caller knows the default branch and whether the README has the
+// canonical capitalisation.
 func (s *serverService) GetReadme(project, slug string) (string, error) {
-	repo, err := s.GetRepo(project, slug)
-	if err != nil {
-		return "", err
+	// Resolve default branch — first try the repo metadata, then
+	// /branches/default, then common fallback names.
+	refs := []string{}
+	if repo, err := s.GetRepo(project, slug); err == nil && repo.DefaultRef != "" {
+		refs = append(refs, repo.DefaultRef)
 	}
-	ref := repo.DefaultRef
-	if ref == "" {
-		ref = "main"
+	var def struct {
+		ID        string `json:"id"`
+		DisplayID string `json:"displayId"`
 	}
-	for _, name := range []string{"README.md", "README.MD", "Readme.md", "README", "README.txt"} {
-		endpoint := fmt.Sprintf("projects/%s/repos/%s/raw/%s%s",
-			project, slug, name,
-			queryString(map[string]string{"at": ref}),
-		)
-		req, err := s.client.NewRequest("GET", endpoint, nil)
-		if err != nil {
-			continue
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/branches/default", project, slug), &def); err == nil {
+		if def.DisplayID != "" {
+			refs = append(refs, def.DisplayID)
 		}
-		req.Header.Set("Accept", "text/plain")
-		resp, err := s.client.Do(req)
-		if err != nil {
-			continue
+		if def.ID != "" {
+			refs = append(refs, def.ID)
 		}
-		if resp.StatusCode >= 400 {
+	}
+	refs = append(refs, "master", "main", "develop", "trunk")
+
+	names := []string{"README.md", "README.MD", "Readme.md", "readme.md", "README", "README.txt"}
+	for _, ref := range refs {
+		for _, name := range names {
+			endpoint := fmt.Sprintf("projects/%s/repos/%s/raw/%s%s",
+				project, slug, name,
+				queryString(map[string]string{"at": ref}),
+			)
+			req, err := s.client.NewRequest("GET", endpoint, nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("Accept", "text/plain")
+			resp, err := s.client.Do(req)
+			if err != nil {
+				continue
+			}
+			if resp.StatusCode >= 400 {
+				resp.Body.Close()
+				continue
+			}
+			b, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			continue
+			if err != nil {
+				continue
+			}
+			return string(b), nil
 		}
-		b, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		return string(b), nil
 	}
 	return "", nil
 }

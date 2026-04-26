@@ -324,12 +324,14 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		body := strings.TrimSpace(msg.body)
 		if body == "" {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
-				Render(fmt.Sprintf("(no README found in %s/%s — press p to open PRs)", msg.project, msg.slug))
+			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+				Render("(no README found — press p to open this repo's PRs, o to open in browser)")
 		}
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("159")).
 			Render(fmt.Sprintf("📖 %s/%s", msg.project, msg.slug))
-		m.preview.SetContent(header + "\n\n" + body)
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			Render("press p → PRs · o → browser · f → favourite")
+		m.preview.SetContent(header + "\n" + hint + "\n\n" + body)
 		m.preview.GotoTop()
 		return m, nil
 
