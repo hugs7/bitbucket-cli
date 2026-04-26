@@ -732,6 +732,23 @@ func (c *cloudService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {
 	return out, nil
 }
 
+// ListMyAuthoredPRs is a no-op stub on Cloud — there is no equivalent
+// dashboard endpoint and per-repo enumeration would be too slow.
+func (c *cloudService) ListMyAuthoredPRs(limit int) ([]ReviewPR, error) {
+	return []ReviewPR{}, nil
+}
+
+// ListRecentlyClosedPRs is a no-op stub on Cloud (see ListMyAuthoredPRs).
+func (c *cloudService) ListRecentlyClosedPRs(limit int) ([]ReviewPR, error) {
+	return []ReviewPR{}, nil
+}
+
+// ListRecentlyViewedRepos is a no-op stub on Cloud (no equivalent
+// "recently viewed" endpoint exists in REST 2.0).
+func (c *cloudService) ListRecentlyViewedRepos(limit int) ([]Repo, error) {
+	return []Repo{}, nil
+}
+
 func splitFullName(s string) (ws, slug string) {
 	if i := strings.Index(s, "/"); i > 0 {
 		return s[:i], s[i+1:]

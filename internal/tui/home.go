@@ -39,7 +39,7 @@ type HomeAction struct {
 type HomeState struct {
 	Tab       homeTab
 	BrowseQ   string
-	ReviewIdx int
+	DashIdx   int
 	FavIdx    int
 	BrowseIdx int
 }
@@ -70,7 +70,7 @@ func Home(svc api.Service, prev *HomeState) (*HomeAction, *HomeState, error) {
 	state := &HomeState{
 		Tab:       hm.tab,
 		BrowseQ:   hm.browseQ,
-		ReviewIdx: hm.reviews.Index(),
+		DashIdx:   hm.dashCursor,
 		FavIdx:    hm.favs.Index(),
 		BrowseIdx: hm.browse.Index(),
 	}
@@ -79,35 +79,27 @@ func Home(svc api.Service, prev *HomeState) (*HomeAction, *HomeState, error) {
 
 type homeTab int
 
+// tabDashboard hosts the multi-section dashboard view (review queue,
+// your authored PRs, recently closed PRs, recently viewed repos).
+// The other two tabs are simple list-of-repo views.
 const (
-	tabReviews homeTab = iota
+	tabDashboard homeTab = iota
 	tabFavourites
 	tabBrowse
 )
 
-var allTabs = []homeTab{tabReviews, tabFavourites, tabBrowse}
+var allTabs = []homeTab{tabDashboard, tabFavourites, tabBrowse}
 
 func (t homeTab) name() string {
 	switch t {
-	case tabReviews:
-		return "Reviews"
+	case tabDashboard:
+		return "Dashboard"
 	case tabFavourites:
 		return "★ Favourites"
 	case tabBrowse:
 		return "Browse"
 	}
 	return "?"
-}
-
-type reviewItem struct{ r api.ReviewPR }
-
-func (i reviewItem) FilterValue() string { return i.r.PR.Title + " " + i.r.Project + "/" + i.r.Slug }
-func (i reviewItem) Title() string {
-	return fmt.Sprintf("#%d  %s", i.r.PR.ID, i.r.PR.Title)
-}
-func (i reviewItem) Description() string {
-	return fmt.Sprintf("%s/%s · %s · %s",
-		i.r.Project, i.r.Slug, i.r.PR.State, i.r.PR.Author)
 }
 
 type repoBrowseItem struct{ r api.Repo }
@@ -167,12 +159,22 @@ type homeModel struct {
 	width  int
 	height int
 
-	reviews  list.Model
-	favs     list.Model
-	browse   list.Model
-	search   textinput.Model
-	preview  viewport.Model
-	spinner  spinner.Model
+	favs    list.Model
+	browse  list.Model
+	search  textinput.Model
+	preview viewport.Model
+	spinner spinner.Model
+
+	// Dashboard sections — each loaded in parallel from Init.
+	// dashCursor walks the flattened, selectable rows across all
+	// sections (section headers are skipped).
+	reviewPRs    []api.ReviewPR
+	authoredPRs  []api.ReviewPR
+	closedPRs    []api.ReviewPR
+	recentRepos  []api.Repo
+	dashCursor  int
+	prevDashRow string // previous selected row identity, for preview-refresh detection
+
 	loading   bool
 	searching bool // true while a SearchRepos call is in flight
 	status    string
@@ -199,6 +201,9 @@ type homeModel struct {
 }
 
 type reviewsLoadedMsg struct{ prs []api.ReviewPR }
+type authoredLoadedMsg struct{ prs []api.ReviewPR }
+type closedLoadedMsg struct{ prs []api.ReviewPR }
+type recentReposLoadedMsg struct{ repos []api.Repo }
 type reposLoadedMsg struct{ repos []api.Repo }
 type readmeLoadedMsg struct {
 	project, slug string
@@ -209,6 +214,91 @@ type searchTickMsg struct {
 	version int
 }
 type homeErrMsg struct{ err error }
+
+// dashRow describes one selectable row in the dashboard view. PR rows
+// hold their owning repo so the right pane can show PR detail and
+// Enter can drill into the repo's PR TUI.
+type dashRow struct {
+	kind    string // "pr" or "repo"
+	pr      api.ReviewPR
+	repo    api.Repo
+	section string // section title, for context in the preview header
+}
+
+func (r dashRow) project() string {
+	if r.kind == "pr" {
+		return r.pr.Project
+	}
+	return r.repo.Project
+}
+func (r dashRow) slug() string {
+	if r.kind == "pr" {
+		return r.pr.Slug
+	}
+	return r.repo.Slug
+}
+func (r dashRow) identity() string {
+	return r.kind + ":" + r.project() + "/" + r.slug() + ":" + fmt.Sprint(r.pr.PR.ID)
+}
+
+// dashSection is one labelled block in the dashboard.
+type dashSection struct {
+	title string
+	rows  []dashRow
+}
+
+// dashboardSections returns the four sections in the order they're
+// rendered. Sections with no rows still appear so the user can see
+// they were considered (with an empty-state hint).
+func (m *homeModel) dashboardSections() []dashSection {
+	prRows := func(prs []api.ReviewPR, sec string) []dashRow {
+		rows := make([]dashRow, 0, len(prs))
+		for _, p := range prs {
+			rows = append(rows, dashRow{kind: "pr", pr: p, section: sec})
+		}
+		return rows
+	}
+	repoRows := func(repos []api.Repo, sec string) []dashRow {
+		rows := make([]dashRow, 0, len(repos))
+		for _, r := range repos {
+			rows = append(rows, dashRow{kind: "repo", repo: r, section: sec})
+		}
+		return rows
+	}
+	return []dashSection{
+		{title: "Pull requests to review", rows: prRows(m.reviewPRs, "Pull requests to review")},
+		{title: "Your pull requests", rows: prRows(m.authoredPRs, "Your pull requests")},
+		{title: "Recently closed pull requests", rows: prRows(m.closedPRs, "Recently closed pull requests")},
+		{title: "Recently viewed repositories", rows: repoRows(m.recentRepos, "Recently viewed repositories")},
+	}
+}
+
+// dashFlatRows returns every selectable row across all sections in
+// render order. Used by dashCursor arithmetic + preview lookup.
+func (m *homeModel) dashFlatRows() []dashRow {
+	var out []dashRow
+	for _, sec := range m.dashboardSections() {
+		out = append(out, sec.rows...)
+	}
+	return out
+}
+
+// selectedDashRow returns the row currently under the dashboard cursor,
+// or nil if the dashboard is empty.
+func (m *homeModel) selectedDashRow() *dashRow {
+	rows := m.dashFlatRows()
+	if len(rows) == 0 {
+		return nil
+	}
+	if m.dashCursor < 0 {
+		m.dashCursor = 0
+	}
+	if m.dashCursor >= len(rows) {
+		m.dashCursor = len(rows) - 1
+	}
+	r := rows[m.dashCursor]
+	return &r
+}
 
 // accentDelegate returns a default list delegate with the selected-row
 // left accent bar tinted to match the home palette (indigo 57 + cyan
@@ -226,11 +316,6 @@ func accentDelegate() list.DefaultDelegate {
 }
 
 func newHomeModel(svc api.Service) homeModel {
-	rl := list.New(nil, accentDelegate(), 0, 0)
-	rl.Title = "PRs awaiting your review"
-	rl.SetShowHelp(false)
-	rl.SetShowStatusBar(true)
-
 	fl := list.New(nil, accentDelegate(), 0, 0)
 	fl.Title = "Pinned repos"
 	fl.SetShowHelp(false)
@@ -251,10 +336,9 @@ func newHomeModel(svc api.Service) homeModel {
 
 	m := homeModel{
 		svc:         svc,
-		tab:         tabReviews,
+		tab:         tabDashboard,
 		keys:        defaultHomeKeys(),
 		help:        help.New(),
-		reviews:     rl,
 		favs:        fl,
 		browse:      bl,
 		search:      ti,
@@ -273,8 +357,9 @@ func (m *homeModel) applyRestore() {
 	if m.restore == nil {
 		return
 	}
-	if m.restore.ReviewIdx >= 0 && m.restore.ReviewIdx < len(m.reviews.Items()) {
-		m.reviews.Select(m.restore.ReviewIdx)
+	rows := m.dashFlatRows()
+	if m.restore.DashIdx >= 0 && m.restore.DashIdx < len(rows) {
+		m.dashCursor = m.restore.DashIdx
 	}
 	if m.restore.FavIdx >= 0 && m.restore.FavIdx < len(m.favs.Items()) {
 		m.favs.Select(m.restore.FavIdx)
@@ -305,14 +390,19 @@ func (m *homeModel) refreshFavourites() {
 }
 
 func (m homeModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, m.fetchReviews()}
-	// Favourites are already populated synchronously, so we can
-	// reposition that cursor immediately.
+	// Fan out all four dashboard sections in parallel so the page
+	// fills in piecewise as each endpoint replies — no single slow
+	// section blocks the rest.
+	cmds := []tea.Cmd{
+		m.spinner.Tick,
+		m.fetchReviews(),
+		m.fetchAuthored(),
+		m.fetchClosed(),
+		m.fetchRecentRepos(),
+	}
 	if m.restore != nil && m.restore.FavIdx >= 0 && m.restore.FavIdx < len(m.favs.Items()) {
 		m.favs.Select(m.restore.FavIdx)
 	}
-	// If the user had an active search before the round-trip, kick
-	// it off again so the Browse pane is re-populated.
 	if m.browseQ != "" {
 		m.searching = true
 		m.loading = true
@@ -324,11 +414,44 @@ func (m homeModel) Init() tea.Cmd {
 func (m homeModel) fetchReviews() tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
-		prs, err := svc.ListMyReviewPRs(50)
+		prs, err := svc.ListMyReviewPRs(10)
 		if err != nil {
 			return homeErrMsg{err: err}
 		}
 		return reviewsLoadedMsg{prs: prs}
+	}
+}
+
+func (m homeModel) fetchAuthored() tea.Cmd {
+	svc := m.svc
+	return func() tea.Msg {
+		prs, err := svc.ListMyAuthoredPRs(10)
+		if err != nil {
+			return homeErrMsg{err: err}
+		}
+		return authoredLoadedMsg{prs: prs}
+	}
+}
+
+func (m homeModel) fetchClosed() tea.Cmd {
+	svc := m.svc
+	return func() tea.Msg {
+		prs, err := svc.ListRecentlyClosedPRs(10)
+		if err != nil {
+			return homeErrMsg{err: err}
+		}
+		return closedLoadedMsg{prs: prs}
+	}
+}
+
+func (m homeModel) fetchRecentRepos() tea.Cmd {
+	svc := m.svc
+	return func() tea.Msg {
+		repos, err := svc.ListRecentlyViewedRepos(10)
+		if err != nil {
+			return homeErrMsg{err: err}
+		}
+		return recentReposLoadedMsg{repos: repos}
 	}
 }
 
@@ -431,7 +554,6 @@ func (m *homeModel) layout() {
 	listInnerH := contentH - 2
 	browseListInnerH := listInnerH - 3 // search box (border + 1 line)
 
-	m.reviews.SetSize(listInnerW, listInnerH)
 	m.favs.SetSize(listInnerW, listInnerH)
 	m.browse.SetSize(listInnerW, browseListInnerH)
 	m.search.Width = listInnerW - 4
@@ -456,16 +578,23 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reviewsLoadedMsg:
 		m.loading = false
-		items := make([]list.Item, 0, len(msg.prs))
-		for _, p := range msg.prs {
-			items = append(items, reviewItem{p})
-		}
-		m.reviews.SetItems(items)
-		if m.restore != nil && m.restore.ReviewIdx >= 0 && m.restore.ReviewIdx < len(items) {
-			m.reviews.Select(m.restore.ReviewIdx)
-		}
-		m.updatePreviewForReviews()
-		return m, nil
+		m.reviewPRs = msg.prs
+		return m, m.afterDashLoad()
+
+	case authoredLoadedMsg:
+		m.loading = false
+		m.authoredPRs = msg.prs
+		return m, m.afterDashLoad()
+
+	case closedLoadedMsg:
+		m.loading = false
+		m.closedPRs = msg.prs
+		return m, m.afterDashLoad()
+
+	case recentReposLoadedMsg:
+		m.loading = false
+		m.recentRepos = msg.repos
+		return m, m.afterDashLoad()
 
 	case reposLoadedMsg:
 		m.loading = false
@@ -644,9 +773,9 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// repo. README loading happens automatically on j/k
 			// navigation, so Enter doesn't need to (re)trigger it.
 			switch m.tab {
-			case tabReviews:
-				if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
-					m.next = &HomeAction{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+			case tabDashboard:
+				if r := m.selectedDashRow(); r != nil {
+					m.next = &HomeAction{Kind: "prs", Project: r.project(), Slug: r.slug()}
 					return m, tea.Quit
 				}
 			case tabFavourites:
@@ -662,20 +791,23 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.Open):
-			project, _ := m.selectedRepoContext()
-			if project == "" {
-				return m, nil
-			}
-			// Best-effort: construct a probable web URL from the
-			// selected item's repo.
+			// Best-effort: derive a web URL from whichever pane
+			// has the selection.
 			url := ""
-			switch it := m.reviews.SelectedItem().(type) {
-			case reviewItem:
-				url = it.r.PR.WebURL
-			default:
-				_ = it
-			}
-			if url == "" {
+			switch m.tab {
+			case tabDashboard:
+				if r := m.selectedDashRow(); r != nil {
+					if r.kind == "pr" {
+						url = r.pr.PR.WebURL
+					} else {
+						url = r.repo.WebURL
+					}
+				}
+			case tabFavourites:
+				if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+					url = it.r.WebURL
+				}
+			case tabBrowse:
 				if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
 					url = it.r.WebURL
 				}
@@ -688,14 +820,8 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Forward unhandled keys to the focused list / preview.
 		switch m.tab {
-		case tabReviews:
-			var cmd tea.Cmd
-			prevSel := m.reviews.Index()
-			m.reviews, cmd = m.reviews.Update(msg)
-			if m.reviews.Index() != prevSel {
-				m.updatePreviewForReviews()
-			}
-			return m, cmd
+		case tabDashboard:
+			return m, m.dashboardKey(msg)
 		case tabFavourites:
 			var cmd tea.Cmd
 			prevSel := m.favs.Index()
@@ -730,9 +856,9 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *homeModel) selectedRepoContext() (string, string) {
 	switch m.tab {
-	case tabReviews:
-		if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
-			return it.r.Project, it.r.Slug
+	case tabDashboard:
+		if r := m.selectedDashRow(); r != nil {
+			return r.project(), r.slug()
 		}
 	case tabFavourites:
 		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
@@ -756,9 +882,12 @@ func (m *homeModel) selectedRepoName() string {
 		if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
 			return it.r.Name
 		}
-	case tabReviews:
-		if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
-			return it.r.Slug
+	case tabDashboard:
+		if r := m.selectedDashRow(); r != nil {
+			if r.kind == "repo" && r.repo.Name != "" {
+				return r.repo.Name
+			}
+			return r.slug()
 		}
 	}
 	return ""
@@ -768,50 +897,123 @@ func (m *homeModel) selectedRepoName() string {
 // reflect the currently-selected item on the newly-active tab.
 func (m *homeModel) refreshPreviewForTab() tea.Cmd {
 	switch m.tab {
-	case tabReviews:
-		m.updatePreviewForReviews()
+	case tabDashboard:
+		return m.refreshDashboardPreview(true)
 	case tabFavourites:
 		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
 			m.loading = true
 			return tea.Batch(m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
 		}
-		m.preview.SetContent(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-			Render("Pin a repo with f from the Reviews or Browse tab."))
+		m.preview.SetContent(homeMuted.
+			Render("Pin a repo with f from the Dashboard or Browse tab."))
 	case tabBrowse:
 		// Leave browse preview as the most recent README.
 	}
 	return nil
 }
 
-func (m *homeModel) updatePreviewForReviews() {
-	it, ok := m.reviews.SelectedItem().(reviewItem)
-	if !ok {
-		m.preview.SetContent("")
-		return
+// dashboardKey handles j/k/up/down/g/G navigation on the dashboard
+// tab. Movements skip nothing (every row is selectable) but the
+// global cursor wraps at the start/end of the flat row list.
+func (m *homeModel) dashboardKey(msg tea.KeyMsg) tea.Cmd {
+	rows := m.dashFlatRows()
+	if len(rows) == 0 {
+		return nil
 	}
-	p := it.r.PR
+	prev := m.dashCursor
+	switch msg.String() {
+	case "j", "down":
+		m.dashCursor++
+	case "k", "up":
+		m.dashCursor--
+	case "g", "home":
+		m.dashCursor = 0
+	case "G", "end":
+		m.dashCursor = len(rows) - 1
+	case "ctrl+d", "pgdown":
+		m.dashCursor += 5
+	case "ctrl+u", "pgup":
+		m.dashCursor -= 5
+	default:
+		return nil
+	}
+	if m.dashCursor < 0 {
+		m.dashCursor = 0
+	}
+	if m.dashCursor >= len(rows) {
+		m.dashCursor = len(rows) - 1
+	}
+	if m.dashCursor == prev {
+		return nil
+	}
+	return m.refreshDashboardPreview(false)
+}
+
+// afterDashLoad runs after one of the four section endpoints replies.
+// It applies any pending cursor restore and refreshes the right pane
+// so the very first load of the dashboard immediately shows the PR
+// detail or README for the highlighted row.
+func (m *homeModel) afterDashLoad() tea.Cmd {
+	if m.restore != nil && m.restore.DashIdx >= 0 {
+		rows := m.dashFlatRows()
+		if m.restore.DashIdx < len(rows) {
+			m.dashCursor = m.restore.DashIdx
+		}
+	}
+	return m.refreshDashboardPreview(false)
+}
+
+// refreshDashboardPreview updates the right pane based on the row
+// currently under the dashboard cursor. PR rows render PR detail
+// inline; repo rows trigger a README fetch (skipped if the same row
+// was already showing, unless force=true).
+func (m *homeModel) refreshDashboardPreview(force bool) tea.Cmd {
+	r := m.selectedDashRow()
+	if r == nil {
+		m.preview.SetContent(homeMuted.Render(
+			"Loading dashboard… data fills in as each section replies."))
+		m.prevDashRow = ""
+		return nil
+	}
+	id := r.identity()
+	if !force && id == m.prevDashRow {
+		return nil
+	}
+	m.prevDashRow = id
+	if r.kind == "pr" {
+		m.preview.SetContent(m.renderPRDetail(r.pr))
+		m.preview.GotoTop()
+		return nil
+	}
+	// Repo row → README.
+	m.loading = true
+	return tea.Batch(m.spinner.Tick, m.fetchReadme(r.repo.Project, r.repo.Slug))
+}
+
+// renderPRDetail formats a single PR for the right pane (used by the
+// dashboard PR sections).
+func (m *homeModel) renderPRDetail(rp api.ReviewPR) string {
+	p := rp.PR
 	bold := lipgloss.NewStyle().Bold(true)
-	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color("159"))
 	author := lipgloss.NewStyle().Foreground(lipgloss.Color("213"))
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s  %s\n", bold.Render(fmt.Sprintf("#%d", p.ID)), bold.Render(p.Title))
-	fmt.Fprintf(&sb, "%s/%s · %s\n", it.r.Project, it.r.Slug, styleState(p.State))
+	fmt.Fprintf(&sb, "%s/%s · %s\n", rp.Project, rp.Slug, styleState(p.State))
 	fmt.Fprintf(&sb, "%s · %s → %s\n",
 		author.Render(p.Author), branch.Render(p.SourceRef), branch.Render(p.TargetRef))
 	if !p.UpdatedAt.IsZero() {
-		fmt.Fprintln(&sb, muted.Render("updated "+humanTime(p.UpdatedAt)))
+		fmt.Fprintln(&sb, homeMuted.Render("updated "+humanTime(p.UpdatedAt)))
 	}
 	if p.WebURL != "" {
-		fmt.Fprintln(&sb, muted.Render(p.WebURL))
+		fmt.Fprintln(&sb, homeMuted.Render(p.WebURL))
 	}
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
 		sb.WriteString(p.Description)
 	}
-	m.preview.SetContent(sb.String())
-	m.preview.GotoTop()
+	return sb.String()
 }
 
 // homeMuted is the canonical muted-hint colour used across home.
@@ -862,9 +1064,13 @@ func card(borderColor string, w, h int, body string) string {
 func (m *homeModel) readmeHeader(project, slug string) string {
 	title := titleBadge.Render(fmt.Sprintf(" %s/%s ", project, slug))
 	chips := []string{title}
-	// Pull metadata out of whichever list currently holds the repo.
+	// Pull metadata out of whichever pane currently holds the repo.
 	var repo api.Repo
 	switch m.tab {
+	case tabDashboard:
+		if r := m.selectedDashRow(); r != nil && r.kind == "repo" {
+			repo = r.repo
+		}
 	case tabFavourites:
 		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
 			repo = it.r
@@ -948,20 +1154,14 @@ func (m homeModel) View() string {
 	// Compose the inner content of the left pane based on the active tab.
 	var leftInner string
 	switch m.tab {
-	case tabReviews:
-		if m.loading && len(m.reviews.Items()) == 0 {
-			body := homeLoadBanner.Render(m.spinner.View()+" loading reviews…") +
-				"\n\n" + homeMuted.Render("Fetching PRs assigned to you across the host…")
-			leftInner = card("57", listInnerW, listInnerH, body)
-		} else {
-			leftInner = m.reviews.View()
-		}
+	case tabDashboard:
+		leftInner = m.renderDashboard(listInnerW, listInnerH)
 	case tabFavourites:
 		if len(m.favs.Items()) == 0 {
 			leftInner = card("245", listInnerW, listInnerH,
 				homeMuted.Render("No favourites yet.\n\nPress ")+
 					titleChip.Render("f")+
-					homeMuted.Render(" on a repo in Reviews or Browse to pin it."))
+					homeMuted.Render(" on a repo in Dashboard or Browse to pin it."))
 		} else {
 			leftInner = m.favs.View()
 		}
@@ -1065,4 +1265,104 @@ func (m homeModel) renderTabs() string {
 		}
 	}
 	return row + "\n" + ub.String()
+}
+
+// dashboard rendering ---------------------------------------------
+
+var (
+	dashSecHeader = lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color("231")).Background(lipgloss.Color("57")).
+			Padding(0, 1)
+	dashSecCount = lipgloss.NewStyle().Foreground(lipgloss.Color("159"))
+	dashRowSel   = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("231")).Bold(true).
+			Border(lipgloss.Border{Left: "▎"}, false, false, false, true).
+			BorderForeground(lipgloss.Color("213")).
+			PaddingLeft(1)
+	dashRowIdle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			PaddingLeft(2)
+	dashRowMeta = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+)
+
+// renderDashboard renders the four stacked sections inside the left
+// pane. Long dashboards scroll naturally because we only emit the
+// first listInnerH lines (rest is clipped by the bordered pane).
+func (m *homeModel) renderDashboard(innerW, innerH int) string {
+	sections := m.dashboardSections()
+
+	// Show a centred loader card only on the very first paint, before
+	// any of the four endpoints have replied.
+	allEmpty := true
+	for _, s := range sections {
+		if len(s.rows) > 0 {
+			allEmpty = false
+			break
+		}
+	}
+	if allEmpty && m.loading {
+		body := homeLoadBanner.Render(m.spinner.View()+" loading dashboard…") +
+			"\n\n" + homeMuted.Render("Fetching review queue, your PRs, recent activity, recent repos…")
+		return card("57", innerW, innerH, body)
+	}
+
+	// Walk sections, rendering header + up to N rows. Track the
+	// global row index so we can highlight the row under dashCursor.
+	var sb strings.Builder
+	globalIdx := 0
+	for i, sec := range sections {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		count := len(sec.rows)
+		header := dashSecHeader.Render(" "+sec.title+" ") + " " +
+			dashSecCount.Render(fmt.Sprintf("(%d)", count))
+		sb.WriteString(header)
+		sb.WriteString("\n")
+		if count == 0 {
+			sb.WriteString(dashRowMeta.Render("   (empty)"))
+			sb.WriteString("\n")
+			continue
+		}
+		for _, r := range sec.rows {
+			selected := globalIdx == m.dashCursor
+			sb.WriteString(m.renderDashRow(r, selected, innerW))
+			sb.WriteString("\n")
+			globalIdx++
+		}
+	}
+	return sb.String()
+}
+
+// renderDashRow renders a single dashboard row (PR or repo). The
+// selected row gets a left accent bar; idle rows are dim with subtle
+// metadata.
+func (m *homeModel) renderDashRow(r dashRow, selected bool, innerW int) string {
+	var title, meta string
+	if r.kind == "pr" {
+		p := r.pr.PR
+		title = fmt.Sprintf("#%d  %s", p.ID, truncate(p.Title, innerW-12))
+		meta = fmt.Sprintf("%s/%s · %s · %s",
+			r.pr.Project, r.pr.Slug, p.Author, humanTime(p.UpdatedAt))
+	} else {
+		title = fmt.Sprintf("%s/%s", r.repo.Project, r.repo.Slug)
+		desc := r.repo.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		meta = truncate(desc, innerW-6)
+	}
+	if selected {
+		return dashRowSel.Render(title) + "\n" +
+			dashRowMeta.PaddingLeft(3).Render(meta)
+	}
+	return dashRowIdle.Render(title) + "\n" +
+		dashRowMeta.PaddingLeft(3).Render(meta)
+}
+
+func truncate(s string, max int) string {
+	if max < 4 || len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
 }

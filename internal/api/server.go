@@ -741,27 +741,80 @@ func (s *serverService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {
 		"state": "OPEN",
 		"limit": itoa(limit),
 	})
-	// /inbox is hosted at /rest/api/latest, but our base is /rest/api/1.0;
-	// /1.0 also serves /inbox/pull-requests.
-	type srvInboxPR struct {
+	return s.fetchDashboardPRs(endpoint)
+}
+
+// ListMyAuthoredPRs returns open PRs authored by the current user via
+// /dashboard/pull-requests?role=AUTHOR — the same endpoint that
+// powers the dashboard's "Your pull requests" section.
+func (s *serverService) ListMyAuthoredPRs(limit int) ([]ReviewPR, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	endpoint := "dashboard/pull-requests" + queryString(map[string]string{
+		"role":  "AUTHOR",
+		"state": "OPEN",
+		"limit": itoa(limit),
+		"order": "NEWEST",
+	})
+	return s.fetchDashboardPRs(endpoint)
+}
+
+// ListRecentlyClosedPRs returns the user's most recently merged PRs
+// (across all roles) so the home dashboard can show a "what
+// shipped" feed.
+func (s *serverService) ListRecentlyClosedPRs(limit int) ([]ReviewPR, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	endpoint := "dashboard/pull-requests" + queryString(map[string]string{
+		"state": "MERGED",
+		"limit": itoa(limit),
+		"order": "NEWEST",
+	})
+	return s.fetchDashboardPRs(endpoint)
+}
+
+// fetchDashboardPRs is the shared decoder for any dashboard / inbox
+// endpoint that returns PRs with their toRef.repository inlined.
+func (s *serverService) fetchDashboardPRs(endpoint string) ([]ReviewPR, error) {
+	type srvDashPR struct {
 		srvPR
 		ToRef struct {
 			srvRef
 			Repository srvRepo `json:"repository"`
 		} `json:"toRef"`
 	}
-	var page srvPaged[srvInboxPR]
+	var page srvPaged[srvDashPR]
 	if err := s.client.getJSON(endpoint, &page); err != nil {
 		return nil, err
 	}
 	out := make([]ReviewPR, 0, len(page.Values))
 	for _, p := range page.Values {
-		pr := p.srvPR.toPR()
 		out = append(out, ReviewPR{
-			PR:      pr,
+			PR:      p.srvPR.toPR(),
 			Project: p.ToRef.Repository.Project.Key,
 			Slug:    p.ToRef.Repository.Slug,
 		})
+	}
+	return out, nil
+}
+
+// ListRecentlyViewedRepos returns repos the user has opened recently
+// in the Bitbucket UI. Uses /profile/recent/repos which is dramatically
+// faster than scanning the full repo list.
+func (s *serverService) ListRecentlyViewedRepos(limit int) ([]Repo, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	var page srvPaged[srvRepo]
+	endpoint := "profile/recent/repos" + queryString(map[string]string{"limit": itoa(limit)})
+	if err := s.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]Repo, 0, len(page.Values))
+	for _, r := range page.Values {
+		out = append(out, r.toRepo())
 	}
 	return out, nil
 }

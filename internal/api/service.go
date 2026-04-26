@@ -59,6 +59,21 @@ type Service interface {
 	// the inbox endpoint).
 	ListMyReviewPRs(limit int) ([]ReviewPR, error)
 
+	// ListMyAuthoredPRs returns open PRs the current authenticated
+	// user is the author of, newest first. Server uses the
+	// /dashboard/pull-requests endpoint with role=AUTHOR.
+	ListMyAuthoredPRs(limit int) ([]ReviewPR, error)
+
+	// ListRecentlyClosedPRs returns recently merged or declined PRs
+	// the user is involved in, newest first. Useful as a "what
+	// shipped lately" feed on the home dashboard.
+	ListRecentlyClosedPRs(limit int) ([]ReviewPR, error)
+
+	// ListRecentlyViewedRepos returns repos the user opened recently
+	// in the Bitbucket UI (Server: /profile/recent/repos). Cloud has
+	// no equivalent and returns an empty slice.
+	ListRecentlyViewedRepos(limit int) ([]Repo, error)
+
 	// GetReadme returns the rendered README markdown for a repo's
 	// default branch. Returns ("", nil) if no README is found.
 	GetReadme(project, slug string) (string, error)
