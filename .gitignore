@@ -11,6 +11,7 @@ vendor/
 # Editor
 .idea/
 .vscode/
+.VSCodeCounter/
 *.swp
 
 # OS
