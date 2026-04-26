@@ -297,6 +297,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 	cl.SetShowStatusBar(false)
 	cl.SetFilteringEnabled(true)
 
+	cfg := config.Get()
 	return model{
 		svc: svc, project: project, slug: slug,
 		state:          "OPEN",
@@ -308,7 +309,8 @@ func newPRModel(svc api.Service, project, slug string) model {
 		help:           help.New(),
 		keys:           defaultKeys(),
 		loading:        true,
-		diffShowInline: true,
+		diffSplit:      cfg.DiffSplit,
+		diffShowInline: !cfg.DiffHideInline,
 	}
 }
 
@@ -786,6 +788,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffSplit = !m.diffSplit
 				m.rebuildDiffRows()
 				m.ensureDiffCursorVisible()
+				_ = config.SetDiffPrefs(m.diffSplit, m.diffShowInline)
 				if m.diffSplit {
 					m.status = "split view"
 				} else {
@@ -796,6 +799,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffShowInline = !m.diffShowInline
 				m.rebuildDiffRows()
 				m.ensureDiffCursorVisible()
+				_ = config.SetDiffPrefs(m.diffSplit, m.diffShowInline)
 				if m.diffShowInline {
 					m.status = "inline comments shown"
 				} else {

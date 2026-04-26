@@ -28,6 +28,12 @@ type Config struct {
 	DefaultHost string          `yaml:"default_host"`
 	Editor      string          `yaml:"editor,omitempty"` // command to launch text editor (default: $VISUAL/$EDITOR/nano)
 	Hosts       map[string]Host `yaml:"hosts"`
+
+	// Diff TUI preferences (persist across sessions). The "hide
+	// inline" form is inverted so the zero value (false) means "show
+	// comments" — the friendlier default.
+	DiffSplit      bool `yaml:"diff_split,omitempty"`
+	DiffHideInline bool `yaml:"diff_hide_inline,omitempty"`
 }
 
 // Editor returns the user's preferred text editor command.
@@ -113,6 +119,14 @@ func RemoveHost(name string) error {
 			break
 		}
 	}
+	return save()
+}
+
+// SetDiffPrefs persists the diff TUI toggles so they survive between
+// `bb prs` sessions. Best-effort — callers can ignore the error.
+func SetDiffPrefs(split, showInline bool) error {
+	loaded.DiffSplit = split
+	loaded.DiffHideInline = !showInline
 	return save()
 }
 
