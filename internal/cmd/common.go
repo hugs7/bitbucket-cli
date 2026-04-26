@@ -60,6 +60,25 @@ func resolveContext(repoFlag, hostFlag string) (api.Service, string, string, err
 	return svc, project, slug, nil
 }
 
+// defaultService returns a Service for the configured default host
+// without requiring a project / slug context. Used by commands that
+// operate across repos (e.g. the home TUI dashboard).
+func defaultService(hostFlag string) (api.Service, error) {
+	cfg := config.Get()
+	host := hostFlag
+	if host == "" {
+		host = cfg.DefaultHost
+	}
+	if host == "" {
+		return nil, fmt.Errorf("no host configured — run `bb auth login`")
+	}
+	hcfg, ok := cfg.Hosts[host]
+	if !ok {
+		return nil, fmt.Errorf("no auth for host %q — run `bb auth login --host %s`", host, host)
+	}
+	return api.NewService(host, hcfg)
+}
+
 // openInBrowser opens a URL in the user's default browser.
 func openInBrowser(url string) error {
 	var cmd string
