@@ -37,11 +37,13 @@ func NewRootCmd(info BuildInfo) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var state *tui.HomeState
 			for {
-				action, err := tui.Home(svc)
+				action, next, err := tui.Home(svc, state)
 				if err != nil {
 					return err
 				}
+				state = next // remember tab / search / cursors
 				if action == nil {
 					return nil
 				}

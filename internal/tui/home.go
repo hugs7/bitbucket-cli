@@ -32,20 +32,41 @@ type HomeAction struct {
 	Slug    string
 }
 
-// Home launches the dashboard. It returns the next action the caller
-// should run (or nil if the user just quit).
-func Home(svc api.Service) (*HomeAction, error) {
+// HomeState captures the parts of the home model that should survive
+// across a "launch PRs and come back" round-trip, so the user lands
+// back exactly where they were instead of on the first tab.
+type HomeState struct {
+	Tab       homeTab
+	BrowseQ   string
+	ReviewIdx int
+	FavIdx    int
+	BrowseIdx int
+}
+
+// Home launches the dashboard. The optional prev state restores the
+// last tab, search and cursor positions when the user has been
+// bounced through a sub-TUI (PRs) and returned.
+func Home(svc api.Service, prev *HomeState) (*HomeAction, *HomeState, error) {
 	m := newHomeModel(svc)
+	if prev != nil {
+		m.tab = prev.Tab
+		m.browseQ = prev.BrowseQ
+		m.restore = prev
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := p.Run()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	hm := final.(homeModel)
-	if hm.next != nil {
-		return hm.next, nil
+	state := &HomeState{
+		Tab:       hm.tab,
+		BrowseQ:   hm.browseQ,
+		ReviewIdx: hm.reviews.Index(),
+		FavIdx:    hm.favs.Index(),
+		BrowseIdx: hm.browse.Index(),
 	}
-	return nil, nil
+	return hm.next, state, nil
 }
 
 type homeTab int
@@ -149,6 +170,11 @@ type homeModel struct {
 	err      error
 	browseQ  string // last search executed
 
+	// restore carries cursor positions / search to re-apply after the
+	// underlying lists have been populated (Init / load callbacks).
+	// Cleared after each field is consumed.
+	restore *HomeState
+
 	next *HomeAction
 }
 
@@ -201,6 +227,23 @@ func newHomeModel(svc api.Service) homeModel {
 	return m
 }
 
+// applyRestore re-seats list cursors after data has loaded so a
+// returning user lands back where they were.
+func (m *homeModel) applyRestore() {
+	if m.restore == nil {
+		return
+	}
+	if m.restore.ReviewIdx >= 0 && m.restore.ReviewIdx < len(m.reviews.Items()) {
+		m.reviews.Select(m.restore.ReviewIdx)
+	}
+	if m.restore.FavIdx >= 0 && m.restore.FavIdx < len(m.favs.Items()) {
+		m.favs.Select(m.restore.FavIdx)
+	}
+	if m.restore.BrowseIdx >= 0 && m.restore.BrowseIdx < len(m.browse.Items()) {
+		m.browse.Select(m.restore.BrowseIdx)
+	}
+}
+
 // refreshFavourites pulls the persisted favourites list (filtered to
 // the current host) into the favs list model.
 func (m *homeModel) refreshFavourites() {
@@ -222,7 +265,18 @@ func (m *homeModel) refreshFavourites() {
 }
 
 func (m homeModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.fetchReviews())
+	cmds := []tea.Cmd{m.spinner.Tick, m.fetchReviews()}
+	// Favourites are already populated synchronously, so we can
+	// reposition that cursor immediately.
+	if m.restore != nil && m.restore.FavIdx >= 0 && m.restore.FavIdx < len(m.favs.Items()) {
+		m.favs.Select(m.restore.FavIdx)
+	}
+	// If the user had an active search before the round-trip, kick
+	// it off again so the Browse pane is re-populated.
+	if m.browseQ != "" {
+		cmds = append(cmds, m.fetchRepos(m.browseQ))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m homeModel) fetchReviews() tea.Cmd {
@@ -298,6 +352,9 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items = append(items, reviewItem{p})
 		}
 		m.reviews.SetItems(items)
+		if m.restore != nil && m.restore.ReviewIdx >= 0 && m.restore.ReviewIdx < len(items) {
+			m.reviews.Select(m.restore.ReviewIdx)
+		}
 		m.updatePreviewForReviews()
 		return m, nil
 
@@ -308,15 +365,20 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items = append(items, repoBrowseItem{r})
 		}
 		m.browse.SetItems(items)
-		if len(items) > 0 {
-			m.browse.Select(0)
-			if it, ok := items[0].(repoBrowseItem); ok {
-				m.loading = true
-				return m, tea.Batch(m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
-			}
-		} else {
+		if len(items) == 0 {
 			m.preview.SetContent(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
 				Render("No repos found in " + m.browseQ))
+			return m, nil
+		}
+		idx := 0
+		if m.restore != nil && m.restore.BrowseIdx >= 0 && m.restore.BrowseIdx < len(items) {
+			idx = m.restore.BrowseIdx
+			m.restore = nil // consume — only restore once per round-trip
+		}
+		m.browse.Select(idx)
+		if it, ok := items[idx].(repoBrowseItem); ok {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
 		}
 		return m, nil
 
