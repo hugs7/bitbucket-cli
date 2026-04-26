@@ -142,9 +142,9 @@ func (k keyMap) listHelp() modeKeyMap {
 }
 func (k keyMap) viewerHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.TreeFocus, k.NextFile, k.InlineComment, k.ToggleSplit, k.ToggleInline, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.TreeFocus, k.NextFile, k.InlineComment, k.ReplyComment, k.ToggleSplit, k.ToggleInline, k.Back, k.Quit}},
 		full: [][]key.Binding{
-			{k.Up, k.Down, k.InlineComment, k.ToggleSide},
+			{k.Up, k.Down, k.InlineComment, k.ReplyComment, k.ToggleSide},
 			{k.TreeFocus, k.TreeSelect, k.PrevFile, k.NextFile},
 			{k.ToggleSplit, k.ToggleInline},
 			{k.Help, k.Back, k.Quit},
@@ -293,6 +293,11 @@ type model struct {
 	// Vim-style count prefix accumulator (e.g. "15j"). Consumed by the
 	// next motion key and reset.
 	numBuf string
+
+	// zPending is set after the user presses 'z' in diff view; the
+	// next keypress (z/t/b) completes a vim z-motion (center / top /
+	// bottom). Reset on any other key.
+	zPending bool
 
 	// Command palette: a fuzzy-searchable list of context-aware
 	// actions. paletteReturnTo is the mode we came from so esc / enter
@@ -999,6 +1004,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, err := m.svc.ReplyComment(m.project, m.slug, msg.prID, parent, text)
 				return err
 			})
+		case "reply-inline-comment":
+			// Same as reply-comment, but stay in the diff view: post,
+			// then refresh the diff's inline-comment overlay instead
+			// of swapping into the comments list.
+			parent := msg.commentID
+			prID := msg.prID
+			label := fmt.Sprintf("replied to #%d", parent)
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+				if _, err := m.svc.ReplyComment(m.project, m.slug, prID, parent, text); err != nil {
+					return actionDoneMsg{text: label, err: err}
+				}
+				cs, lerr := m.svc.ListComments(m.project, m.slug, prID)
+				if lerr != nil {
+					return actionDoneMsg{text: label + " (overlay reload failed)", err: lerr}
+				}
+				return diffCommentsLoadedMsg{id: prID, comments: cs}
+			})
 		case "edit-comment":
 			cID := msg.commentID
 			return m, m.commentMutation(msg.prID, fmt.Sprintf("edited #%d", cID), func() error {
@@ -1088,6 +1111,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewDiff:
 			s := msg.String()
 			n := len(m.diffRows)
+
+			// Complete a pending vim z-motion (zz / zt / zb).
+			if m.zPending {
+				m.zPending = false
+				m.status = ""
+				switch s {
+				case "z":
+					off := m.diffCursor - m.diff.Height/2
+					if off < 0 {
+						off = 0
+					}
+					m.diff.SetYOffset(off)
+				case "t":
+					m.diff.SetYOffset(m.diffCursor)
+				case "b":
+					off := m.diffCursor - m.diff.Height + 1
+					if off < 0 {
+						off = 0
+					}
+					m.diff.SetYOffset(off)
+				}
+				return m, nil
+			}
 
 			// Vim-style count prefix: digits accumulate into m.numBuf
 			// and the next motion key consumes them. "0" with an empty
@@ -1208,6 +1254,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diff.SetContent(m.renderDiffRows())
 				m.ensureDiffCursorVisible()
 				return m, nil
+			case s == "ctrl+e":
+				// Scroll viewport down one line (cursor follows so it
+				// stays inside the visible window).
+				m.diff.SetYOffset(m.diff.YOffset + count)
+				if m.diffCursor < m.diff.YOffset {
+					m.diffCursor = m.diff.YOffset
+					m.syncTreeCursor()
+					m.diff.SetContent(m.renderDiffRows())
+				}
+				return m, nil
+			case s == "ctrl+y":
+				m.diff.SetYOffset(m.diff.YOffset - count)
+				bottom := m.diff.YOffset + m.diff.Height - 1
+				if m.diffCursor > bottom {
+					m.diffCursor = bottom
+					if m.diffCursor < 0 {
+						m.diffCursor = 0
+					}
+					m.syncTreeCursor()
+					m.diff.SetContent(m.renderDiffRows())
+				}
+				return m, nil
+			case s == "z":
+				// Two-key z-motions: zz = center, zt = cursor to top,
+				// zb = cursor to bottom of the visible viewport. The
+				// next keypress is intercepted by the zPending check
+				// at the top of the diff key handler.
+				m.numBuf = ""
+				m.zPending = true
+				m.status = "z-"
+				return m, nil
+			case s == "H":
+				m.diffCursor = m.diff.YOffset
+				m.syncTreeCursor()
+				m.diff.SetContent(m.renderDiffRows())
+				return m, nil
+			case s == "M":
+				m.diffCursor = m.diff.YOffset + m.diff.Height/2
+				if m.diffCursor >= n {
+					m.diffCursor = n - 1
+				}
+				m.syncTreeCursor()
+				m.diff.SetContent(m.renderDiffRows())
+				return m, nil
+			case s == "L":
+				m.diffCursor = m.diff.YOffset + m.diff.Height - 1
+				if m.diffCursor >= n {
+					m.diffCursor = n - 1
+				}
+				m.syncTreeCursor()
+				m.diff.SetContent(m.renderDiffRows())
+				return m, nil
 			case key.Matches(msg, m.keys.NextFile):
 				idx := -1
 				for i, f := range m.diffFiles {
@@ -1304,6 +1402,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, editInlineInTUI(m.diffID, c.path, c.line, c.side)
+			case key.Matches(msg, m.keys.ReplyComment):
+				c, ok := m.activeDiffCell()
+				if !ok {
+					m.status = "no file/line under cursor"
+					return m, nil
+				}
+				// Reply to the latest comment threaded at this anchor.
+				parent := 0
+				for _, cm := range m.diffComments {
+					if cm.Inline != nil &&
+						cm.Inline.Path == c.path &&
+						cm.Inline.Side == c.side &&
+						cm.Inline.Line == c.line {
+						parent = cm.ID
+					}
+				}
+				if parent == 0 {
+					m.status = "no comment here to reply to — press c to add one"
+					return m, nil
+				}
+				return m, editInTUI("reply-inline-comment",
+					fmt.Sprintf("pr-%d-reply-to-%d", m.diffID, parent),
+					m.diffID, parent, "")
 			}
 			// Anything else (including raw scroll keys we didn't match)
 			// falls through to the viewport for default behaviour.
@@ -1862,29 +1983,38 @@ func styleState(s string) string {
 // Diff styling — package-level so both unified and split renderers
 // share the same colour palette without re-allocating per call.
 var (
-	diffAddStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	diffDelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	diffHunkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	diffMetaStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	diffCtxStyle  = lipgloss.NewStyle()
+	// Bitbucket-style "shading": added lines get a dark-green wash,
+	// removed lines a dark-red wash, context stays neutral. The
+	// foreground colours are picked to stay readable on those
+	// backgrounds in both 256-colour and truecolor terminals.
+	diffAddStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("194")).Background(lipgloss.Color("22"))
+	diffDelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("224")).Background(lipgloss.Color("52"))
+	diffHunkStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("159")).Background(lipgloss.Color("24"))
+	diffMetaStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("54"))
+	diffCtxStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 
-	// Inline-comment annotation styling. Header carries author +
-	// timestamp in bold magenta; body lines are softer and italic so
-	// they read as overlays on top of the diff rather than as code.
-	annoHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	annoBodyStyle   = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("219"))
-	annoGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+	// Inline-comment annotation styling. Comment blocks get a
+	// distinctive purple/indigo wash so they read as overlays
+	// floating on top of the diff. The header line is brighter and
+	// bold so the eye locks onto each new comment quickly.
+	annoHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("57"))
+	annoBodyStyle   = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("254")).Background(lipgloss.Color("237"))
+	annoGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Background(lipgloss.Color("57"))
+	annoBodyGutter  = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Background(lipgloss.Color("237"))
 
 	// Title bar / chip styling — used to give each view a consistent
 	// "header chrome" with a coloured pill, dim separators, and
 	// muted secondary chips for context (mode, file, focus, ×count).
-	titleBarPad   = lipgloss.NewStyle().Padding(0, 1)
-	titleBadge    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12")).Padding(0, 1)
-	titleAccent   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	titleBarPad = lipgloss.NewStyle().Padding(0, 1)
+	// Bright white on deep indigo — high contrast on any theme.
+	// (color "0" + bg "12" rendered as illegible grey-on-blue on many
+	// 256-colour palettes.)
+	titleBadge    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("57")).Padding(0, 1)
+	titleAccent   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("141"))
 	titleSep      = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(" • ")
-	titleChip     = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	titleChipDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	titleChipWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	titleChip     = lipgloss.NewStyle().Foreground(lipgloss.Color("159"))
+	titleChipDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	titleChipWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("221"))
 	statusOK      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	statusErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	statusInfo    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
@@ -2395,44 +2525,58 @@ func (m *model) renderDiffRows() string {
 		if i == m.diffCursor {
 			marker = pointer
 		}
+		// gutterFor returns the styled left bar for an annotation row
+		// — bright slab on header lines, thin bar on body lines, both
+		// painted with the same background as the surrounding text so
+		// the comment block reads as one continuous chip.
+		gutterFor := func(headerLine bool) (string, lipgloss.Style) {
+			if headerLine {
+				return annoGutterStyle.Render("▎ "), annoGutterStyle
+			}
+			return annoBodyGutter.Render("│ "), annoBodyGutter
+		}
 		switch {
 		case row.annotation:
 			b.WriteString(leftPad)
-			glyph := "│ "
-			if row.annoIsHeader {
-				glyph = "▎ "
-			}
-			gutter := annoGutterStyle.Render(glyph)
+			glyph, gStyle := gutterFor(row.annoIsHeader)
 			if m.diffSplit {
 				inner := colW - lipgloss.Width(glyph)
 				if inner < 1 {
 					inner = 1
 				}
 				text := truncateForCell(row.annoText, inner)
-				styled := row.annoStyle.Render(text)
-				pad := inner - lipgloss.Width(text)
-				if pad < 0 {
-					pad = 0
-				}
-				cell := gutter + styled + strings.Repeat(" ", pad)
+				styled := row.annoStyle.Width(inner).MaxWidth(inner).Render(text)
+				cell := glyph + styled
 				blank := strings.Repeat(" ", colW)
 				if row.annoSide == 0 {
 					b.WriteString(cell)
-					b.WriteString(" │ ")
+					b.WriteString(gStyle.Render(" │ "))
 					b.WriteString(blank)
 				} else {
 					b.WriteString(blank)
-					b.WriteString(" │ ")
+					b.WriteString(gStyle.Render(" │ "))
 					b.WriteString(cell)
 				}
 			} else {
-				b.WriteString("    ")
-				b.WriteString(gutter)
-				b.WriteString(row.annoStyle.Render(row.annoText))
+				// Pad the body so the comment background spans the
+				// remaining viewport width, mimicking Bitbucket's
+				// commented-line block.
+				body := width - 2 - 4 - lipgloss.Width(glyph)
+				if body < 1 {
+					body = 1
+				}
+				text := truncateForCell(row.annoText, body)
+				b.WriteString(gStyle.Render("    "))
+				b.WriteString(glyph)
+				b.WriteString(row.annoStyle.Width(body).MaxWidth(body).Render(text))
 			}
 		case row.fullWidth:
 			b.WriteString(marker)
-			b.WriteString(row.cells[0].style.Render(row.cells[0].raw))
+			body := width - 2
+			if body < 1 {
+				body = 1
+			}
+			b.WriteString(row.cells[0].style.Width(body).MaxWidth(body).Render(row.cells[0].raw))
 		case m.diffSplit:
 			b.WriteString(marker)
 			b.WriteString(renderSplitCell(row.cells[0], colW, i == m.diffCursor && m.diffCursorSide == 0))
@@ -2440,7 +2584,11 @@ func (m *model) renderDiffRows() string {
 			b.WriteString(renderSplitCell(row.cells[1], colW, i == m.diffCursor && m.diffCursorSide == 1))
 		default:
 			b.WriteString(marker)
-			b.WriteString(row.cells[0].style.Render(row.cells[0].raw))
+			body := width - 2
+			if body < 1 {
+				body = 1
+			}
+			b.WriteString(row.cells[0].style.Width(body).MaxWidth(body).Render(row.cells[0].raw))
 		}
 		b.WriteByte('\n')
 	}
