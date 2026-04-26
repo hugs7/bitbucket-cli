@@ -504,6 +504,61 @@ func (s *serverService) RemoveReviewers(project, slug string, prID int, username
 	})
 }
 
+// --- Webhooks ---
+
+type srvWebhook struct {
+	ID     int      `json:"id"`
+	Name   string   `json:"name"`
+	URL    string   `json:"url"`
+	Events []string `json:"events"`
+	Active bool     `json:"active"`
+}
+
+func (w srvWebhook) toWebhook() Webhook {
+	return Webhook{
+		ID:          itoa(w.ID),
+		URL:         w.URL,
+		Description: w.Name,
+		Events:      w.Events,
+		Active:      w.Active,
+	}
+}
+
+func (s *serverService) ListWebhooks(project, slug string) ([]Webhook, error) {
+	var page srvPaged[srvWebhook]
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/webhooks", project, slug), &page); err != nil {
+		return nil, err
+	}
+	out := make([]Webhook, 0, len(page.Values))
+	for _, w := range page.Values {
+		out = append(out, w.toWebhook())
+	}
+	return out, nil
+}
+
+func (s *serverService) AddWebhook(project, slug string, in WebhookInput) (*Webhook, error) {
+	name := in.Description
+	if name == "" {
+		name = "bb-webhook"
+	}
+	body := map[string]any{
+		"name":   name,
+		"url":    in.URL,
+		"events": in.Events,
+		"active": in.Active,
+	}
+	var w srvWebhook
+	if err := s.client.postJSON(fmt.Sprintf("projects/%s/repos/%s/webhooks", project, slug), body, &w); err != nil {
+		return nil, err
+	}
+	out := w.toWebhook()
+	return &out, nil
+}
+
+func (s *serverService) DeleteWebhook(project, slug, id string) error {
+	return s.client.deleteJSON(fmt.Sprintf("projects/%s/repos/%s/webhooks/%s", project, slug, id))
+}
+
 // CreateRepo creates a new repository in the given project.
 func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 	scm := in.SCM

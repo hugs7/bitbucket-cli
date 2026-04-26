@@ -20,7 +20,7 @@ func newRepoCmd() *cobra.Command {
 		Aliases: []string{"r"},
 		Short:   "Work with Bitbucket repositories",
 	}
-	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd())
+	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd(), newRepoWebhookCmd())
 	return c
 }
 

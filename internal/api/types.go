@@ -46,6 +46,23 @@ type Comment struct {
 	UpdatedAt time.Time
 }
 
+// Webhook represents a repository webhook subscription.
+type Webhook struct {
+	ID          string
+	URL         string
+	Description string
+	Events      []string
+	Active      bool
+}
+
+// WebhookInput is the payload for creating a new webhook.
+type WebhookInput struct {
+	URL         string
+	Events      []string
+	Active      bool
+	Description string
+}
+
 // Build represents a build/pipeline run associated with a repo or commit.
 type Build struct {
 	ID        string

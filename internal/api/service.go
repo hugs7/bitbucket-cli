@@ -45,6 +45,10 @@ type Service interface {
 
 	CreateRepo(in CreateRepoInput) (*Repo, error)
 
+	ListWebhooks(project, slug string) ([]Webhook, error)
+	AddWebhook(project, slug string, in WebhookInput) (*Webhook, error)
+	DeleteWebhook(project, slug, id string) error
+
 	ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error)
 	TriggerPipeline(project, slug, ref string) (*Build, error)
 	CancelPipeline(project, slug, idOrUUID string) error

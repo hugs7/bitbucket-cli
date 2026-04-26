@@ -33,6 +33,7 @@ type clRepo struct {
 }
 
 type clUser struct {
+	UUID        string `json:"uuid"`
 	DisplayName string `json:"display_name"`
 	Nickname    string `json:"nickname"`
 }
@@ -41,17 +42,26 @@ type clBranch struct {
 	Branch struct{ Name string `json:"name"` } `json:"branch"`
 }
 
+type clParticipant struct {
+	User     clUser `json:"user"`
+	Role     string `json:"role"`
+	Approved bool   `json:"approved"`
+	State    string `json:"state"` // "approved" / "changes_requested" / null
+}
+
 type clPR struct {
-	ID          int      `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"summary"`
-	State       string   `json:"state"`
-	CreatedOn   string   `json:"created_on"`
-	UpdatedOn   string   `json:"updated_on"`
-	Author      clUser   `json:"author"`
-	Source      clBranch `json:"source"`
-	Destination clBranch `json:"destination"`
-	Links       clLinks  `json:"links"`
+	ID           int             `json:"id"`
+	Title        string          `json:"title"`
+	Description  string          `json:"summary"`
+	State        string          `json:"state"`
+	CreatedOn    string          `json:"created_on"`
+	UpdatedOn    string          `json:"updated_on"`
+	Author       clUser          `json:"author"`
+	Source       clBranch        `json:"source"`
+	Destination  clBranch        `json:"destination"`
+	Reviewers    []clUser        `json:"reviewers"`
+	Participants []clParticipant `json:"participants"`
+	Links        clLinks         `json:"links"`
 }
 
 type clPaged[T any] struct {
@@ -103,7 +113,7 @@ func parseTime(s string) time.Time {
 }
 
 func (p clPR) toPR() PullRequest {
-	return PullRequest{
+	out := PullRequest{
 		ID:          p.ID,
 		Title:       p.Title,
 		Description: p.Description,
@@ -115,6 +125,27 @@ func (p clPR) toPR() PullRequest {
 		UpdatedAt:   parseTime(p.UpdatedOn),
 		WebURL:      p.Links.HTML.Href,
 	}
+	// Map participants for approval state when present, else fall back
+	// to the bare reviewers list. Cloud's "Username" identity is the
+	// UUID — that's what subsequent updates need to reference.
+	approval := map[string]clParticipant{}
+	for _, pa := range p.Participants {
+		if pa.Role == "REVIEWER" {
+			approval[pa.User.UUID] = pa
+		}
+	}
+	for _, r := range p.Reviewers {
+		rev := Reviewer{
+			Username:    r.UUID,
+			DisplayName: r.DisplayName,
+		}
+		if pa, ok := approval[r.UUID]; ok {
+			rev.Approved = pa.Approved
+			rev.Status = strings.ToUpper(pa.State)
+		}
+		out.Reviewers = append(out.Reviewers, rev)
+	}
+	return out
 }
 
 func (c *cloudService) GetRepo(workspace, slug string) (*Repo, error) {
@@ -319,11 +350,93 @@ func (c *cloudService) ReplyComment(workspace, slug string, prID, parentID int, 
 	return &out, nil
 }
 
-func (c *cloudService) AddReviewers(workspace, slug string, prID int, usernames []string) error {
-	return errCloudTodo // Cloud needs UUIDs, not usernames; deferred
+// resolveUserUUID maps a Cloud username/nickname to its `{xxx}` UUID,
+// which is what reviewer mutations require. Pass-through if the input
+// already looks like a UUID.
+func (c *cloudService) resolveUserUUID(username string) (string, error) {
+	if strings.HasPrefix(username, "{") && strings.HasSuffix(username, "}") {
+		return username, nil
+	}
+	var u clUser
+	if err := c.client.getJSON(fmt.Sprintf("users/%s", username), &u); err != nil {
+		return "", fmt.Errorf("resolve user %q: %w", username, err)
+	}
+	if u.UUID == "" {
+		return "", fmt.Errorf("user %q has no uuid in response", username)
+	}
+	return u.UUID, nil
 }
+
+// updateReviewers PUTs the full reviewer set against the PR. Cloud is
+// wholesale (like Server) but does not require a version field.
+func (c *cloudService) updateReviewers(workspace, slug string, prID int, mutate func([]string) []string) error {
+	pr, err := c.GetPR(workspace, slug, prID)
+	if err != nil {
+		return err
+	}
+	current := make([]string, 0, len(pr.Reviewers))
+	for _, r := range pr.Reviewers {
+		if r.Username != "" {
+			current = append(current, r.Username) // already UUIDs
+		}
+	}
+	updated := mutate(current)
+	reviewers := make([]map[string]string, 0, len(updated))
+	for _, uuid := range updated {
+		reviewers = append(reviewers, map[string]string{"uuid": uuid})
+	}
+	body := map[string]any{"reviewers": reviewers}
+	return c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d", workspace, slug, prID), body, nil)
+}
+
+func (c *cloudService) AddReviewers(workspace, slug string, prID int, usernames []string) error {
+	uuids := make([]string, 0, len(usernames))
+	for _, u := range usernames {
+		if u == "" {
+			continue
+		}
+		uuid, err := c.resolveUserUUID(u)
+		if err != nil {
+			return err
+		}
+		uuids = append(uuids, uuid)
+	}
+	return c.updateReviewers(workspace, slug, prID, func(cur []string) []string {
+		seen := map[string]bool{}
+		for _, u := range cur {
+			seen[u] = true
+		}
+		for _, u := range uuids {
+			if !seen[u] {
+				cur = append(cur, u)
+				seen[u] = true
+			}
+		}
+		return cur
+	})
+}
+
 func (c *cloudService) RemoveReviewers(workspace, slug string, prID int, usernames []string) error {
-	return errCloudTodo
+	drop := map[string]bool{}
+	for _, u := range usernames {
+		if u == "" {
+			continue
+		}
+		uuid, err := c.resolveUserUUID(u)
+		if err != nil {
+			return err
+		}
+		drop[uuid] = true
+	}
+	return c.updateReviewers(workspace, slug, prID, func(cur []string) []string {
+		out := cur[:0]
+		for _, u := range cur {
+			if !drop[u] {
+				out = append(out, u)
+			}
+		}
+		return out
+	})
 }
 
 // AddInlineComment posts a line-anchored comment.
@@ -392,6 +505,61 @@ func (c *cloudService) PipelineLogs(workspace, slug, idOrUUID string) (string, e
 		b.Write(data)
 	}
 	return b.String(), nil
+}
+
+// --- Webhooks ---
+
+type clWebhook struct {
+	UUID        string   `json:"uuid"`
+	Description string   `json:"description"`
+	URL         string   `json:"url"`
+	Events      []string `json:"events"`
+	Active      bool     `json:"active"`
+}
+
+func (w clWebhook) toWebhook() Webhook {
+	return Webhook{
+		ID:          w.UUID,
+		URL:         w.URL,
+		Description: w.Description,
+		Events:      w.Events,
+		Active:      w.Active,
+	}
+}
+
+func (c *cloudService) ListWebhooks(workspace, slug string) ([]Webhook, error) {
+	var page clPaged[clWebhook]
+	if err := c.client.getJSON(fmt.Sprintf("repositories/%s/%s/hooks", workspace, slug), &page); err != nil {
+		return nil, err
+	}
+	out := make([]Webhook, 0, len(page.Values))
+	for _, w := range page.Values {
+		out = append(out, w.toWebhook())
+	}
+	return out, nil
+}
+
+func (c *cloudService) AddWebhook(workspace, slug string, in WebhookInput) (*Webhook, error) {
+	desc := in.Description
+	if desc == "" {
+		desc = "bb-webhook"
+	}
+	body := map[string]any{
+		"description": desc,
+		"url":         in.URL,
+		"events":      in.Events,
+		"active":      in.Active,
+	}
+	var w clWebhook
+	if err := c.client.postJSON(fmt.Sprintf("repositories/%s/%s/hooks", workspace, slug), body, &w); err != nil {
+		return nil, err
+	}
+	out := w.toWebhook()
+	return &out, nil
+}
+
+func (c *cloudService) DeleteWebhook(workspace, slug, id string) error {
+	return c.client.deleteJSON(fmt.Sprintf("repositories/%s/%s/hooks/%s", workspace, slug, id))
 }
 
 func (c *cloudService) CreateRepo(in CreateRepoInput) (*Repo, error) {
