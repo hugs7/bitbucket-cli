@@ -601,19 +601,74 @@ func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 	return &out, nil
 }
 
+// srvSearchResponse models the relevant slice of a /rest/search/latest/search
+// response. The endpoint is provided by Bitbucket's bundled "search"
+// plugin (the same one that powers the dashboard's quick-search UI)
+// and is dramatically faster than paginating /rest/api/1.0/repos.
+type srvSearchResponse struct {
+	Repositories struct {
+		Values []struct {
+			Repository srvRepo `json:"repository"`
+		} `json:"values"`
+		IsLastPage bool `json:"isLastPage"`
+		Size       int  `json:"size"`
+	} `json:"repositories"`
+}
+
 // SearchRepos searches across projects on Bitbucket Server.
 //
-// Bitbucket Server's `name=` parameter is a case-insensitive prefix
-// match, so a query like "vite" will miss "westpac-viteframework-…".
-// We always combine prefix-matches (cheap, surfaced first) with a
-// paginated client-side substring scan so users get both behaviours.
-// The page cap keeps this bounded on large instances.
+// Strategy:
+//  1. POST to /rest/search/latest/search — the same endpoint the
+//     dashboard uses. It does fuzzy / substring matching server-side
+//     and returns in well under a second even on large instances.
+//  2. If the search plugin isn't available (older Server installs),
+//     fall back to the slow paginated /repos scan with a client-side
+//     substring filter so behaviour is still correct.
+//
+// An empty query falls straight to the legacy listing path because
+// the search endpoint requires a non-empty query.
 func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	q := strings.ToLower(strings.TrimSpace(query))
+	q := strings.TrimSpace(query)
 
+	if q != "" {
+		if repos, ok := s.searchReposViaPlugin(q, limit); ok {
+			return repos, nil
+		}
+	}
+	return s.searchReposViaScan(q, limit)
+}
+
+// searchReposViaPlugin calls the dashboard search endpoint. Returns
+// (repos, true) on success or (nil, false) if the endpoint is
+// unavailable (404, plugin disabled, etc) so the caller can fall back.
+func (s *serverService) searchReposViaPlugin(query string, limit int) ([]Repo, bool) {
+	endpoint := s.client.HostRoot() + "/rest/search/latest/search"
+	body := map[string]any{
+		"query":    query,
+		"entities": map[string]any{"repositories": map[string]any{}},
+		"limits":   map[string]any{"primary": limit},
+	}
+	var out srvSearchResponse
+	if err := s.client.postJSON(endpoint, body, &out); err != nil {
+		return nil, false
+	}
+	repos := make([]Repo, 0, len(out.Repositories.Values))
+	for _, v := range out.Repositories.Values {
+		repos = append(repos, v.Repository.toRepo())
+		if len(repos) >= limit {
+			break
+		}
+	}
+	return repos, true
+}
+
+// searchReposViaScan is the legacy fallback: prefix-match via /repos?name=
+// then a paginated substring sweep. Bounded by maxPages × pageSize.
+func (s *serverService) searchReposViaScan(query string, limit int) ([]Repo, error) {
+	q := strings.ToLower(query)
 	out := []Repo{}
 	seen := map[string]bool{}
 	add := func(r Repo) bool {
@@ -626,9 +681,6 @@ func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 		return len(out) >= limit
 	}
 
-	// 1) Cheap prefix-match query first — these are surfaced at the
-	// top of the result list because they're usually what the user
-	// meant when they typed an exact stem.
 	if q != "" {
 		var page srvPaged[srvRepo]
 		params := map[string]string{"limit": itoa(limit), "name": query}
@@ -641,10 +693,6 @@ func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 		}
 	}
 
-	// 2) Substring fallback: page through the full repo list and
-	// keep anything containing q anywhere in slug / name / project.
-	// pageSize is well below most Server installs' max-limit cap of
-	// 1000; maxPages × pageSize = 50 000 covers very large estates.
 	const pageSize = 500
 	const maxPages = 100
 	start := 0

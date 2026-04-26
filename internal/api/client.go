@@ -38,6 +38,17 @@ func (c *Client) baseURL() string {
 	return "https://api.bitbucket.org/2.0"
 }
 
+// HostRoot returns the scheme+host portion of the configured API base
+// (everything before "/rest/"). Useful for building URLs against
+// sibling REST plugins like /rest/search/latest/.
+func (c *Client) HostRoot() string {
+	base := c.baseURL()
+	if i := strings.Index(base, "/rest/"); i >= 0 {
+		return base[:i]
+	}
+	return base
+}
+
 // NewRequest builds an authenticated request. endpoint may be a relative
 // path or a full URL.
 func (c *Client) NewRequest(method, endpoint string, body io.Reader) (*http.Request, error) {
