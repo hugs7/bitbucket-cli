@@ -414,11 +414,20 @@ func buildPaletteItems(mode viewMode) []list.Item {
 }
 
 // openPalette captures the current mode, populates the palette with
-// context-aware items and switches into viewPalette.
-func (m *model) openPalette() {
+// context-aware items and switches into viewPalette. Returns a Cmd
+// that focuses the input so the user can type immediately.
+func (m *model) openPalette() tea.Cmd {
 	m.paletteReturnTo = m.mode
-	m.palette.SetItems(buildPaletteItems(m.paletteReturnTo))
-	m.palette.ResetFilter()
-	m.palette.SetSize(m.width, m.height-2)
+	// buildPaletteItems returns []list.Item; unwrap to []paletteItem
+	// since the new widget owns its own filtering / cursor state.
+	raw := buildPaletteItems(m.paletteReturnTo)
+	items := make([]paletteItem, 0, len(raw))
+	for _, it := range raw {
+		if pi, ok := it.(paletteItem); ok {
+			items = append(items, pi)
+		}
+	}
+	m.palette.SetItems(items)
 	m.mode = viewPalette
+	return m.palette.Focus()
 }

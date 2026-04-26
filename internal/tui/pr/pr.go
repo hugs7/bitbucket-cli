@@ -151,8 +151,9 @@ type model struct {
 
 	// Command palette: a fuzzy-searchable list of context-aware
 	// actions. paletteReturnTo is the mode we came from so esc / enter
-	// know where to drop back to.
-	palette         list.Model
+	// know where to drop back to. The widget renders as a centred
+	// overlay card on top of the underlying view.
+	palette         paletteWidget
 	paletteReturnTo viewMode
 
 	// inline / PIP editor state. editor holds the textarea bubble
@@ -251,14 +252,6 @@ func newPRModel(svc api.Service, project, slug string) model {
 	cl.SetShowStatusBar(false)
 	cl.SetFilteringEnabled(true)
 
-	pdel := list.NewDefaultDelegate()
-	pl := list.New(nil, pdel, 0, 0)
-	pl.Title = "Command palette"
-	pl.SetShowStatusBar(false)
-	pl.SetFilteringEnabled(true)
-	pl.SetShowHelp(false)
-	pl.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-
 	sdel := list.NewDefaultDelegate()
 	sl := list.New(nil, sdel, 0, 0)
 	sl.Title = "Settings"
@@ -275,7 +268,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		detail:         viewport.New(0, 0),
 		diff:           viewport.New(0, 0),
 		comments:       cl,
-		palette:        pl,
+		palette:        newPaletteWidget(),
 		settings:       sl,
 		spinner:        sp,
 		help:           help.New(),
@@ -498,8 +491,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.comments, cmd = m.comments.Update(msg)
 			return m, cmd
 		case viewPalette:
-			var cmd tea.Cmd
-			m.palette, cmd = m.palette.Update(msg)
+			cmd := m.palette.Update(msg)
 			return m, cmd
 		}
 		return m, nil
@@ -823,23 +815,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 
-		// Palette mode owns the keymap entirely while open.
+		// Palette mode owns the keymap entirely while open. Esc
+		// closes; arrows navigate; enter runs the highlighted item.
+		// Every other key flows into the textinput so typing
+		// immediately filters (no need to press '/' first).
 		if m.mode == viewPalette {
-			switch {
-			case key.Matches(msg, m.keys.Quit):
+			switch msg.String() {
+			case "ctrl+c":
 				return m, tea.Quit
-			case key.Matches(msg, m.keys.Back):
+			case "esc":
 				m.mode = m.paletteReturnTo
 				return m, nil
-			case msg.String() == "enter":
-				if it, ok := m.palette.SelectedItem().(paletteItem); ok {
+			case "enter":
+				if it, ok := m.palette.SelectedItem(); ok {
 					m.mode = m.paletteReturnTo
 					return m, it.run(&m)
 				}
 				return m, nil
+			case "up", "ctrl+p":
+				m.palette.MoveCursor(-1)
+				return m, nil
+			case "down", "ctrl+n":
+				m.palette.MoveCursor(+1)
+				return m, nil
+			case "pgup":
+				m.palette.MoveCursor(-10)
+				return m, nil
+			case "pgdown":
+				m.palette.MoveCursor(+10)
+				return m, nil
 			}
-			var cmd tea.Cmd
-			m.palette, cmd = m.palette.Update(msg)
+			cmd := m.palette.Update(msg)
 			return m, cmd
 		}
 
@@ -899,8 +905,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// trigger when the user is filtering a list (see top-of
 			// block check). Skip in viewDiff if a count is being typed
 			// (rare; keep simple by checking numBuf).
-			m.openPalette()
-			return m, nil
+			return m, m.openPalette()
 		case key.Matches(msg, m.keys.Back):
 			// Esc inside the diff file-tree returns focus to the diff
 			// AND restores the cursor to where it was when the user

@@ -45,9 +45,18 @@ func (m model) View() string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("error: "+m.err.Error()) +
 			"\n\npress q to quit"
 	}
+	body := m.renderForMode(m.mode)
+	footer := m.helpView()
+	statusLine := renderStatusLine(m.loading, m.spinner.View(), m.status)
+	return body + "\n" + joinFooter(statusLine, footer)
+}
 
+// renderForMode produces the body string for a given mode, used both
+// by View directly and by the palette overlay (which needs to draw
+// the underlying view as its background).
+func (m model) renderForMode(mode viewMode) string {
 	var body string
-	switch m.mode {
+	switch mode {
 	case viewDiff:
 		mode := theme.TitleChip.Render("unified")
 		if m.diffSplit {
@@ -104,10 +113,12 @@ func (m model) View() string {
 			Padding(0, 2)
 		body = "\n  " + warn.Render(fmt.Sprintf("Decline PR #%d?  [y/n]", m.pendingDeclinePRID))
 	case viewPalette:
-		header := titleBar("COMMAND PALETTE",
-			theme.TitleChipDim.Render("type to filter"),
-			theme.TitleChipDim.Render("enter runs · esc closes"))
-		body = header + "\n" + m.palette.View()
+		// Render whatever view we came from as the background, then
+		// overlay the palette card on top — gives an "Amp-style"
+		// floating modal feel without losing context.
+		bg := m.renderForMode(m.paletteReturnTo)
+		card := m.palette.View(m.width, m.height-2)
+		body = placeOverlay(bg, card, -1)
 	case viewSettings:
 		header := titleBar("SETTINGS",
 			theme.TitleChipDim.Render("persisted to ~/.config/bb/config.yml"),
@@ -126,10 +137,7 @@ func (m model) View() string {
 		right := lipgloss.NewStyle().Padding(0, 1).Render(m.detail.View())
 		body = header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
-
-	footer := m.helpView()
-	statusLine := renderStatusLine(m.loading, m.spinner.View(), m.status)
-	return body + "\n" + joinFooter(statusLine, footer)
+	return body
 }
 
 // ---------- helpers ----------
