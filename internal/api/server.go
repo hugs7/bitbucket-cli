@@ -386,7 +386,8 @@ func (s *serverService) AddComment(project, slug string, id int, text string) (*
 
 // AddInlineComment posts a comment anchored to a file + line in the diff.
 // On Server: lineType / fileType encode whether we're commenting on the
-// added (RHS) or removed (LHS) side of the diff.
+// added (RHS) or removed (LHS) side of the diff. Line==0 means a
+// file-level comment (path-only anchor).
 func (s *serverService) AddInlineComment(project, slug string, prID int, in InlineCommentInput) (*Comment, error) {
 	side := strings.ToLower(in.Side)
 	if side == "" {
@@ -396,15 +397,18 @@ func (s *serverService) AddInlineComment(project, slug string, prID int, in Inli
 	if side == "old" {
 		lineType, fileType = "REMOVED", "FROM"
 	}
+	anchor := map[string]any{
+		"path":     in.Path,
+		"fileType": fileType,
+		"diffType": "EFFECTIVE",
+	}
+	if in.Line > 0 {
+		anchor["line"] = in.Line
+		anchor["lineType"] = lineType
+	}
 	body := map[string]any{
-		"text": in.Text,
-		"anchor": map[string]any{
-			"line":     in.Line,
-			"lineType": lineType,
-			"fileType": fileType,
-			"path":     in.Path,
-			"diffType": "EFFECTIVE",
-		},
+		"text":   in.Text,
+		"anchor": anchor,
 	}
 	var c srvComment
 	if err := s.client.postJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments", project, slug, prID), body, &c); err != nil {
@@ -414,6 +418,26 @@ func (s *serverService) AddInlineComment(project, slug string, prID int, in Inli
 		ID: c.ID, Author: c.Author.DisplayName, Text: c.Text,
 		CreatedAt: time.UnixMilli(c.CreatedDate), UpdatedAt: time.UnixMilli(c.UpdatedDate),
 	}, nil
+}
+
+// AddReaction adds an emoji reaction to a comment. Bitbucket Server
+// (DC 7.x+) accepts a PUT to /comments/{id}/reactions/{emoji} where
+// emoji is a short name like "thumbsup".
+func (s *serverService) AddReaction(project, slug string, prID, commentID int, emoji string) error {
+	if emoji == "" {
+		emoji = "thumbsup"
+	}
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d/reactions/%s",
+		project, slug, prID, commentID, emoji)
+	req, err := s.client.NewRequest("PUT", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	return decode(resp, nil)
 }
 
 // PipelineLogs is not supported on Server (no native pipelines product).

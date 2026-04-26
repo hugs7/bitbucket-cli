@@ -44,6 +44,11 @@ type Service interface {
 	DeleteComment(project, slug string, prID, commentID int) error
 	ReplyComment(project, slug string, prID, parentID int, text string) (*Comment, error)
 
+	// AddReaction adds an emoji reaction to a comment. Bitbucket Server
+	// supports reactions natively (since DC 7.x); Bitbucket Cloud does
+	// not. The emoji parameter is a short name like "thumbsup".
+	AddReaction(project, slug string, prID, commentID int, emoji string) error
+
 	AddReviewers(project, slug string, prID int, usernames []string) error
 	RemoveReviewers(project, slug string, prID int, usernames []string) error
 
@@ -99,6 +104,8 @@ type ReviewPR struct {
 // InlineCommentInput describes a file/line-anchored review comment.
 //
 // Side is "new" (added side / RHS, default) or "old" (removed side / LHS).
+// If Line == 0 the comment is anchored to the whole file (path-only),
+// not a specific line.
 type InlineCommentInput struct {
 	Text string
 	Path string

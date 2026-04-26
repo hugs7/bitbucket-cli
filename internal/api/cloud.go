@@ -292,7 +292,8 @@ func (c *cloudService) ListComments(workspace, slug string, id int) ([]Comment, 
 			CreatedAt: parseTime(x.Created), UpdatedAt: parseTime(x.Updated),
 		}
 		if x.Inline != nil && x.Inline.Path != "" {
-			// Cloud sets either `to` (new side) or `from` (old side).
+			// Cloud sets either `to` (new side), `from` (old side),
+			// or neither (file-level comment, Line stays 0).
 			ic := &CommentInline{Path: x.Inline.Path, Side: "new"}
 			switch {
 			case x.Inline.To != nil:
@@ -302,9 +303,7 @@ func (c *cloudService) ListComments(workspace, slug string, id int) ([]Comment, 
 				ic.Line = *x.Inline.From
 				ic.Side = "old"
 			}
-			if ic.Line > 0 {
-				comment.Inline = ic
-			}
+			comment.Inline = ic
 		}
 		out = append(out, comment)
 	}
@@ -462,17 +461,20 @@ func (c *cloudService) RemoveReviewers(workspace, slug string, prID int, usernam
 }
 
 // AddInlineComment posts a line-anchored comment.
-// Cloud uses inline.to (line on new side) or inline.from (line on old side).
+// Cloud uses inline.to (line on new side) or inline.from (line on old
+// side). When in.Line is 0 the comment is file-level (path-only).
 func (c *cloudService) AddInlineComment(workspace, slug string, prID int, in InlineCommentInput) (*Comment, error) {
 	side := strings.ToLower(in.Side)
 	if side == "" {
 		side = "new"
 	}
 	inline := map[string]any{"path": in.Path}
-	if side == "old" {
-		inline["from"] = in.Line
-	} else {
-		inline["to"] = in.Line
+	if in.Line > 0 {
+		if side == "old" {
+			inline["from"] = in.Line
+		} else {
+			inline["to"] = in.Line
+		}
 	}
 	body := map[string]any{
 		"content": map[string]string{"raw": in.Text},
@@ -484,6 +486,12 @@ func (c *cloudService) AddInlineComment(workspace, slug string, prID int, in Inl
 	}
 	out := resp.toComment()
 	return &out, nil
+}
+
+// AddReaction is not supported on Bitbucket Cloud (no public REST
+// endpoint for comment reactions exists).
+func (c *cloudService) AddReaction(workspace, slug string, prID, commentID int, emoji string) error {
+	return fmt.Errorf("comment reactions are not supported on Bitbucket Cloud")
 }
 
 // PipelineLogs concatenates the logs of all steps in a pipeline run.
