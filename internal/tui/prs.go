@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,9 @@ type keyMap struct {
 
 	// comments-mode actions
 	EditComment, DeleteComment, ReplyComment, ConfirmYes, ConfirmNo key.Binding
+
+	// diff-mode actions
+	InlineComment, ToggleSide key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -87,6 +91,9 @@ func defaultKeys() keyMap {
 		ReplyComment:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
 		ConfirmYes:    key.NewBinding(key.WithKeys("y", "Y"), key.WithHelp("y", "yes")),
 		ConfirmNo:     key.NewBinding(key.WithKeys("n", "N"), key.WithHelp("n", "no")),
+
+		InlineComment: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comment line")),
+		ToggleSide:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle side (context lines)")),
 	}
 }
 
@@ -118,8 +125,11 @@ func (k keyMap) listHelp() modeKeyMap {
 }
 func (k keyMap) viewerHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Back, k.Quit}},
-		full:  [][]key.Binding{{k.Up, k.Down, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.InlineComment, k.ToggleSide, k.Back, k.Quit}},
+		full: [][]key.Binding{
+			{k.Up, k.Down, k.InlineComment, k.ToggleSide},
+			{k.Help, k.Back, k.Quit},
+		},
 	}
 }
 
@@ -179,11 +189,16 @@ type actionDoneMsg struct {
 	reload bool
 }
 type editorResultMsg struct {
-	purpose   string // "edit-description" | "add-comment" | "reply-comment" | "edit-comment"
+	purpose   string // "edit-description" | "add-comment" | "reply-comment" | "edit-comment" | "add-inline-comment"
 	prID      int
 	commentID int // for reply-comment (parent) and edit-comment
 	text      string
 	err       error
+
+	// inline-comment context (only set for "add-inline-comment")
+	path string
+	line int
+	side string // "new" or "old"
 }
 type errMsg struct{ err error }
 
@@ -218,6 +233,13 @@ type model struct {
 
 	width, height int
 	diffID        int
+
+	// Diff navigation: parsed lines + cursor position so we can anchor
+	// inline comments to the correct (path, side, line). The viewport
+	// itself only knows how to scroll a string, so we re-render with a
+	// row marker each time the cursor moves.
+	diffLines  []diffLine
+	diffCursor int
 }
 
 func newPRModel(svc api.Service, project, slug string) model {
@@ -396,8 +418,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case diffLoadedMsg:
 		m.loading = false
-		m.diff.SetContent(colorizeDiff(msg.diff))
+		m.diffLines = parseDiff(msg.diff)
+		m.diffCursor = firstCommentableLine(m.diffLines)
+		m.diff.SetContent(m.renderDiff())
 		m.diff.GotoTop()
+		m.ensureDiffCursorVisible()
 		m.diffID = msg.id
 		m.mode = viewDiff
 		return m, nil
@@ -460,6 +485,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, err := m.svc.EditComment(m.project, m.slug, msg.prID, cID, text)
 				return err
 			})
+		case "add-inline-comment":
+			path := msg.path
+			line := msg.line
+			side := msg.side
+			prID := msg.prID
+			label := fmt.Sprintf("inline comment on %s:%d (%s)", path, line, side)
+			m.loading = true
+			// Inline comments don't appear in the comments list view
+			// (it filters to general activity comments), so we don't
+			// re-fetch — just toast the result.
+			return m, tea.Batch(m.spinner.Tick, m.doAction(label, false, func() error {
+				_, err := m.svc.AddInlineComment(m.project, m.slug, prID, api.InlineCommentInput{
+					Text: text, Path: path, Line: line, Side: side,
+				})
+				return err
+			}))
 		}
 		return m, nil
 
@@ -492,6 +533,87 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Per-mode handling.
 		switch m.mode {
 		case viewDiff:
+			// Cursor-based navigation: we manage the highlighted line
+			// ourselves so 'c' has a precise (path, side, line) anchor.
+			// Up/down/k/j move by one row; pgup/pgdown by a viewport
+			// page. 't' flips the side on a context line. 'c' opens
+			// the editor for an inline comment.
+			n := len(m.diffLines)
+			switch {
+			case key.Matches(msg, m.keys.Up):
+				if m.diffCursor > 0 {
+					m.diffCursor--
+				}
+				m.diff.SetContent(m.renderDiff())
+				m.ensureDiffCursorVisible()
+				return m, nil
+			case key.Matches(msg, m.keys.Down):
+				if m.diffCursor < n-1 {
+					m.diffCursor++
+				}
+				m.diff.SetContent(m.renderDiff())
+				m.ensureDiffCursorVisible()
+				return m, nil
+			case msg.String() == "pgup":
+				step := m.diff.Height
+				if step < 1 {
+					step = 1
+				}
+				m.diffCursor -= step
+				if m.diffCursor < 0 {
+					m.diffCursor = 0
+				}
+				m.diff.SetContent(m.renderDiff())
+				m.ensureDiffCursorVisible()
+				return m, nil
+			case msg.String() == "pgdown", msg.String() == " ":
+				step := m.diff.Height
+				if step < 1 {
+					step = 1
+				}
+				m.diffCursor += step
+				if m.diffCursor > n-1 {
+					m.diffCursor = n - 1
+				}
+				m.diff.SetContent(m.renderDiff())
+				m.ensureDiffCursorVisible()
+				return m, nil
+			case msg.String() == "g":
+				m.diffCursor = 0
+				m.diff.SetContent(m.renderDiff())
+				m.ensureDiffCursorVisible()
+				return m, nil
+			case msg.String() == "G":
+				m.diffCursor = n - 1
+				m.diff.SetContent(m.renderDiff())
+				m.ensureDiffCursorVisible()
+				return m, nil
+			case key.Matches(msg, m.keys.ToggleSide):
+				if m.diffCursor < n {
+					dl := &m.diffLines[m.diffCursor]
+					if dl.side == "both" {
+						dl.preferOld = !dl.preferOld
+						side, lineNo := inlineSide(*dl)
+						m.status = fmt.Sprintf("anchor → %s side L%d", side, lineNo)
+					} else {
+						m.status = "side toggle only applies to context lines"
+					}
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.InlineComment):
+				if m.diffCursor >= n {
+					return m, nil
+				}
+				dl := m.diffLines[m.diffCursor]
+				if !dl.commentable() {
+					m.status = "no file/line under cursor — move to a +/-/context line"
+					return m, nil
+				}
+				side, lineNo := inlineSide(dl)
+				return m, editInlineInTUI(m.diffID, dl.path, lineNo, side)
+			}
+			// Anything else (including raw scroll keys we didn't match)
+			// falls through to the viewport for default behaviour.
 			var cmd tea.Cmd
 			m.diff, cmd = m.diff.Update(msg)
 			return m, cmd
@@ -778,8 +900,16 @@ func (m model) View() string {
 	var body string
 	switch m.mode {
 	case viewDiff:
+		anchor := ""
+		if m.diffCursor < len(m.diffLines) {
+			dl := m.diffLines[m.diffCursor]
+			if dl.commentable() {
+				side, lineNo := inlineSide(dl)
+				anchor = fmt.Sprintf("  ·  %s:%d (%s)", dl.path, lineNo, side)
+			}
+		}
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
-			Render(fmt.Sprintf("Diff · PR #%d", m.diffID))
+			Render(fmt.Sprintf("Diff · PR #%d%s", m.diffID, anchor))
 		body = header + "\n" + m.diff.View()
 	case viewDetail:
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("PR detail")
@@ -873,27 +1003,198 @@ func styleState(s string) string {
 	return s
 }
 
-func colorizeDiff(diff string) string {
+// diffLine carries both the on-screen styled text and metadata so we
+// know where to anchor an inline comment when the user presses 'c'.
+type diffLine struct {
+	styled    string
+	path      string
+	side      string // "new", "old", "" (header / hunk / unknown), or "both" (context)
+	lineNo    int   // file line number on the new side (or sole side)
+	oldNo     int   // for "both" rows, the line on the old side
+	preferOld bool  // for "both" rows, anchor on the old side
+}
+
+// commentable reports whether this row can carry an inline comment.
+func (d diffLine) commentable() bool { return d.path != "" && d.side != "" && d.lineNo > 0 }
+
+// parseDiff walks a unified diff and produces one diffLine per text
+// line, decorated with file/line/side metadata where applicable. The
+// styling mirrors the previous colorizeDiff colours.
+func parseDiff(diff string) []diffLine {
 	add := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	del := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	hunk := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	meta := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	var b strings.Builder
+
+	var out []diffLine
+	var path string
+	var oldLine, newLine int
+
 	for _, line := range strings.Split(diff, "\n") {
+		dl := diffLine{styled: line}
 		switch {
-		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") ||
-			strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index "):
-			b.WriteString(meta.Render(line))
+		case strings.HasPrefix(line, "diff "):
+			// "diff --git a/foo b/foo" — take the b/ side as the post-image path.
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				path = strings.TrimPrefix(parts[3], "b/")
+			}
+			dl.styled = meta.Render(line)
+		case strings.HasPrefix(line, "+++ "):
+			p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			p = strings.TrimPrefix(p, "b/")
+			if p != "/dev/null" {
+				path = p
+			}
+			dl.styled = meta.Render(line)
+		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "index "):
+			dl.styled = meta.Render(line)
 		case strings.HasPrefix(line, "@@"):
-			b.WriteString(hunk.Render(line))
+			oldLine, newLine = parseHunkHeader(line)
+			dl.styled = hunk.Render(line)
 		case strings.HasPrefix(line, "+"):
-			b.WriteString(add.Render(line))
+			dl.styled = add.Render(line)
+			dl.path, dl.side, dl.lineNo = path, "new", newLine
+			newLine++
 		case strings.HasPrefix(line, "-"):
-			b.WriteString(del.Render(line))
-		default:
-			b.WriteString(line)
+			dl.styled = del.Render(line)
+			dl.path, dl.side, dl.lineNo = path, "old", oldLine
+			oldLine++
+		case strings.HasPrefix(line, " "):
+			// Context: exists on both sides. We default to "new" for
+			// commenting; user can press 't' to flip to "old".
+			dl.path, dl.side, dl.lineNo, dl.oldNo = path, "both", newLine, oldLine
+			oldLine++
+			newLine++
+		case strings.HasPrefix(line, `\`):
+			// "\ No newline at end of file" — leave as-is.
 		}
+		out = append(out, dl)
+	}
+	return out
+}
+
+// parseHunkHeader extracts the starting line numbers from "@@ -A,B +C,D @@".
+func parseHunkHeader(line string) (oldStart, newStart int) {
+	rest := strings.TrimPrefix(line, "@@")
+	rest = strings.TrimSpace(rest)
+	fields := strings.Fields(rest)
+	if len(fields) < 2 {
+		return 0, 0
+	}
+	parseRange := func(s string) int {
+		s = strings.TrimPrefix(s, "-")
+		s = strings.TrimPrefix(s, "+")
+		if i := strings.Index(s, ","); i >= 0 {
+			s = s[:i]
+		}
+		n, _ := strconv.Atoi(s)
+		return n
+	}
+	return parseRange(fields[0]), parseRange(fields[1])
+}
+
+// renderDiff joins the parsed lines, prefixing the cursor row with a
+// pointer so it's visually obvious where 'c' will land.
+func (m *model) renderDiff() string {
+	var b strings.Builder
+	pointer := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("▶ ")
+	for i, dl := range m.diffLines {
+		if i == m.diffCursor {
+			b.WriteString(pointer)
+		} else {
+			b.WriteString("  ")
+		}
+		b.WriteString(dl.styled)
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
+
+// ensureDiffCursorVisible scrolls the viewport if the cursor would
+// otherwise be off-screen.
+func (m *model) ensureDiffCursorVisible() {
+	h := m.diff.Height
+	if h <= 0 {
+		return
+	}
+	top := m.diff.YOffset
+	bot := top + h - 1
+	switch {
+	case m.diffCursor < top:
+		m.diff.SetYOffset(m.diffCursor)
+	case m.diffCursor > bot:
+		m.diff.SetYOffset(m.diffCursor - h + 1)
+	}
+}
+
+// firstCommentableLine returns the first row that an inline comment
+// can attach to, or 0 if none.
+func firstCommentableLine(lines []diffLine) int {
+	for i, dl := range lines {
+		if dl.commentable() {
+			return i
+		}
+	}
+	return 0
+}
+
+// inlineSide normalises a row's side into the API value. "both" rows
+// (context) default to "new"; flipping dl.preferOld switches to "old".
+func inlineSide(dl diffLine) (string, int) {
+	if dl.side == "both" {
+		if dl.preferOld {
+			return "old", dl.oldNo
+		}
+		return "new", dl.lineNo
+	}
+	return dl.side, dl.lineNo
+}
+
+// editInlineInTUI is editInTUI's cousin for line-anchored comments —
+// it carries path/line/side through to the result message.
+func editInlineInTUI(prID int, path string, lineNo int, side string) tea.Cmd {
+	hint := fmt.Sprintf("pr-%d-inline-L%d-%s", prID, lineNo, side)
+	f, err := os.CreateTemp("", "bb-edit-*-"+sanitizeForFilename(hint)+".md")
+	if err != nil {
+		return func() tea.Msg {
+			return editorResultMsg{purpose: "add-inline-comment", prID: prID, path: path, line: lineNo, side: side, err: err}
+		}
+	}
+	tmp := f.Name()
+	header := fmt.Sprintf("<!-- inline comment on %s:%d (%s side) -->\n", path, lineNo, side)
+	_, _ = f.WriteString(header)
+	f.Close()
+
+	editor := config.Get().EditorCmd()
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		os.Remove(tmp)
+		return func() tea.Msg {
+			return editorResultMsg{purpose: "add-inline-comment", prID: prID, path: path, line: lineNo, side: side, err: fmt.Errorf("no editor configured")}
+		}
+	}
+	args := append(parts[1:], tmp)
+	cmd := exec.Command(parts[0], args...)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		defer os.Remove(tmp)
+		if err != nil {
+			return editorResultMsg{purpose: "add-inline-comment", prID: prID, path: path, line: lineNo, side: side, err: err}
+		}
+		data, rerr := os.ReadFile(tmp)
+		// Strip the comment-marker header we wrote so the user can keep it.
+		text := string(data)
+		text = strings.TrimPrefix(text, header)
+		return editorResultMsg{purpose: "add-inline-comment", prID: prID, path: path, line: lineNo, side: side, text: text, err: rerr}
+	})
+}
+
+// sanitizeForFilename replaces path separators so the temp filename
+// stays in /tmp without unintended subdirectories.
+func sanitizeForFilename(s string) string {
+	r := strings.NewReplacer("/", "-", "\\", "-", " ", "_")
+	return r.Replace(s)
+}
+
+// (colorizeDiff removed — parseDiff produces both metadata and styled
+// text in one pass.)
