@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/hugo/bb/internal/api"
 	"github.com/hugo/bb/internal/config"
 )
 
@@ -14,7 +18,7 @@ func newAuthCmd() *cobra.Command {
 		Use:   "auth",
 		Short: "Authenticate bb with a Bitbucket host",
 	}
-	c.AddCommand(newAuthLoginCmd(), newAuthStatusCmd(), newAuthLogoutCmd())
+	c.AddCommand(newAuthLoginCmd(), newAuthStatusCmd(), newAuthCheckCmd(), newAuthLogoutCmd())
 	return c
 }
 
@@ -96,6 +100,22 @@ func newAuthLoginCmd() *cobra.Command {
 	return c
 }
 
+var (
+	styleHost    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	styleDefault = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	styleLabel   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	styleOK      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	styleErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	styleMuted   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+)
+
+func maskToken(t string) string {
+	if len(t) <= 4 {
+		return "****"
+	}
+	return "••••••••" + t[len(t)-4:]
+}
+
 func newAuthStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -103,19 +123,115 @@ func newAuthStatusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Get()
 			if len(cfg.Hosts) == 0 {
-				fmt.Println("Not logged in to any host. Try `bb auth login`.")
+				fmt.Println(styleMuted.Render("Not logged in to any host. Try `bb auth login`."))
 				return nil
 			}
-			for name, h := range cfg.Hosts {
-				marker := " "
+
+			names := make([]string, 0, len(cfg.Hosts))
+			for n := range cfg.Hosts {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+
+			for i, name := range names {
+				h := cfg.Hosts[name]
+				header := styleHost.Render(name)
 				if name == cfg.DefaultHost {
-					marker = "*"
+					header += "  " + styleDefault.Render("(default)")
 				}
-				fmt.Printf("%s %s (%s) — user: %s\n", marker, name, h.Type, h.Username)
+				fmt.Println(header)
+				fmt.Printf("  %s %s\n", styleLabel.Render("Type:    "), h.Type)
+				fmt.Printf("  %s %s\n", styleLabel.Render("User:    "), h.Username)
+				fmt.Printf("  %s %s\n", styleLabel.Render("Token:   "), maskToken(h.Token))
+				if h.APIBase != "" {
+					fmt.Printf("  %s %s\n", styleLabel.Render("API base:"), h.APIBase)
+				}
+				if i < len(names)-1 {
+					fmt.Println()
+				}
 			}
 			return nil
 		},
 	}
+}
+
+// newAuthCheckCmd verifies stored credentials by hitting an authenticated
+// "who am I" endpoint on each (or a single) host.
+func newAuthCheckCmd() *cobra.Command {
+	var hostFlag string
+	c := &cobra.Command{
+		Use:   "check",
+		Short: "Verify stored credentials by calling the Bitbucket API",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Get()
+			if len(cfg.Hosts) == 0 {
+				return fmt.Errorf("not logged in to any host — run `bb auth login`")
+			}
+
+			targets := []string{}
+			if hostFlag != "" {
+				if _, ok := cfg.Hosts[hostFlag]; !ok {
+					return fmt.Errorf("no auth for host %q", hostFlag)
+				}
+				targets = append(targets, hostFlag)
+			} else {
+				for n := range cfg.Hosts {
+					targets = append(targets, n)
+				}
+				sort.Strings(targets)
+			}
+
+			anyFail := false
+			for _, name := range targets {
+				h := cfg.Hosts[name]
+				if err := checkHost(h); err != nil {
+					anyFail = true
+					fmt.Printf("%s  %s — %s\n", styleErr.Render("✗"), styleHost.Render(name), err)
+				} else {
+					fmt.Printf("%s  %s — %s\n", styleOK.Render("✓"), styleHost.Render(name),
+						styleMuted.Render("authenticated as "+h.Username))
+				}
+			}
+			if anyFail {
+				return fmt.Errorf("one or more hosts failed authentication")
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&hostFlag, "host", "", "only check this host (default: all configured hosts)")
+	return c
+}
+
+func checkHost(h config.Host) error {
+	client := api.New("", h)
+
+	// Cloud uses /user; Server uses /users/{slug}.
+	endpoint := "user"
+	if h.Type == "server" {
+		endpoint = "users/" + h.Username
+	}
+
+	req, err := client.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return fmt.Errorf("HTTP %d — token rejected", resp.StatusCode)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	// Best-effort: ignore body parse errors, the status code is the source of truth.
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	return nil
 }
 
 func newAuthLogoutCmd() *cobra.Command {
