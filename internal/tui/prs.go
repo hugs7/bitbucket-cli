@@ -1315,21 +1315,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if line == 0 {
 				label = fmt.Sprintf("file comment on %s", path)
 			}
-			m.loading = true
-			// After posting, refresh the overlay so the new annotation
-			// appears under the diff line right away.
-			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+			return m, m.diffCommentMutation(prID, label, func() error {
 				_, err := m.svc.AddInlineComment(m.project, m.slug, prID, api.InlineCommentInput{
 					Text: text, Path: path, Line: line, Side: side,
 				})
-				if err != nil {
-					return actionDoneMsg{text: label, err: err}
-				}
-				cs, lerr := m.svc.ListComments(m.project, m.slug, prID)
-				if lerr != nil {
-					return actionDoneMsg{text: label + " (overlay reload failed)", err: lerr}
-				}
-				return diffCommentsLoadedMsg{id: prID, comments: cs}
+				return err
 			})
 		}
 		return m, nil
