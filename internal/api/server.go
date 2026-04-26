@@ -602,21 +602,57 @@ func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 }
 
 // SearchRepos searches across projects on Bitbucket Server.
+//
+// Bitbucket Server's `name=` parameter does a case-insensitive prefix
+// match, so a query like "checkout" won't return "merchant-checkout".
+// We try the cheap prefix query first, and if it yields no results we
+// page through the full repo list and apply a substring match
+// client-side. The page cap keeps this bounded on large instances.
 func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	params := map[string]string{"limit": itoa(limit)}
-	if query != "" {
-		params["name"] = query
+	q := strings.ToLower(strings.TrimSpace(query))
+
+	if q != "" {
+		var page srvPaged[srvRepo]
+		params := map[string]string{"limit": itoa(limit), "name": query}
+		if err := s.client.getJSON("repos"+queryString(params), &page); err == nil && len(page.Values) > 0 {
+			out := make([]Repo, 0, len(page.Values))
+			for _, r := range page.Values {
+				out = append(out, r.toRepo())
+			}
+			return out, nil
+		}
 	}
-	var page srvPaged[srvRepo]
-	if err := s.client.getJSON("repos"+queryString(params), &page); err != nil {
-		return nil, err
-	}
-	out := make([]Repo, 0, len(page.Values))
-	for _, r := range page.Values {
-		out = append(out, r.toRepo())
+
+	// Substring fallback (or empty-query: just list latest).
+	const pageSize = 100
+	const maxPages = 20
+	out := []Repo{}
+	start := 0
+	for p := 0; p < maxPages; p++ {
+		var page srvPaged[srvRepo]
+		params := map[string]string{"limit": itoa(pageSize), "start": itoa(start)}
+		if err := s.client.getJSON("repos"+queryString(params), &page); err != nil {
+			return nil, err
+		}
+		for _, r := range page.Values {
+			repo := r.toRepo()
+			if q == "" ||
+				strings.Contains(strings.ToLower(repo.Slug), q) ||
+				strings.Contains(strings.ToLower(repo.Name), q) ||
+				strings.Contains(strings.ToLower(repo.Project), q) {
+				out = append(out, repo)
+				if len(out) >= limit {
+					return out, nil
+				}
+			}
+		}
+		if page.IsLastPage || len(page.Values) == 0 {
+			break
+		}
+		start += len(page.Values)
 	}
 	return out, nil
 }

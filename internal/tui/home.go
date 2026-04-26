@@ -477,7 +477,18 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case tabBrowse:
 			var cmd tea.Cmd
+			prevSel := m.browse.Index()
 			m.browse, cmd = m.browse.Update(msg)
+			// Live README preview: any time the highlighted repo
+			// changes (j/k, arrow keys, page, …), kick off a fetch
+			// so the right pane stays in sync without a separate
+			// "open" step.
+			if m.browse.Index() != prevSel {
+				if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
+					m.loading = true
+					return m, tea.Batch(cmd, m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
+				}
+			}
 			return m, cmd
 		}
 	}
