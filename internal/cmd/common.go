@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,6 +9,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
+	"github.com/hugs7/bitbucket-cli/internal/sysutil"
 )
 
 // resolveContext resolves which (host, project, slug) the command should
@@ -79,22 +78,11 @@ func defaultService(hostFlag string) (api.Service, error) {
 	return api.NewService(host, hcfg)
 }
 
-// openInBrowser opens a URL in the user's default browser.
-func openInBrowser(url string) error {
-	var cmd string
-	var args []string
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = "open"
-	case "windows":
-		cmd = "rundll32"
-		args = []string{"url.dll,FileProtocolHandler"}
-	default:
-		cmd = "xdg-open"
-	}
-	args = append(args, url)
-	return exec.Command(cmd, args...).Start()
-}
+// openInBrowser is a thin alias kept so the existing call sites
+// inside this package don't all need updating in lockstep with the
+// move to sysutil.OpenInBrowser. New callers should prefer the
+// sysutil function directly.
+func openInBrowser(url string) error { return sysutil.OpenInBrowser(url) }
 
 // State styling shared across commands.
 func styleState(s string) string {

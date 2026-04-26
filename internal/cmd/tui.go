@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/hugs7/bitbucket-cli/internal/tui"
+	"github.com/hugs7/bitbucket-cli/internal/tui/pr"
 )
 
 // newPRsCmd is a top-level shortcut for the interactive PR browser.
@@ -21,7 +21,7 @@ clone to auto-detect.`,
 			if err != nil {
 				return err
 			}
-			return tui.PRs(svc, project, slug)
+			return pr.Run(svc, project, slug)
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")

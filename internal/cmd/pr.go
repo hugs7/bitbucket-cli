@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/strutil"
 )
 
 func newPRCmd() *cobra.Command {
@@ -54,7 +55,7 @@ func newPRListCmd() *cobra.Command {
 			for _, p := range prs {
 				fmt.Fprintf(w, "#%d\t%s\t%s\t%s → %s\t%s\n",
 					p.ID, styleState(p.State),
-					truncate(p.Title, 60),
+					strutil.Truncate(p.Title, 60),
 					p.SourceRef, p.TargetRef, p.Author,
 				)
 			}
@@ -820,13 +821,6 @@ func nonEmpty(s string) error {
 		return fmt.Errorf("required")
 	}
 	return nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }
 
 func bytesTrim(b []byte) []byte {

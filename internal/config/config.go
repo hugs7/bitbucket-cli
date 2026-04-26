@@ -37,6 +37,24 @@ type Config struct {
 
 	// Favourites are repos the user has pinned from the home TUI.
 	Favourites []FavRepo `yaml:"favourites,omitempty"`
+
+	// Theme is the named TUI colour theme. See internal/tui/theme.go
+	// for the list of built-ins (default, dracula, solarized-dark, nord).
+	// Empty falls back to "default".
+	Theme string `yaml:"theme,omitempty"`
+
+	// AICmd is a shell command piped a unified diff on stdin which
+	// should print a PR description on stdout. Used by `bb pr describe`.
+	// $BB_AI_CMD overrides this at runtime.
+	AICmd string `yaml:"ai_cmd,omitempty"`
+
+	// InlineEditor controls the default editor experience inside the
+	// PR TUI. When true, comment / description edits open in an
+	// in-process textarea overlay (the "picture-in-picture" editor)
+	// that keeps the surrounding context visible. When false, the
+	// editor launches the user's $EDITOR full-screen via tea.ExecProcess.
+	// Either way, F11 toggles between modes for the current edit.
+	InlineEditor bool `yaml:"inline_editor,omitempty"`
 }
 
 // FavRepo is a repo entry persisted in the user's favourites list.
@@ -138,6 +156,12 @@ func RemoveHost(name string) error {
 func SetDiffPrefs(split, showInline bool) error {
 	loaded.DiffSplit = split
 	loaded.DiffHideInline = !showInline
+	return save()
+}
+
+// SetTheme persists the chosen TUI theme name. Best-effort.
+func SetTheme(name string) error {
+	loaded.Theme = name
 	return save()
 }
 

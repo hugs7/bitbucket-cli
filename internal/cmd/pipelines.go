@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/hugs7/bitbucket-cli/internal/strutil"
 )
 
 func newPipelinesCmd() *cobra.Command {
@@ -125,10 +126,10 @@ build statuses reported against that commit.`,
 			for _, b := range builds {
 				when := ""
 				if !b.CreatedAt.IsZero() {
-					when = humanTime(b.CreatedAt)
+					when = strutil.HumanTime(b.CreatedAt)
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					b.ID, styleState(b.State), truncate(b.Name, 40), b.Ref, when, b.URL,
+					b.ID, styleState(b.State), strutil.Truncate(b.Name, 40), b.Ref, when, b.URL,
 				)
 			}
 			return w.Flush()
@@ -139,18 +140,4 @@ build statuses reported against that commit.`,
 	c.Flags().StringVar(&ref, "ref", "", "branch / ref (default: repo default branch)")
 	c.Flags().IntVarP(&limit, "limit", "L", 25, "max builds to fetch")
 	return c
-}
-
-func humanTime(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
 }

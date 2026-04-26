@@ -12,16 +12,73 @@ import (
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/tui/pr"
+	"github.com/hugs7/bitbucket-cli/internal/tui/repo"
 )
 
 func newRepoCmd() *cobra.Command {
+	var repoFlag, hostFlag string
 	c := &cobra.Command{
 		Use:     "repo",
 		Aliases: []string{"r"},
 		Short:   "Work with Bitbucket repositories",
+		Long: `Work with Bitbucket repositories.
+
+Without a subcommand, opens the interactive repo overview TUI for the
+current repository (auto-detected from the cwd's git remote). Use
+` + "`bb repo browse`" + ` for the legacy "open in browser" behaviour.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return openRepoTUI(repoFlag, hostFlag)
+		},
 	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
 	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd(), newRepoWebhookCmd())
 	return c
+}
+
+// openRepoTUI launches the repo overview TUI and follows whatever
+// follow-on action the user picks (e.g. "p" → PR TUI). Loops so the
+// user can bounce between the two without dropping back to the shell,
+// matching how `bb` (home) chains into `bb prs`.
+func openRepoTUI(repoFlag, hostFlag string) error {
+	svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+	if err != nil {
+		return err
+	}
+	for {
+		action, err := repo.Repo(svc, project, slug)
+		if err != nil {
+			return err
+		}
+		if action == nil {
+			return nil
+		}
+		switch action.Kind {
+		case "prs":
+			if err := pr.Run(svc, action.Project, action.Slug); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+// browseCurrentRepo resolves the repo from cwd / flags and opens its
+// web URL in the user's default browser. Used by `bb repo browse`.
+func browseCurrentRepo(repoFlag, hostFlag string) error {
+	svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+	if err != nil {
+		return err
+	}
+	r, err := svc.GetRepo(project, slug)
+	if err != nil {
+		return err
+	}
+	fmt.Println(r.WebURL)
+	return openInBrowser(r.WebURL)
 }
 
 func newRepoCreateCmd() *cobra.Command {
