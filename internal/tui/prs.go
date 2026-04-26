@@ -42,6 +42,7 @@ const (
 	viewDiff
 	viewComments
 	viewConfirmDelete
+	viewPalette
 )
 
 type keyMap struct {
@@ -63,6 +64,9 @@ type keyMap struct {
 	// diff-mode actions
 	InlineComment, ToggleSide, ToggleSplit, ToggleInline key.Binding
 	TreeFocus, TreeSelect, NextFile, PrevFile            key.Binding
+
+	// palette
+	PaletteOpen key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -102,6 +106,8 @@ func defaultKeys() keyMap {
 		TreeSelect: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open file")),
 		NextFile:   key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "next file")),
 		PrevFile:   key.NewBinding(key.WithKeys("["), key.WithHelp("[", "prev file")),
+
+		PaletteOpen: key.NewBinding(key.WithKeys("ctrl+k", ":"), key.WithHelp("ctrl+k", "command palette")),
 	}
 }
 
@@ -122,12 +128,12 @@ func (m modeKeyMap) FullHelp() [][]key.Binding { return m.full }
 
 func (k keyMap) listHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Merge, k.State, k.Help, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Merge, k.PaletteOpen, k.Help, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
 			{k.EditDesc, k.Comments, k.Refresh, k.State},
-			{k.Help, k.Back, k.Quit},
+			{k.PaletteOpen, k.Help, k.Back, k.Quit},
 		},
 	}
 }
@@ -170,6 +176,12 @@ func (k keyMap) confirmHelp() modeKeyMap {
 	return modeKeyMap{
 		short: [][]key.Binding{{k.ConfirmYes, k.ConfirmNo, k.Back}},
 		full:  [][]key.Binding{{k.ConfirmYes, k.ConfirmNo, k.Back}},
+	}
+}
+func (k keyMap) paletteHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Back}},
+		full:  [][]key.Binding{{k.Up, k.Down, k.Enter, k.Back}},
 	}
 }
 
@@ -271,6 +283,12 @@ type model struct {
 	// Vim-style count prefix accumulator (e.g. "15j"). Consumed by the
 	// next motion key and reset.
 	numBuf string
+
+	// Command palette: a fuzzy-searchable list of context-aware
+	// actions. paletteReturnTo is the mode we came from so esc / enter
+	// know where to drop back to.
+	palette         list.Model
+	paletteReturnTo viewMode
 }
 
 // diffFile is one entry in the file-tree side panel.
@@ -297,6 +315,14 @@ func newPRModel(svc api.Service, project, slug string) model {
 	cl.SetShowStatusBar(false)
 	cl.SetFilteringEnabled(true)
 
+	pdel := list.NewDefaultDelegate()
+	pl := list.New(nil, pdel, 0, 0)
+	pl.Title = "Command palette"
+	pl.SetShowStatusBar(false)
+	pl.SetFilteringEnabled(true)
+	pl.SetShowHelp(false)
+	pl.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+
 	cfg := config.Get()
 	return model{
 		svc: svc, project: project, slug: slug,
@@ -305,6 +331,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		detail:         viewport.New(0, 0),
 		diff:           viewport.New(0, 0),
 		comments:       cl,
+		palette:        pl,
 		spinner:        sp,
 		help:           help.New(),
 		keys:           defaultKeys(),
@@ -331,6 +358,268 @@ func (i commentItem) Description() string {
 		first = first[:197] + "…"
 	}
 	return first
+}
+
+// paletteItem is one entry in the command palette. `run` mutates the
+// model and returns a tea.Cmd to fire (or nil for pure state changes).
+type paletteItem struct {
+	label string
+	hint  string
+	run   func(m *model) tea.Cmd
+}
+
+func (p paletteItem) FilterValue() string { return p.label }
+func (p paletteItem) Title() string       { return p.label }
+func (p paletteItem) Description() string {
+	if p.hint == "" {
+		return ""
+	}
+	return "shortcut: " + p.hint
+}
+
+// buildPaletteItems returns the actions relevant for the given mode.
+// Items are ordered by frequency of use rather than alphabetically.
+func buildPaletteItems(mode viewMode) []list.Item {
+	var items []list.Item
+	switch mode {
+	case viewList, viewDetail:
+		items = []list.Item{
+			paletteItem{label: "View PR detail", hint: "enter", run: func(m *model) tea.Cmd {
+				if _, ok := m.list.SelectedItem().(prItem); ok {
+					m.detail.GotoTop()
+					m.mode = viewDetail
+				}
+				return nil
+			}},
+			paletteItem{label: "View diff", hint: "d", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.fetchDiff(it.pr.ID))
+				}
+				return nil
+			}},
+			paletteItem{label: "View comments", hint: "c", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.fetchComments(it.pr.ID))
+				}
+				return nil
+			}},
+			paletteItem{label: "Open in browser", hint: "o", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.WebURL != "" {
+					_ = openInBrowser(it.pr.WebURL)
+				}
+				return nil
+			}},
+			paletteItem{label: "Approve PR", hint: "a", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					id := it.pr.ID
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("approved #%d", id), true, func() error {
+						return m.svc.ApprovePR(m.project, m.slug, id)
+					}))
+				}
+				return nil
+			}},
+			paletteItem{label: "Unapprove PR", hint: "A", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					id := it.pr.ID
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("unapproved #%d", id), true, func() error {
+						return m.svc.UnapprovePR(m.project, m.slug, id)
+					}))
+				}
+				return nil
+			}},
+			paletteItem{label: "Mark needs work", hint: "N", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					id := it.pr.ID
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("#%d needs work", id), true, func() error {
+						return m.svc.NeedsWorkPR(m.project, m.slug, id)
+					}))
+				}
+				return nil
+			}},
+			paletteItem{label: "Merge PR", hint: "M", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					id := it.pr.ID
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("merged #%d", id), true, func() error {
+						return m.svc.MergePR(m.project, m.slug, id)
+					}))
+				}
+				return nil
+			}},
+			paletteItem{label: "Edit description", hint: "e", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					return editInTUI("edit-description",
+						fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, 0, it.pr.Description)
+				}
+				return nil
+			}},
+			paletteItem{label: "Refresh PR list", hint: "r", run: func(m *model) tea.Cmd {
+				m.loading = true
+				return tea.Batch(m.spinner.Tick, m.fetchPRs())
+			}},
+			paletteItem{label: "Cycle PR state forward", hint: "s", run: func(m *model) tea.Cmd {
+				m.state = nextState(m.state)
+				m.list.Title = fmt.Sprintf("Pull Requests · %s/%s · %s", m.project, m.slug, m.state)
+				m.loading = true
+				return tea.Batch(m.spinner.Tick, m.fetchPRs())
+			}},
+			paletteItem{label: "Cycle PR state backward", hint: "S", run: func(m *model) tea.Cmd {
+				m.state = prevState(m.state)
+				m.list.Title = fmt.Sprintf("Pull Requests · %s/%s · %s", m.project, m.slug, m.state)
+				m.loading = true
+				return tea.Batch(m.spinner.Tick, m.fetchPRs())
+			}},
+			paletteItem{label: "Back to PR list", hint: "esc", run: func(m *model) tea.Cmd {
+				m.paletteReturnTo = viewList
+				return nil
+			}},
+		}
+	case viewDiff:
+		items = []list.Item{
+			paletteItem{label: "Comment current line", hint: "c", run: func(m *model) tea.Cmd {
+				c, ok := m.activeDiffCell()
+				if !ok {
+					m.status = "no file/line under cursor"
+					return nil
+				}
+				return editInlineInTUI(m.diffID, c.path, c.line, c.side)
+			}},
+			paletteItem{label: "Toggle split / unified", hint: "v", run: func(m *model) tea.Cmd {
+				m.diffSplit = !m.diffSplit
+				m.rebuildDiffRows()
+				m.ensureDiffCursorVisible()
+				_ = config.SetDiffPrefs(m.diffSplit, m.diffShowInline)
+				return nil
+			}},
+			paletteItem{label: "Toggle inline comments overlay", hint: "i", run: func(m *model) tea.Cmd {
+				m.diffShowInline = !m.diffShowInline
+				m.rebuildDiffRows()
+				m.ensureDiffCursorVisible()
+				_ = config.SetDiffPrefs(m.diffSplit, m.diffShowInline)
+				return nil
+			}},
+			paletteItem{label: "Toggle side (split column / context anchor)", hint: "t", run: func(m *model) tea.Cmd {
+				if m.diffSplit {
+					m.diffCursorSide = 1 - m.diffCursorSide
+					m.diff.SetContent(m.renderDiffRows())
+				} else if m.diffCursor < len(m.diffLines) {
+					dl := &m.diffLines[m.diffCursor]
+					if dl.side == "both" {
+						dl.preferOld = !dl.preferOld
+						m.rebuildDiffRows()
+					}
+				}
+				return nil
+			}},
+			paletteItem{label: "Focus file tree", hint: "tab", run: func(m *model) tea.Cmd {
+				if len(m.diffFiles) > 0 {
+					m.diffFocus = "tree"
+				}
+				return nil
+			}},
+			paletteItem{label: "Next file", hint: "]", run: func(m *model) tea.Cmd {
+				for _, f := range m.diffFiles {
+					if f.rowIdx > m.diffCursor {
+						m.diffCursor = f.rowIdx
+						m.diff.SetContent(m.renderDiffRows())
+						m.ensureDiffCursorVisible()
+						return nil
+					}
+				}
+				return nil
+			}},
+			paletteItem{label: "Previous file", hint: "[", run: func(m *model) tea.Cmd {
+				for i := len(m.diffFiles) - 1; i >= 0; i-- {
+					if m.diffFiles[i].rowIdx < m.diffCursor {
+						m.diffCursor = m.diffFiles[i].rowIdx
+						m.diff.SetContent(m.renderDiffRows())
+						m.ensureDiffCursorVisible()
+						return nil
+					}
+				}
+				return nil
+			}},
+			paletteItem{label: "Go to top of diff", hint: "g", run: func(m *model) tea.Cmd {
+				m.diffCursor = 0
+				m.diff.SetContent(m.renderDiffRows())
+				m.ensureDiffCursorVisible()
+				return nil
+			}},
+			paletteItem{label: "Go to bottom of diff", hint: "G", run: func(m *model) tea.Cmd {
+				m.diffCursor = len(m.diffRows) - 1
+				m.diff.SetContent(m.renderDiffRows())
+				m.ensureDiffCursorVisible()
+				return nil
+			}},
+		}
+	case viewComments:
+		items = []list.Item{
+			paletteItem{label: "Add comment", hint: "n", run: func(m *model) tea.Cmd {
+				if m.commentsPRID > 0 {
+					return editInTUI("add-comment",
+						fmt.Sprintf("pr-%d-comment", m.commentsPRID), m.commentsPRID, 0, "")
+				}
+				return nil
+			}},
+			paletteItem{label: "Reply to selected comment", hint: "r", run: func(m *model) tea.Cmd {
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					return editInTUI("reply-comment",
+						fmt.Sprintf("pr-%d-reply-to-%d", m.commentsPRID, it.c.ID),
+						m.commentsPRID, it.c.ID, "")
+				}
+				return nil
+			}},
+			paletteItem{label: "Edit selected comment", hint: "e", run: func(m *model) tea.Cmd {
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					return editInTUI("edit-comment",
+						fmt.Sprintf("pr-%d-comment-%d", m.commentsPRID, it.c.ID),
+						m.commentsPRID, it.c.ID, it.c.Text)
+				}
+				return nil
+			}},
+			paletteItem{label: "Delete selected comment", hint: "d", run: func(m *model) tea.Cmd {
+				if it, ok := m.comments.SelectedItem().(commentItem); ok {
+					m.pendingDeleteCommentID = it.c.ID
+					m.mode = viewConfirmDelete
+				}
+				return nil
+			}},
+			paletteItem{label: "Refresh comments", hint: "r", run: func(m *model) tea.Cmd {
+				if m.commentsPRID > 0 {
+					m.loading = true
+					return tea.Batch(m.spinner.Tick, m.fetchComments(m.commentsPRID))
+				}
+				return nil
+			}},
+		}
+	}
+	// Universal items appended last so per-mode actions surface first.
+	items = append(items,
+		paletteItem{label: "Toggle help footer", hint: "?", run: func(m *model) tea.Cmd {
+			m.help.ShowAll = !m.help.ShowAll
+			m.layout()
+			return nil
+		}},
+		paletteItem{label: "Quit bb", hint: "q / ctrl+c", run: func(m *model) tea.Cmd {
+			return tea.Quit
+		}},
+	)
+	return items
+}
+
+// openPalette captures the current mode, populates the palette with
+// context-aware items and switches into viewPalette.
+func (m *model) openPalette() {
+	m.paletteReturnTo = m.mode
+	m.palette.SetItems(buildPaletteItems(m.paletteReturnTo))
+	m.palette.ResetFilter()
+	m.palette.SetSize(m.width, m.height-2)
+	m.mode = viewPalette
 }
 
 func (m model) Init() tea.Cmd {
@@ -610,10 +899,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 
+		// Palette mode owns the keymap entirely while open.
+		if m.mode == viewPalette {
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Back):
+				m.mode = m.paletteReturnTo
+				return m, nil
+			case msg.String() == "enter":
+				if it, ok := m.palette.SelectedItem().(paletteItem); ok {
+					m.mode = m.paletteReturnTo
+					return m, it.run(&m)
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.palette, cmd = m.palette.Update(msg)
+			return m, cmd
+		}
+
 		// Mode-independent keys come first.
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.PaletteOpen):
+			// ":" colon also opens the palette but we must not let it
+			// trigger when the user is filtering a list (see top-of
+			// block check). Skip in viewDiff if a count is being typed
+			// (rare; keep simple by checking numBuf).
+			m.openPalette()
+			return m, nil
 		case key.Matches(msg, m.keys.Back):
 			if m.mode != viewList {
 				m.mode = viewList
@@ -1200,6 +1516,8 @@ func (m model) helpView() string {
 		km = m.keys.commentsHelp()
 	case viewConfirmDelete:
 		km = m.keys.confirmHelp()
+	case viewPalette:
+		km = m.keys.paletteHelp()
 	default:
 		km = m.keys.listHelp()
 	}
@@ -1254,6 +1572,10 @@ func (m model) View() string {
 	case viewConfirmDelete:
 		warn := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 		body = "\n  " + warn.Render(fmt.Sprintf("Delete comment #%d? (y/n)", m.pendingDeleteCommentID))
+	case viewPalette:
+		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
+			Render("Command palette · type to filter · enter to run · esc to close")
+		body = header + "\n" + m.palette.View()
 	default:
 		left := lipgloss.NewStyle().Padding(0, 1).Render(m.list.View())
 		right := lipgloss.NewStyle().Padding(0, 1).Render(m.detail.View())
