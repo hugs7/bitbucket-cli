@@ -150,9 +150,7 @@ func (s *serverService) ListPRs(project, slug, state string, limit int) ([]PullR
 	if state == "" {
 		state = "OPEN"
 	}
-	if state == "ALL" {
-		state = ""
-	}
+	// Bitbucket Server accepts state=ALL to mean "any state".
 	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests%s",
 		project, slug,
 		queryString(map[string]string{"state": state, "limit": itoa(limit)}),

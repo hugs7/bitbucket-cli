@@ -44,32 +44,34 @@ type viewMode int
 
 const (
 	viewList viewMode = iota
+	viewDetail
 	viewDiff
 )
 
 type keyMap struct {
-	Up, Down       key.Binding
-	Enter          key.Binding
-	Diff           key.Binding
-	Open           key.Binding
-	Refresh        key.Binding
-	State          key.Binding
-	Help           key.Binding
-	Back, Quit     key.Binding
+	Up, Down         key.Binding
+	Enter            key.Binding
+	Diff             key.Binding
+	Open             key.Binding
+	Refresh          key.Binding
+	State, StatePrev key.Binding
+	Help             key.Binding
+	Back, Quit       key.Binding
 }
 
 func defaultKeys() keyMap {
 	return keyMap{
-		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-		Enter:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "view")),
-		Diff:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
-		Open:    key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in browser")),
-		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		State:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "cycle state")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "view")),
+		Diff:      key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
+		Open:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in browser")),
+		Refresh:   key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		State:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s/S", "cycle state ←/→")),
+		StatePrev: key.NewBinding(key.WithKeys("S")),
+		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
 }
 
@@ -219,7 +221,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Back):
-			if m.mode == viewDiff {
+			if m.mode != viewList {
 				m.mode = viewList
 				return m, nil
 			}
@@ -235,9 +237,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.diff, cmd = m.diff.Update(msg)
 			return m, cmd
 		}
+		if m.mode == viewDetail {
+			var cmd tea.Cmd
+			m.detail, cmd = m.detail.Update(msg)
+			return m, cmd
+		}
 
 		switch {
 		case key.Matches(msg, m.keys.Refresh):
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchPRs())
+		case key.Matches(msg, m.keys.StatePrev):
+			m.state = prevState(m.state)
+			m.list.Title = fmt.Sprintf("Pull Requests · %s/%s · %s", m.project, m.slug, m.state)
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchPRs())
 		case key.Matches(msg, m.keys.State):
@@ -245,6 +257,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.Title = fmt.Sprintf("Pull Requests · %s/%s · %s", m.project, m.slug, m.state)
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchPRs())
+		case key.Matches(msg, m.keys.Enter):
+			if _, ok := m.list.SelectedItem().(prItem); ok {
+				m.detail.GotoTop()
+				m.mode = viewDetail
+				return m, nil
+			}
 		case key.Matches(msg, m.keys.Diff):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				m.loading = true
@@ -319,6 +337,9 @@ func (m model) View() string {
 		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
 			Render(fmt.Sprintf("Diff · PR #%d", m.diffID))
 		body = header + "\n" + m.diff.View()
+	case viewDetail:
+		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("PR detail")
+		body = header + "\n" + m.detail.View()
 	default:
 		left := lipgloss.NewStyle().Padding(0, 1).Render(m.list.View())
 		right := lipgloss.NewStyle().Padding(0, 1).Render(m.detail.View())
@@ -334,17 +355,23 @@ func (m model) View() string {
 
 // ---------- helpers ----------
 
+var stateCycle = []string{"OPEN", "MERGED", "DECLINED", "ALL"}
+
 func nextState(s string) string {
-	switch strings.ToUpper(s) {
-	case "OPEN":
-		return "MERGED"
-	case "MERGED":
-		return "DECLINED"
-	case "DECLINED":
-		return "ALL"
-	default:
-		return "OPEN"
+	for i, v := range stateCycle {
+		if v == strings.ToUpper(s) {
+			return stateCycle[(i+1)%len(stateCycle)]
+		}
 	}
+	return stateCycle[0]
+}
+func prevState(s string) string {
+	for i, v := range stateCycle {
+		if v == strings.ToUpper(s) {
+			return stateCycle[(i-1+len(stateCycle))%len(stateCycle)]
+		}
+	}
+	return stateCycle[0]
 }
 
 func openInBrowser(url string) error {
