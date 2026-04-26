@@ -791,6 +791,15 @@ func (m *model) renderDiffRows() string {
 			b.WriteString(renderCellWithHL(row.cells[0], body))
 		}
 		b.WriteByte('\n')
+
+		// If the inline-diff editor is open and the cursor is on
+		// this row, inject the textarea card immediately below the
+		// commented line — mirrors GitHub's "Add a review comment"
+		// form anchored to the source line.
+		if m.editorActive && i == m.diffCursor && m.editorReturnTo == viewDiff {
+			b.WriteString(m.editor.inlineDiffView(width))
+			b.WriteByte('\n')
+		}
 	}
 	return b.String()
 }

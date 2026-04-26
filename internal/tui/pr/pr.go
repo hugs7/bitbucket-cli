@@ -665,9 +665,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// process; the fullscreen path returns a tea.ExecProcess Cmd
 		// that suspends until the editor exits.
 		if config.Get().InlineEditor {
+			m.editorReturnTo = m.mode
+			// Diff-originated edits render the textarea inline at
+			// the diff cursor (GitHub-style "Add a review comment"
+			// form between lines). Other edits use the centred
+			// overlay so descriptions / PR-level comments still get
+			// their roomy modal.
+			if m.mode == viewDiff && isDiffOriginated(msg.req.purpose) {
+				m.editor = newInlineDiffEditor(msg.req, m.diff.Width)
+				m.editorActive = true
+				// Stay in viewDiff; the editor renders inline at the
+				// cursor in renderDiffRows(). Refresh content now so
+				// the form appears on the very next paint.
+				m.diff.SetContent(m.renderDiffRows())
+				m.ensureDiffCursorVisible()
+				return m, textarea.Blink
+			}
 			m.editor = newInlineEditor(msg.req, m.width, m.height)
 			m.editorActive = true
-			m.editorReturnTo = m.mode
 			m.mode = viewEditor
 			return m, textarea.Blink
 		}
@@ -852,8 +867,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Inline (PIP) editor owns the keymap while active. ctrl+s
 		// commits the buffer; esc cancels; F11 promotes the current
 		// content into the user's $EDITOR (so a long edit can switch
-		// to vim mid-thought without losing the draft).
-		if m.mode == viewEditor && m.editorActive {
+		// to vim mid-thought without losing the draft). Also fires
+		// in viewDiff when the inline-diff editor is open so the
+		// textarea between code lines captures keystrokes.
+		if m.editorActive && (m.mode == viewEditor || m.mode == viewDiff) {
 			return m.handleEditorKey(msg)
 		}
 
