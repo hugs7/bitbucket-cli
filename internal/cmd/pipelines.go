@@ -15,7 +15,58 @@ func newPipelinesCmd() *cobra.Command {
 		Aliases: []string{"pipe", "build", "builds"},
 		Short:   "Work with Bitbucket Pipelines / build statuses",
 	}
-	c.AddCommand(newPipelinesListCmd())
+	c.AddCommand(newPipelinesListCmd(), newPipelinesRunCmd(), newPipelinesCancelCmd())
+	return c
+}
+
+func newPipelinesRunCmd() *cobra.Command {
+	var repoFlag, hostFlag, ref string
+	c := &cobra.Command{
+		Use:     "run",
+		Aliases: []string{"trigger"},
+		Short:   "Trigger a pipeline (Bitbucket Cloud only)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			b, err := svc.TriggerPipeline(project, slug, ref)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Triggered pipeline %s on %s\n", b.ID, b.Ref)
+			if b.URL != "" {
+				fmt.Println(b.URL)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	c.Flags().StringVar(&ref, "ref", "", "branch / ref to run on (default: repo default branch)")
+	return c
+}
+
+func newPipelinesCancelCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "cancel <build-id-or-uuid>",
+		Short: "Cancel a running pipeline (Bitbucket Cloud only)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			if err := svc.CancelPipeline(project, slug, args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("✓ Cancelled pipeline %s\n", args[0])
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	return c
 }
 

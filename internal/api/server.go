@@ -467,6 +467,33 @@ func (s *serverService) RemoveReviewers(project, slug string, prID int, username
 	})
 }
 
+// CreateRepo creates a new repository in the given project.
+func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
+	scm := in.SCM
+	if scm == "" {
+		scm = "git"
+	}
+	body := map[string]any{"name": in.Name, "scmId": scm}
+	if in.Description != "" {
+		body["description"] = in.Description
+	}
+	var r srvRepo
+	if err := s.client.postJSON(fmt.Sprintf("projects/%s/repos", in.Project), body, &r); err != nil {
+		return nil, err
+	}
+	out := r.toRepo()
+	return &out, nil
+}
+
+// Bitbucket Server does not have a built-in pipelines system; CI is
+// reported via build-status. Trigger/cancel are CI-system specific.
+func (s *serverService) TriggerPipeline(project, slug, ref string) (*Build, error) {
+	return nil, fmt.Errorf("triggering builds is not supported on Bitbucket Server (use your CI system, e.g. Bamboo / Jenkins)")
+}
+func (s *serverService) CancelPipeline(project, slug, idOrUUID string) error {
+	return fmt.Errorf("cancelling builds is not supported on Bitbucket Server (use your CI system)")
+}
+
 // ListBuildsForRef hits the build-status API. Server gives us builds keyed
 // by commit SHA, so we first resolve the latest commit on the ref.
 func (s *serverService) ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error) {

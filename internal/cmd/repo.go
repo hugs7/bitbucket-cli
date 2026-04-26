@@ -20,7 +20,66 @@ func newRepoCmd() *cobra.Command {
 		Aliases: []string{"r"},
 		Short:   "Work with Bitbucket repositories",
 	}
-	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd())
+	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd())
+	return c
+}
+
+func newRepoCreateCmd() *cobra.Command {
+	var hostFlag, project, name, slug, description string
+	var private bool
+	c := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new repository",
+		Long: `Create a new repository.
+
+Server: --project is the project key.
+Cloud:  --project is the workspace; --name becomes the slug if --slug is omitted.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if project == "" {
+				return fmt.Errorf("--project is required")
+			}
+			if name == "" {
+				return fmt.Errorf("--name is required")
+			}
+			cfg := config.Get()
+			host := hostFlag
+			if host == "" {
+				host = cfg.DefaultHost
+			}
+			hcfg, ok := cfg.Hosts[host]
+			if !ok {
+				return fmt.Errorf("no auth for host %q", host)
+			}
+			svc, err := api.NewService(host, hcfg)
+			if err != nil {
+				return err
+			}
+			r, err := svc.CreateRepo(api.CreateRepoInput{
+				Project:     project,
+				Slug:        slug,
+				Name:        name,
+				Description: description,
+				Private:     private,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Created %s/%s\n", r.Project, r.Slug)
+			if r.WebURL != "" {
+				fmt.Println(r.WebURL)
+			}
+			if r.CloneHTTPS != "" {
+				fmt.Println("clone (https):", r.CloneHTTPS)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: configured default)")
+	c.Flags().StringVarP(&project, "project", "p", "", "project key (Server) or workspace (Cloud)")
+	c.Flags().StringVarP(&name, "name", "n", "", "repository name")
+	c.Flags().StringVar(&slug, "slug", "", "repository slug (Cloud; defaults to --name)")
+	c.Flags().StringVarP(&description, "description", "d", "", "repository description")
+	c.Flags().BoolVar(&private, "private", true, "private repo (Cloud only)")
 	return c
 }
 

@@ -326,6 +326,70 @@ func (c *cloudService) RemoveReviewers(workspace, slug string, prID int, usernam
 	return errCloudTodo
 }
 
+func (c *cloudService) CreateRepo(in CreateRepoInput) (*Repo, error) {
+	scm := in.SCM
+	if scm == "" {
+		scm = "git"
+	}
+	slug := in.Slug
+	if slug == "" {
+		slug = in.Name
+	}
+	body := map[string]any{"scm": scm, "is_private": in.Private}
+	if in.Description != "" {
+		body["description"] = in.Description
+	}
+	var r clRepo
+	if err := c.client.postJSON(fmt.Sprintf("repositories/%s/%s", in.Project, slug), body, &r); err != nil {
+		return nil, err
+	}
+	out := r.toRepo()
+	return &out, nil
+}
+
+func (c *cloudService) TriggerPipeline(workspace, slug, ref string) (*Build, error) {
+	if ref == "" {
+		repo, err := c.GetRepo(workspace, slug)
+		if err != nil {
+			return nil, err
+		}
+		ref = repo.DefaultRef
+	}
+	body := map[string]any{
+		"target": map[string]any{
+			"type":     "pipeline_ref_target",
+			"ref_type": "branch",
+			"ref_name": ref,
+		},
+	}
+	var p clPipeline
+	if err := c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pipelines/", workspace, slug), body, &p); err != nil {
+		return nil, err
+	}
+	state := p.State.Name
+	if p.State.Result.Name != "" {
+		state = p.State.Result.Name
+	}
+	return &Build{
+		ID:        fmt.Sprintf("#%d", p.BuildNumber),
+		Name:      p.UUID,
+		State:     state,
+		URL:       p.Links.HTML.Href,
+		Ref:       p.Target.RefName,
+		Commit:    p.Target.Commit.Hash,
+		CreatedAt: parseTime(p.CreatedOn),
+	}, nil
+}
+
+func (c *cloudService) CancelPipeline(workspace, slug, idOrUUID string) error {
+	id := idOrUUID
+	if !strings.HasPrefix(id, "{") {
+		// Numeric or '#N' — resolve via list.
+		id = strings.TrimPrefix(id, "#")
+	}
+	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pipelines/%s/stopPipeline", workspace, slug, id), nil, nil)
+}
+
 func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) ([]Build, error) {
 	if limit <= 0 {
 		limit = 25

@@ -42,7 +42,11 @@ type Service interface {
 	AddReviewers(project, slug string, prID int, usernames []string) error
 	RemoveReviewers(project, slug string, prID int, usernames []string) error
 
+	CreateRepo(in CreateRepoInput) (*Repo, error)
+
 	ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error)
+	TriggerPipeline(project, slug, ref string) (*Build, error)
+	CancelPipeline(project, slug, idOrUUID string) error
 }
 
 type CreatePRInput struct {
@@ -50,6 +54,15 @@ type CreatePRInput struct {
 	Description string
 	SourceRef   string
 	TargetRef   string
+}
+
+type CreateRepoInput struct {
+	Project     string // workspace (Cloud) or project key (Server)
+	Slug        string // optional for Cloud; required for Server
+	Name        string
+	Description string
+	Private     bool
+	SCM         string // defaults to "git"
 }
 
 // NewService picks the right implementation for a configured host.
