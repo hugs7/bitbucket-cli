@@ -2,37 +2,161 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"text/tabwriter"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+
+	"github.com/hugo/bb/internal/api"
+	"github.com/hugo/bb/internal/config"
 )
 
 func newRepoCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "repo",
-		Short: "Work with Bitbucket repositories",
+		Use:     "repo",
+		Aliases: []string{"r"},
+		Short:   "Work with Bitbucket repositories",
 	}
-	c.AddCommand(
-		&cobra.Command{
-			Use:   "list",
-			Short: "List repositories (not yet implemented)",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return fmt.Errorf("not yet implemented")
-			},
+	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd())
+	return c
+}
+
+func newRepoListCmd() *cobra.Command {
+	var project, hostFlag string
+	var limit int
+	c := &cobra.Command{
+		Use:   "list",
+		Short: "List repositories in a project / workspace",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if project == "" {
+				return fmt.Errorf("--project (workspace for cloud, project key for server) is required")
+			}
+			cfg := config.Get()
+			host := hostFlag
+			if host == "" {
+				host = cfg.DefaultHost
+			}
+			hcfg, ok := cfg.Hosts[host]
+			if !ok {
+				return fmt.Errorf("no auth for host %q", host)
+			}
+			svc, err := api.NewService(host, hcfg)
+			if err != nil {
+				return err
+			}
+			repos, err := svc.ListRepos(project, limit)
+			if err != nil {
+				return err
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "REPO\tDEFAULT\tDESCRIPTION")
+			for _, r := range repos {
+				desc := strings.SplitN(r.Description, "\n", 2)[0]
+				if len(desc) > 60 {
+					desc = desc[:57] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n",
+					lipgloss.NewStyle().Bold(true).Render(r.Project+"/"+r.Slug),
+					r.DefaultRef, desc,
+				)
+			}
+			return w.Flush()
 		},
-		&cobra.Command{
-			Use:   "view [workspace/repo]",
-			Short: "View a repository (not yet implemented)",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return fmt.Errorf("not yet implemented")
-			},
+	}
+	c.Flags().StringVarP(&project, "project", "p", "", "project key (server) or workspace (cloud)")
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: configured default)")
+	c.Flags().IntVarP(&limit, "limit", "L", 25, "max repos to fetch")
+	return c
+}
+
+func newRepoViewCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "view",
+		Short: "View details of a repository",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			r, err := svc.GetRepo(project, slug)
+			if err != nil {
+				return err
+			}
+			b := lipgloss.NewStyle().Bold(true)
+			fmt.Println(b.Render(r.Project + "/" + r.Slug))
+			if r.Description != "" {
+				fmt.Println(r.Description)
+			}
+			fmt.Println()
+			fmt.Printf("Default branch: %s\n", r.DefaultRef)
+			fmt.Printf("Web URL:        %s\n", r.WebURL)
+			fmt.Printf("Clone (HTTPS):  %s\n", r.CloneHTTPS)
+			fmt.Printf("Clone (SSH):    %s\n", r.CloneSSH)
+			return nil
 		},
-		&cobra.Command{
-			Use:   "clone [workspace/repo]",
-			Short: "Clone a repository (not yet implemented)",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return fmt.Errorf("not yet implemented")
-			},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
+	return c
+}
+
+func newRepoCloneCmd() *cobra.Command {
+	var hostFlag string
+	var useSSH bool
+	c := &cobra.Command{
+		Use:   "clone <PROJ/repo> [-- <git-clone-args>...]",
+		Short: "Clone a repository",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(args[0], hostFlag)
+			if err != nil {
+				return err
+			}
+			r, err := svc.GetRepo(project, slug)
+			if err != nil {
+				return err
+			}
+			url := r.CloneHTTPS
+			if useSSH && r.CloneSSH != "" {
+				url = r.CloneSSH
+			}
+			if url == "" {
+				return fmt.Errorf("no clone URL available")
+			}
+			gitArgs := append([]string{"clone", url}, args[1:]...)
+			gc := exec.Command("git", gitArgs...)
+			gc.Stdout, gc.Stderr, gc.Stdin = os.Stdout, os.Stderr, os.Stdin
+			return gc.Run()
 		},
-	)
+	}
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: configured default)")
+	c.Flags().BoolVar(&useSSH, "ssh", false, "use the SSH clone URL")
+	return c
+}
+
+func newRepoBrowseCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:   "browse",
+		Short: "Open the repository in your browser",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			r, err := svc.GetRepo(project, slug)
+			if err != nil {
+				return err
+			}
+			fmt.Println(r.WebURL)
+			return openInBrowser(r.WebURL)
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
 	return c
 }
