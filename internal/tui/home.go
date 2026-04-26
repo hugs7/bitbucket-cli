@@ -52,6 +52,13 @@ func Home(svc api.Service, prev *HomeState) (*HomeAction, *HomeState, error) {
 		m.tab = prev.Tab
 		m.browseQ = prev.BrowseQ
 		m.restore = prev
+		// If a previous search will be auto-replayed by Init, flag
+		// the searching state up front so the very first frame shows
+		// the loader instead of an empty list.
+		if prev.BrowseQ != "" {
+			m.searching = true
+			m.loading = true
+		}
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := p.Run()
@@ -165,10 +172,11 @@ type homeModel struct {
 	search   textinput.Model
 	preview  viewport.Model
 	spinner  spinner.Model
-	loading  bool
-	status   string
-	err      error
-	browseQ  string // last search executed
+	loading   bool
+	searching bool // true while a SearchRepos call is in flight
+	status    string
+	err       error
+	browseQ   string // last search executed
 
 	// restore carries cursor positions / search to re-apply after the
 	// underlying lists have been populated (Init / load callbacks).
@@ -274,6 +282,8 @@ func (m homeModel) Init() tea.Cmd {
 	// If the user had an active search before the round-trip, kick
 	// it off again so the Browse pane is re-populated.
 	if m.browseQ != "" {
+		m.searching = true
+		m.loading = true
 		cmds = append(cmds, m.fetchRepos(m.browseQ))
 	}
 	return tea.Batch(cmds...)
@@ -360,6 +370,7 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reposLoadedMsg:
 		m.loading = false
+		m.searching = false
 		items := make([]list.Item, 0, len(msg.repos))
 		for _, r := range msg.repos {
 			items = append(items, repoBrowseItem{r})
@@ -417,6 +428,8 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.browseQ = q
 				m.loading = true
+				m.searching = true
+				m.browse.SetItems(nil) // clear stale results immediately
 				return m, tea.Batch(m.spinner.Tick, m.fetchRepos(q))
 			case "esc":
 				m.search.Blur()
@@ -473,6 +486,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.next = &HomeAction{Kind: "prs", Project: project, Slug: slug}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Enter):
+			// Enter is the consistent "open this repo" action across
+			// every tab — drills into the PR TUI for the selected
+			// repo. README loading happens automatically on j/k
+			// navigation, so Enter doesn't need to (re)trigger it.
 			switch m.tab {
 			case tabReviews:
 				if it, ok := m.reviews.SelectedItem().(reviewItem); ok {
@@ -486,8 +503,8 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case tabBrowse:
 				if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
-					m.loading = true
-					return m, tea.Batch(m.spinner.Tick, m.fetchReadme(it.r.Project, it.r.Slug))
+					m.next = &HomeAction{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+					return m, tea.Quit
 				}
 			}
 			return m, nil
@@ -656,29 +673,49 @@ func (m homeModel) View() string {
 
 	tabs := m.renderTabs()
 
+	loadBanner := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).
+		Background(lipgloss.Color("57")).Padding(0, 2)
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
 	var leftPane string
 	switch m.tab {
 	case tabReviews:
-		leftPane = m.reviews.View()
+		if m.loading && len(m.reviews.Items()) == 0 {
+			leftPane = loadBanner.Render(m.spinner.View()+" loading reviews…") +
+				"\n\n" + muted.Render("Fetching PRs assigned to you across the host…")
+		} else {
+			leftPane = m.reviews.View()
+		}
 	case tabFavourites:
 		if len(m.favs.Items()) == 0 {
-			leftPane = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("No favourites yet — press f on a repo (in Reviews or Browse) to pin it.")
+			leftPane = muted.Render("No favourites yet — press f on a repo (in Reviews or Browse) to pin it.")
 		} else {
 			leftPane = m.favs.View()
 		}
 	case tabBrowse:
 		var searchLine string
-		if m.search.Focused() {
+		switch {
+		case m.search.Focused():
 			searchLine = m.search.View()
-		} else if m.browseQ != "" {
-			searchLine = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("🔎 " + m.browseQ + "   (/ to search again · ctrl-u to clear in field)")
-		} else {
-			searchLine = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("Press / to search.")
+		case m.browseQ != "":
+			searchLine = muted.Render("🔎 " + m.browseQ + "   (/ to search again · ctrl-u to clear in field)")
+		default:
+			searchLine = muted.Render("Press / to search.")
 		}
-		leftPane = searchLine + "\n" + m.browse.View()
+		var listView string
+		switch {
+		case m.searching:
+			// Substring scans can sweep thousands of repos — show a
+			// prominent banner in the list pane (not just a tiny
+			// spinner in the footer) so the user knows we're working.
+			listView = "\n" + loadBanner.Render(m.spinner.View()+" searching for "+m.browseQ+"…") +
+				"\n\n" + muted.Render("(scanning the full repo list — this may take a moment)")
+		case m.browseQ != "" && len(m.browse.Items()) == 0:
+			listView = "\n" + muted.Render("No repos matched "+m.browseQ+".")
+		default:
+			listView = m.browse.View()
+		}
+		leftPane = searchLine + "\n" + listView
 	}
 
 	leftStyled := lipgloss.NewStyle().Padding(0, 1).Render(leftPane)
