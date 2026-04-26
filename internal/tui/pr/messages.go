@@ -45,3 +45,12 @@ type editorResultMsg struct {
 	side string // "new" or "old"
 }
 type errMsg struct{ err error }
+
+// aiDescribeDoneMsg lands when the configured AI command returns a
+// suggested PR description. The TUI then opens the description editor
+// pre-filled with `text` so the user can review / tweak before saving.
+type aiDescribeDoneMsg struct {
+	prID int
+	text string
+	err  error
+}

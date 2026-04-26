@@ -119,6 +119,14 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				}
 				return nil
 			}},
+			paletteItem{label: "AI: generate description from diff", hint: "palette", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					m.loading = true
+					m.status = "running AI command…"
+					return tea.Batch(m.spinner.Tick, m.fetchAIDescription(it.pr.ID))
+				}
+				return nil
+			}},
 			paletteItem{label: "Create new PR", hint: "C", run: func(m *model) tea.Cmd {
 				return m.startCreatePR()
 			}},

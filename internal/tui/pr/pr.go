@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/hugs7/bitbucket-cli/internal/aiutil"
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 	"github.com/hugs7/bitbucket-cli/internal/config"
@@ -436,6 +437,29 @@ func editInTUI(purpose, hint string, prID, commentID int, initial string) tea.Cm
 	return requestEditPR(purpose, hint, prID, commentID, initial)
 }
 
+// fetchAIDescription pulls the diff for the given PR, pipes it
+// through the configured AI command, and returns the result as an
+// aiDescribeDoneMsg. The TUI then opens the description editor
+// pre-seeded with the suggestion so the user can edit before saving.
+func (m *model) fetchAIDescription(prID int) tea.Cmd {
+	project, slug := m.project, m.slug
+	return func() tea.Msg {
+		aiCmd := aiutil.Resolve("")
+		if aiCmd == "" {
+			return aiDescribeDoneMsg{prID: prID, err: fmt.Errorf("no AI command configured (ai_cmd / $BB_AI_CMD)")}
+		}
+		diff, err := m.svc.PRDiff(project, slug, prID)
+		if err != nil {
+			return aiDescribeDoneMsg{prID: prID, err: err}
+		}
+		if strings.TrimSpace(diff) == "" {
+			return aiDescribeDoneMsg{prID: prID, err: fmt.Errorf("PR has an empty diff")}
+		}
+		out, err := aiutil.Run(aiCmd, diff)
+		return aiDescribeDoneMsg{prID: prID, text: strings.TrimSpace(out), err: err}
+	}
+}
+
 // ---------- update ----------
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -623,6 +647,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.fetchPRs())
 		}
 		return m, nil
+
+	case aiDescribeDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status = "✗ ai describe: " + msg.err.Error()
+			return m, nil
+		}
+		m.status = fmt.Sprintf("✓ AI description ready · review & save (#%d)", msg.prID)
+		// Open the description editor with the AI suggestion as the
+		// initial buffer; existing edit-description flow handles save.
+		return m, editInTUI("edit-description",
+			fmt.Sprintf("pr-%d-ai-description", msg.prID), msg.prID, 0, msg.text)
 
 	case wantEditMsg:
 		// Branch on the user's preference: inline (PIP) overlay or
