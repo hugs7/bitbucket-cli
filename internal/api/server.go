@@ -643,8 +643,10 @@ func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 
 	// 2) Substring fallback: page through the full repo list and
 	// keep anything containing q anywhere in slug / name / project.
-	const pageSize = 100
-	const maxPages = 20
+	// pageSize is well below most Server installs' max-limit cap of
+	// 1000; maxPages × pageSize = 50 000 covers very large estates.
+	const pageSize = 500
+	const maxPages = 100
 	start := 0
 	for p := 0; p < maxPages; p++ {
 		var page srvPaged[srvRepo]

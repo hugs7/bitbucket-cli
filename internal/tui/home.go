@@ -9,6 +9,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -178,6 +179,12 @@ type homeModel struct {
 	err       error
 	browseQ   string // last search executed
 
+	// Hot-search debounce: each keystroke increments searchVersion
+	// and schedules a Tick. The Tick handler only fires the actual
+	// SearchRepos call if its captured version is still current,
+	// effectively cancelling stale in-flight requests for free.
+	searchVersion int
+
 	// restore carries cursor positions / search to re-apply after the
 	// underlying lists have been populated (Init / load callbacks).
 	// Cleared after each field is consumed.
@@ -191,6 +198,10 @@ type reposLoadedMsg struct{ repos []api.Repo }
 type readmeLoadedMsg struct {
 	project, slug string
 	body          string
+}
+type searchTickMsg struct {
+	q       string
+	version int
 }
 type homeErrMsg struct{ err error }
 
@@ -298,6 +309,31 @@ func (m homeModel) fetchReviews() tea.Cmd {
 		}
 		return reviewsLoadedMsg{prs: prs}
 	}
+}
+
+// runSearchNow fires a search immediately (used for explicit Enter on
+// the search input). Bumps the version so any in-flight debounced
+// tick is invalidated.
+func (m *homeModel) runSearchNow(q string) tea.Cmd {
+	m.searchVersion++
+	m.browseQ = q
+	m.loading = true
+	m.searching = true
+	m.browse.SetItems(nil)
+	return tea.Batch(m.spinner.Tick, m.fetchRepos(q))
+}
+
+// scheduleHotSearch schedules a debounced search 250ms after the last
+// keystroke. The captured version is checked when the tick fires —
+// only the latest scheduled tick wins, so rapid typing doesn't spam
+// the API.
+func (m *homeModel) scheduleHotSearch() tea.Cmd {
+	m.searchVersion++
+	v := m.searchVersion
+	q := strings.TrimSpace(m.search.Value())
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return searchTickMsg{q: q, version: v}
+	})
 }
 
 func (m homeModel) fetchRepos(query string) tea.Cmd {
@@ -408,8 +444,31 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview.GotoTop()
 		return m, nil
 
+	case searchTickMsg:
+		// Stale tick (a newer keystroke superseded this one) — drop.
+		if msg.version != m.searchVersion {
+			return m, nil
+		}
+		// Empty query: clear results, no API call.
+		if msg.q == "" {
+			m.browse.SetItems(nil)
+			m.browseQ = ""
+			m.loading = false
+			m.searching = false
+			return m, nil
+		}
+		// Already searching for or showing this query — skip.
+		if msg.q == m.browseQ {
+			return m, nil
+		}
+		m.browseQ = msg.q
+		m.loading = true
+		m.searching = true
+		return m, tea.Batch(m.spinner.Tick, m.fetchRepos(msg.q))
+
 	case homeErrMsg:
 		m.loading = false
+		m.searching = false
 		m.status = "✗ " + msg.err.Error()
 		return m, nil
 
@@ -417,7 +476,9 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If the search input is focused, route keys there until the
 		// user hits enter or esc. Ctrl-U clears the buffer in place
 		// (vim-style) so users can re-search without manually
-		// backspacing the previous query.
+		// backspacing the previous query. Every other keystroke
+		// schedules a debounced "hot search" so results update as
+		// the user types.
 		if m.search.Focused() {
 			switch msg.String() {
 			case "enter":
@@ -426,21 +487,19 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if q == "" {
 					return m, nil
 				}
-				m.browseQ = q
-				m.loading = true
-				m.searching = true
-				m.browse.SetItems(nil) // clear stale results immediately
-				return m, tea.Batch(m.spinner.Tick, m.fetchRepos(q))
+				return m, m.runSearchNow(q)
 			case "esc":
 				m.search.Blur()
 				return m, nil
 			case "ctrl+u":
 				m.search.SetValue("")
+				m.browse.SetItems(nil)
+				m.browseQ = ""
 				return m, nil
 			}
 			var cmd tea.Cmd
 			m.search, cmd = m.search.Update(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, m.scheduleHotSearch())
 		}
 
 		switch {
