@@ -603,39 +603,54 @@ func (s *serverService) CreateRepo(in CreateRepoInput) (*Repo, error) {
 
 // SearchRepos searches across projects on Bitbucket Server.
 //
-// Bitbucket Server's `name=` parameter does a case-insensitive prefix
-// match, so a query like "checkout" won't return "merchant-checkout".
-// We try the cheap prefix query first, and if it yields no results we
-// page through the full repo list and apply a substring match
-// client-side. The page cap keeps this bounded on large instances.
+// Bitbucket Server's `name=` parameter is a case-insensitive prefix
+// match, so a query like "vite" will miss "westpac-viteframework-…".
+// We always combine prefix-matches (cheap, surfaced first) with a
+// paginated client-side substring scan so users get both behaviours.
+// The page cap keeps this bounded on large instances.
 func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	q := strings.ToLower(strings.TrimSpace(query))
 
+	out := []Repo{}
+	seen := map[string]bool{}
+	add := func(r Repo) bool {
+		k := r.Project + "/" + r.Slug
+		if seen[k] {
+			return false
+		}
+		seen[k] = true
+		out = append(out, r)
+		return len(out) >= limit
+	}
+
+	// 1) Cheap prefix-match query first — these are surfaced at the
+	// top of the result list because they're usually what the user
+	// meant when they typed an exact stem.
 	if q != "" {
 		var page srvPaged[srvRepo]
 		params := map[string]string{"limit": itoa(limit), "name": query}
-		if err := s.client.getJSON("repos"+queryString(params), &page); err == nil && len(page.Values) > 0 {
-			out := make([]Repo, 0, len(page.Values))
+		if err := s.client.getJSON("repos"+queryString(params), &page); err == nil {
 			for _, r := range page.Values {
-				out = append(out, r.toRepo())
+				if add(r.toRepo()) {
+					return out, nil
+				}
 			}
-			return out, nil
 		}
 	}
 
-	// Substring fallback (or empty-query: just list latest).
+	// 2) Substring fallback: page through the full repo list and
+	// keep anything containing q anywhere in slug / name / project.
 	const pageSize = 100
 	const maxPages = 20
-	out := []Repo{}
 	start := 0
 	for p := 0; p < maxPages; p++ {
 		var page srvPaged[srvRepo]
 		params := map[string]string{"limit": itoa(pageSize), "start": itoa(start)}
 		if err := s.client.getJSON("repos"+queryString(params), &page); err != nil {
-			return nil, err
+			return out, nil
 		}
 		for _, r := range page.Values {
 			repo := r.toRepo()
@@ -643,8 +658,7 @@ func (s *serverService) SearchRepos(query string, limit int) ([]Repo, error) {
 				strings.Contains(strings.ToLower(repo.Slug), q) ||
 				strings.Contains(strings.ToLower(repo.Name), q) ||
 				strings.Contains(strings.ToLower(repo.Project), q) {
-				out = append(out, repo)
-				if len(out) >= limit {
+				if add(repo) {
 					return out, nil
 				}
 			}
