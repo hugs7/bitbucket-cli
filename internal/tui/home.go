@@ -168,12 +168,13 @@ type homeModel struct {
 	// Dashboard sections — each loaded in parallel from Init.
 	// dashCursor walks the flattened, selectable rows across all
 	// sections (section headers are skipped).
-	reviewPRs    []api.ReviewPR
-	authoredPRs  []api.ReviewPR
-	closedPRs    []api.ReviewPR
-	recentRepos  []api.Repo
+	reviewPRs   []api.ReviewPR
+	authoredPRs []api.ReviewPR
+	closedPRs   []api.ReviewPR
+	recentRepos []api.Repo
 	dashCursor  int
-	prevDashRow string // previous selected row identity, for preview-refresh detection
+	dashVP      viewport.Model // scrolls when content exceeds the left pane height
+	prevDashRow string         // previous selected row identity, for preview-refresh detection
 
 	loading   bool
 	searching bool // true while a SearchRepos call is in flight
@@ -330,6 +331,7 @@ func newHomeModel(svc api.Service) homeModel {
 	ti.CharLimit = 120
 
 	pv := viewport.New(0, 0)
+	dashVP := viewport.New(0, 0)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -337,6 +339,7 @@ func newHomeModel(svc api.Service) homeModel {
 	m := homeModel{
 		svc:         svc,
 		tab:         tabDashboard,
+		dashVP:      dashVP,
 		keys:        defaultHomeKeys(),
 		help:        help.New(),
 		favs:        fl,
@@ -559,6 +562,8 @@ func (m *homeModel) layout() {
 	m.search.Width = listInnerW - 4
 	m.preview.Width = rightW - 2
 	m.preview.Height = listInnerH
+	m.dashVP.Width = listInnerW
+	m.dashVP.Height = listInnerH
 }
 
 func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -946,7 +951,54 @@ func (m *homeModel) dashboardKey(msg tea.KeyMsg) tea.Cmd {
 	if m.dashCursor == prev {
 		return nil
 	}
+	m.snapDashViewport()
 	return m.refreshDashboardPreview(false)
+}
+
+// dashCursorLine returns the rendered-line index of the row currently
+// under dashCursor, plus its height in lines. Mirrors the layout
+// inside renderDashboard so we can snap the viewport without
+// re-rendering the content.
+func (m *homeModel) dashCursorLine() (line, height int) {
+	globalIdx := 0
+	currentLine := 0
+	for i, sec := range m.dashboardSections() {
+		if i > 0 {
+			currentLine++ // blank line between sections
+		}
+		currentLine++ // section header
+		if len(sec.rows) == 0 {
+			currentLine++ // "(empty)" placeholder
+			continue
+		}
+		for range sec.rows {
+			if globalIdx == m.dashCursor {
+				return currentLine, 2
+			}
+			currentLine += 2
+			globalIdx++
+		}
+	}
+	return -1, 0
+}
+
+// snapDashViewport adjusts dashVP.YOffset so the row under the
+// cursor stays inside the visible window.
+func (m *homeModel) snapDashViewport() {
+	line, height := m.dashCursorLine()
+	if line < 0 || m.dashVP.Height == 0 {
+		return
+	}
+	off := m.dashVP.YOffset
+	if line < off {
+		off = line
+	} else if line+height > off+m.dashVP.Height {
+		off = line + height - m.dashVP.Height
+	}
+	if off < 0 {
+		off = 0
+	}
+	m.dashVP.SetYOffset(off)
 }
 
 // afterDashLoad runs after one of the four section endpoints replies.
@@ -1285,9 +1337,10 @@ var (
 	dashRowMeta = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
-// renderDashboard renders the four stacked sections inside the left
-// pane. Long dashboards scroll naturally because we only emit the
-// first listInnerH lines (rest is clipped by the bordered pane).
+// renderDashboard renders the four stacked sections, drives the
+// viewport with the rendered content, and snaps the viewport's
+// vertical offset so the highlighted row stays visible. Returns the
+// final viewport view (already clipped to innerH lines).
 func (m *homeModel) renderDashboard(innerW, innerH int) string {
 	sections := m.dashboardSections()
 
@@ -1306,8 +1359,8 @@ func (m *homeModel) renderDashboard(innerW, innerH int) string {
 		return card("57", innerW, innerH, body)
 	}
 
-	// Walk sections, rendering header + up to N rows. Track the
-	// global row index so we can highlight the row under dashCursor.
+	// Walk sections, rendering header + rows. The viewport's
+	// YOffset (set in Update via snapDashViewport) handles scroll.
 	var sb strings.Builder
 	globalIdx := 0
 	for i, sec := range sections {
@@ -1331,7 +1384,9 @@ func (m *homeModel) renderDashboard(innerW, innerH int) string {
 			globalIdx++
 		}
 	}
-	return sb.String()
+
+	m.dashVP.SetContent(sb.String())
+	return m.dashVP.View()
 }
 
 // renderDashRow renders a single dashboard row (PR or repo). The

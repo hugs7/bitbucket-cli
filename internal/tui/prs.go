@@ -501,6 +501,10 @@ func buildPaletteItems(mode viewMode) []list.Item {
 			}},
 			paletteItem{label: "Approve PR", hint: "a", run: func(m *model) tea.Cmd {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
+					if m.isOwnPR(it.pr) {
+						m.status = "✗ can't approve your own PR"
+						return nil
+					}
 					id := it.pr.ID
 					m.loading = true
 					return tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("approved #%d", id), true, func() error {
@@ -773,6 +777,18 @@ func (m *model) fetchDiffComments(id int) tea.Cmd {
 		return diffCommentsLoadedMsg{id: id, comments: cs}
 	}
 }
+// isOwnPR reports whether the given PR was opened by the configured
+// user. Bitbucket rejects self-approval, so callers gate the
+// Approve / Unapprove / NeedsWork commands on this to avoid an API
+// round-trip that always fails.
+func (m *model) isOwnPR(pr api.PullRequest) bool {
+	me := strings.ToLower(strings.TrimSpace(m.svc.Me()))
+	if me == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(pr.Author), me)
+}
+
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		err := fn()
@@ -1557,6 +1573,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				case key.Matches(msg, m.keys.Approve):
+					if m.isOwnPR(it.pr) {
+						m.status = "✗ can't approve your own PR"
+						return m, nil
+					}
 					m.loading = true
 					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("approved #%d", id), true, func() error {
 						return m.svc.ApprovePR(m.project, m.slug, id)
@@ -1567,6 +1587,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.svc.UnapprovePR(m.project, m.slug, id)
 					}))
 				case key.Matches(msg, m.keys.NeedsWork):
+					if m.isOwnPR(it.pr) {
+						m.status = "✗ can't mark your own PR as needs work"
+						return m, nil
+					}
 					m.loading = true
 					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("#%d needs work", id), true, func() error {
 						return m.svc.NeedsWorkPR(m.project, m.slug, id)
@@ -1694,6 +1718,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.Approve):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
+				if m.isOwnPR(it.pr) {
+					m.status = "✗ can't approve your own PR"
+					return m, nil
+				}
 				id := it.pr.ID
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("approved #%d", id), true, func() error {
@@ -1710,6 +1738,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.NeedsWork):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
+				if m.isOwnPR(it.pr) {
+					m.status = "✗ can't mark your own PR as needs work"
+					return m, nil
+				}
 				id := it.pr.ID
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("#%d needs work", id), true, func() error {

@@ -15,6 +15,7 @@ type serverService struct {
 }
 
 func (s *serverService) Host() string { return s.host }
+func (s *serverService) Me() string   { return s.client.cfg.Username }
 
 // --- raw response shapes (only the fields we need) ---
 

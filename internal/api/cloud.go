@@ -14,6 +14,7 @@ type cloudService struct {
 }
 
 func (c *cloudService) Host() string { return c.host }
+func (c *cloudService) Me() string   { return c.client.cfg.Username }
 
 type clLinks struct {
 	HTML  struct{ Href string `json:"href"` } `json:"html"`

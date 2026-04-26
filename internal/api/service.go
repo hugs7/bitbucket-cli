@@ -18,6 +18,10 @@ import (
 type Service interface {
 	Host() string
 
+	// Me returns the configured username for this host so callers can
+	// detect "this is my own PR" without reaching into config directly.
+	Me() string
+
 	GetRepo(project, slug string) (*Repo, error)
 	ListRepos(project string, limit int) ([]Repo, error)
 
