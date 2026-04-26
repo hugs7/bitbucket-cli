@@ -49,10 +49,19 @@ func (c *Client) NewRequest(method, endpoint string, body io.Reader) (*http.Requ
 	if err != nil {
 		return nil, err
 	}
-	if c.cfg.Username != "" && c.cfg.Token != "" {
-		req.SetBasicAuth(c.cfg.Username, c.cfg.Token)
-	} else if c.cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	// Bitbucket Server / Data Center HTTP access tokens are Bearer tokens.
+	// Bitbucket Cloud app passwords use HTTP Basic with the username.
+	if c.cfg.Token != "" {
+		switch c.cfg.Type {
+		case "server":
+			req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+		default:
+			if c.cfg.Username != "" {
+				req.SetBasicAuth(c.cfg.Username, c.cfg.Token)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+			}
+		}
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "bb-cli")
