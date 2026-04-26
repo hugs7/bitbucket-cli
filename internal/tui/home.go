@@ -205,17 +205,32 @@ type searchTickMsg struct {
 }
 type homeErrMsg struct{ err error }
 
+// accentDelegate returns a default list delegate with the selected-row
+// left accent bar tinted to match the home palette (indigo 57 + cyan
+// 159) so a highlighted entry pops on every tab.
+func accentDelegate() list.DefaultDelegate {
+	d := list.NewDefaultDelegate()
+	d.Styles.SelectedTitle = d.Styles.SelectedTitle.
+		BorderForeground(lipgloss.Color("57")).
+		Foreground(lipgloss.Color("231")).
+		Bold(true)
+	d.Styles.SelectedDesc = d.Styles.SelectedDesc.
+		BorderForeground(lipgloss.Color("57")).
+		Foreground(lipgloss.Color("159"))
+	return d
+}
+
 func newHomeModel(svc api.Service) homeModel {
-	rl := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	rl := list.New(nil, accentDelegate(), 0, 0)
 	rl.Title = "PRs awaiting your review"
 	rl.SetShowHelp(false)
 	rl.SetShowStatusBar(true)
 
-	fl := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	fl := list.New(nil, accentDelegate(), 0, 0)
 	fl.Title = "Pinned repos"
 	fl.SetShowHelp(false)
 
-	bl := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	bl := list.New(nil, accentDelegate(), 0, 0)
 	bl.Title = "Search results"
 	bl.SetShowHelp(false)
 
@@ -360,20 +375,34 @@ func (m homeModel) fetchReadme(project, slug string) tea.Cmd {
 
 func (m *homeModel) layout() {
 	helpH := lipgloss.Height(m.help.View(m.keys))
-	contentH := m.height - helpH - 3 // header + tabs + footer
-
-	leftW := m.width / 2
-	if leftW < 30 {
-		leftW = m.width
+	// header(1) + tabs(1) + tab-underline(1) + footer(helpH) + a
+	// blank line between body and footer = helpH + 4.
+	contentH := m.height - helpH - 4
+	if contentH < 5 {
+		contentH = 5
 	}
-	rightW := m.width - leftW - 2
 
-	m.reviews.SetSize(leftW, contentH)
-	m.favs.SetSize(leftW, contentH)
-	m.browse.SetSize(leftW, contentH-2) // leave room for search input
-	m.search.Width = leftW - 4
-	m.preview.Width = rightW
-	m.preview.Height = contentH
+	// Reserve a 1-cell column for the vertical separator between
+	// the two bordered panes.
+	usable := m.width - 1
+	leftW := usable / 2
+	if leftW < 32 {
+		leftW = usable
+	}
+	rightW := usable - leftW
+
+	// Each pane is wrapped in a rounded border (adds 2 cells on
+	// every side), so the inner content area is paneW-2 / paneH-2.
+	listInnerW := leftW - 2
+	listInnerH := contentH - 2
+	browseListInnerH := listInnerH - 3 // search box (border + 1 line)
+
+	m.reviews.SetSize(listInnerW, listInnerH)
+	m.favs.SetSize(listInnerW, listInnerH)
+	m.browse.SetSize(listInnerW, browseListInnerH)
+	m.search.Width = listInnerW - 4
+	m.preview.Width = rightW - 2
+	m.preview.Height = listInnerH
 }
 
 func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -436,11 +465,7 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
 				Render("(no README found — press p to open this repo's PRs, o to open in browser)")
 		}
-		header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("159")).
-			Render(fmt.Sprintf("📖 %s/%s", msg.project, msg.slug))
-		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-			Render("press p → PRs · o → browser · f → favourite")
-		m.preview.SetContent(header + "\n" + hint + "\n\n" + body)
+		m.preview.SetContent(m.readmeHeader(msg.project, msg.slug) + "\n\n" + body)
 		m.preview.GotoTop()
 		return m, nil
 
@@ -720,66 +745,184 @@ func (m *homeModel) updatePreviewForReviews() {
 	m.preview.GotoTop()
 }
 
+// homeMuted is the canonical muted-hint colour used across home.
+var homeMuted = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+// homeLoadBanner is the prominent "we're working" pill shared by the
+// loader cards (reviews loading, browse searching, etc).
+var homeLoadBanner = lipgloss.NewStyle().Bold(true).
+	Foreground(lipgloss.Color("231")).Background(lipgloss.Color("57")).
+	Padding(0, 2)
+
+// paneBorder returns a rounded-border style for a pane. The border
+// colour shifts to indigo when the pane is "focused" (current tab) so
+// the eye is drawn to the active region.
+func paneBorder(focused bool, w, h int) lipgloss.Style {
+	c := lipgloss.Color("238")
+	if focused {
+		c = lipgloss.Color("57")
+	}
+	s := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(c).
+		Width(w - 2).
+		Height(h - 2)
+	return s
+}
+
+// card renders a small bordered card (used for empty-state and loader
+// messages) sized to fit the inner pane area.
+func card(borderColor string, w, h int, body string) string {
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(borderColor)).
+		Padding(1, 2).
+		Width(w - 4)
+	rendered := style.Render(body)
+	// Centre the card vertically inside the pane.
+	pad := (h - lipgloss.Height(rendered)) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat("\n", pad) + rendered
+}
+
+// readmeHeader builds the strip that prefixes a loaded README in the
+// right pane: project/slug pill, default branch chip, web URL, and a
+// hint line of available actions.
+func (m *homeModel) readmeHeader(project, slug string) string {
+	title := titleBadge.Render(fmt.Sprintf(" %s/%s ", project, slug))
+	chips := []string{title}
+	// Pull metadata out of whichever list currently holds the repo.
+	var repo api.Repo
+	switch m.tab {
+	case tabFavourites:
+		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+			repo = it.r
+		}
+	case tabBrowse:
+		if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
+			repo = it.r
+		}
+	}
+	if repo.DefaultRef != "" {
+		chips = append(chips, titleSep, titleChip.Render("⎇ "+repo.DefaultRef))
+	}
+	if repo.Description != "" {
+		chips = append(chips, titleSep, titleChipDim.Render(repo.Description))
+	}
+	header := strings.Join(chips, "")
+	hint := homeMuted.Render("p → PRs  ·  o → browser  ·  f → favourite")
+	if repo.WebURL != "" {
+		hint = homeMuted.Render(repo.WebURL) + "\n" + hint
+	}
+	return header + "\n" + hint
+}
+
+// searchBox wraps the search text input (or its placeholder hint) in a
+// bordered chrome with a focus colour so users can tell at a glance
+// whether keystrokes are being captured.
+func (m *homeModel) searchBox(innerW int) string {
+	focused := m.search.Focused()
+	c := lipgloss.Color("245")
+	if focused {
+		c = lipgloss.Color("57")
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(c).
+		Padding(0, 1).
+		Width(innerW - 2)
+
+	var body string
+	switch {
+	case focused:
+		body = m.search.View()
+	case m.browseQ != "":
+		body = "🔎 " + m.browseQ + homeMuted.Render("   (/ to search again · ctrl-u to clear)")
+	default:
+		body = homeMuted.Render("🔎 press / to search repos")
+	}
+	return box.Render(body)
+}
+
 func (m homeModel) View() string {
 	if m.err != nil {
 		return statusErr.Render("error: "+m.err.Error()) + "\n\npress q to quit"
 	}
+	if m.width == 0 {
+		return "" // wait for first WindowSizeMsg before painting.
+	}
 
 	header := titleBar("BB · HOME",
 		titleChip.Render(m.svc.Host()),
-		titleChipDim.Render("press tab to switch · / to search"),
+		titleChipDim.Render("tab to switch · / to search · ? for help"),
 	)
+
+	helpH := lipgloss.Height(m.help.View(m.keys))
+	contentH := m.height - helpH - 4
+	if contentH < 5 {
+		contentH = 5
+	}
+	usable := m.width - 1
+	leftW := usable / 2
+	if leftW < 32 {
+		leftW = usable
+	}
+	rightW := usable - leftW
+	listInnerW := leftW - 2
+	listInnerH := contentH - 2
+	browseListInnerH := listInnerH - 3
 
 	tabs := m.renderTabs()
 
-	loadBanner := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).
-		Background(lipgloss.Color("57")).Padding(0, 2)
-	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-
-	var leftPane string
+	// Compose the inner content of the left pane based on the active tab.
+	var leftInner string
 	switch m.tab {
 	case tabReviews:
 		if m.loading && len(m.reviews.Items()) == 0 {
-			leftPane = loadBanner.Render(m.spinner.View()+" loading reviews…") +
-				"\n\n" + muted.Render("Fetching PRs assigned to you across the host…")
+			body := homeLoadBanner.Render(m.spinner.View()+" loading reviews…") +
+				"\n\n" + homeMuted.Render("Fetching PRs assigned to you across the host…")
+			leftInner = card("57", listInnerW, listInnerH, body)
 		} else {
-			leftPane = m.reviews.View()
+			leftInner = m.reviews.View()
 		}
 	case tabFavourites:
 		if len(m.favs.Items()) == 0 {
-			leftPane = muted.Render("No favourites yet — press f on a repo (in Reviews or Browse) to pin it.")
+			leftInner = card("245", listInnerW, listInnerH,
+				homeMuted.Render("No favourites yet.\n\nPress ")+
+					titleChip.Render("f")+
+					homeMuted.Render(" on a repo in Reviews or Browse to pin it."))
 		} else {
-			leftPane = m.favs.View()
+			leftInner = m.favs.View()
 		}
 	case tabBrowse:
-		var searchLine string
-		switch {
-		case m.search.Focused():
-			searchLine = m.search.View()
-		case m.browseQ != "":
-			searchLine = muted.Render("🔎 " + m.browseQ + "   (/ to search again · ctrl-u to clear in field)")
-		default:
-			searchLine = muted.Render("Press / to search.")
-		}
 		var listView string
 		switch {
 		case m.searching:
-			// Substring scans can sweep thousands of repos — show a
-			// prominent banner in the list pane (not just a tiny
-			// spinner in the footer) so the user knows we're working.
-			listView = "\n" + loadBanner.Render(m.spinner.View()+" searching for "+m.browseQ+"…") +
-				"\n\n" + muted.Render("(scanning the full repo list — this may take a moment)")
+			body := homeLoadBanner.Render(m.spinner.View()+" searching for "+m.browseQ+"…") +
+				"\n\n" + homeMuted.Render("(scanning the full repo list — this may take a moment)")
+			listView = card("57", listInnerW, browseListInnerH, body)
 		case m.browseQ != "" && len(m.browse.Items()) == 0:
-			listView = "\n" + muted.Render("No repos matched "+m.browseQ+".")
+			listView = card("245", listInnerW, browseListInnerH,
+				homeMuted.Render("No repos matched ")+titleChipWarn.Render(m.browseQ)+homeMuted.Render("."))
+		case m.browseQ == "" && len(m.browse.Items()) == 0:
+			listView = card("245", listInnerW, browseListInnerH,
+				homeMuted.Render("Type to search across all repos.\n\nResults stream in as you type."))
 		default:
 			listView = m.browse.View()
 		}
-		leftPane = searchLine + "\n" + listView
+		leftInner = m.searchBox(listInnerW) + "\n" + listView
 	}
 
-	leftStyled := lipgloss.NewStyle().Padding(0, 1).Render(leftPane)
-	rightStyled := lipgloss.NewStyle().Padding(0, 1).Render(m.preview.View())
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftStyled, rightStyled)
+	leftPane := paneBorder(true, leftW, contentH).Render(leftInner)
+	rightPane := paneBorder(false, rightW, contentH).Render(m.preview.View())
+
+	// Subtle vertical separator between panes.
+	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	sepCol := sepStyle.Render(strings.TrimRight(strings.Repeat("│\n", contentH), "\n"))
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sepCol, rightPane)
 
 	footer := m.help.View(m.keys)
 	statusLine := ""
@@ -802,12 +945,23 @@ func (m homeModel) View() string {
 	return header + "\n" + tabs + "\n" + body + "\n" + footer
 }
 
+// renderTabs draws the tab strip with a clear active-tab pill and a
+// matching underline beneath it so the eye can immediately locate the
+// current tab without re-reading colours.
 func (m homeModel) renderTabs() string {
-	active := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).
-		Background(lipgloss.Color("57")).Padding(0, 2)
-	inactive := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 2)
-	out := make([]string, 0, len(allTabs))
-	for _, t := range allTabs {
+	active := lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.Color("231")).
+		Background(lipgloss.Color("57")).
+		Padding(0, 2)
+	inactive := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245")).
+		Padding(0, 2)
+	underlineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("57"))
+
+	rendered := make([]string, 0, len(allTabs))
+	widths := make([]int, 0, len(allTabs))
+	activeIdx := -1
+	for i, t := range allTabs {
 		label := t.name()
 		if t == tabFavourites {
 			n := len(m.favs.Items())
@@ -815,11 +969,31 @@ func (m homeModel) renderTabs() string {
 				label = fmt.Sprintf("%s (%d)", label, n)
 			}
 		}
+		var s string
 		if t == m.tab {
-			out = append(out, active.Render(label))
+			s = active.Render(label)
+			activeIdx = i
 		} else {
-			out = append(out, inactive.Render(label))
+			s = inactive.Render(label)
+		}
+		rendered = append(rendered, s)
+		widths = append(widths, lipgloss.Width(s))
+	}
+	row := strings.Join(rendered, " ")
+
+	// Build the underline: spaces under inactive tabs, ▔ under the
+	// active one. A space joins each tab in the row, so the
+	// underline mirrors that with a single-space gap.
+	var ub strings.Builder
+	for i, w := range widths {
+		if i > 0 {
+			ub.WriteString(" ")
+		}
+		if i == activeIdx {
+			ub.WriteString(underlineStyle.Render(strings.Repeat("▔", w)))
+		} else {
+			ub.WriteString(strings.Repeat(" ", w))
 		}
 	}
-	return strings.Join(out, " ")
+	return row + "\n" + ub.String()
 }
