@@ -346,13 +346,23 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
 
 	case "enter", "ctrl+s":
-		// Enter submits — if nothing is queued, treat the cursor
-		// row as a shortcut single-pick so the common flow is
-		// "type → Enter → done". ctrl+s mirrors the inline
-		// editor's save shortcut as a familiar fallback.
-		if len(s.pickedAdd) == 0 && len(s.pickedRemove) == 0 {
+		// Enter submits queued picks. As a shortcut, if the user
+		// has typed a search query (input non-empty) we treat the
+		// cursor row as a single-pick — the cursor auto-snaps to
+		// the top result on every keystroke so this reliably means
+		// "submit the highlighted match". When the input is empty
+		// AND no picks are queued, do nothing: the cursor on row
+		// 0 is just the first existing reviewer, not an explicit
+		// selection, so we mustn't quietly queue them for removal.
+		hasPicks := len(s.pickedAdd) > 0 || len(s.pickedRemove) > 0
+		hasQuery := strings.TrimSpace(s.input.Value()) != ""
+		if !hasPicks {
+			if !hasQuery {
+				m.status = "type to search or tab to queue picks"
+				return m, nil
+			}
 			if !s.togglePickFromCursor() {
-				m.status = "no reviewers picked"
+				m.status = "no matching reviewers"
 				return m, nil
 			}
 		}
@@ -366,11 +376,15 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Forward everything else (printable chars, backspace, etc) to
 	// the textinput. Anything that mutates the buffer schedules a
-	// debounced search.
+	// debounced search and snaps the cursor back to row 0 — that
+	// way Enter always submits the top match for whatever the user
+	// just typed, instead of whichever row happened to be focused
+	// before the search.
 	prev := s.input.Value()
 	var cmd tea.Cmd
 	s.input, cmd = s.input.Update(msg)
 	if s.input.Value() != prev {
+		s.cursor = 0
 		s.loading = true
 		return m, tea.Batch(cmd, m.spinner.Tick, m.scheduleReviewerSearch())
 	}
