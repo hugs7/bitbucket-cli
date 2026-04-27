@@ -24,23 +24,68 @@ Works against:
 
 ## Install
 
-> Not yet published. For now:
+Pick the method for your platform. See [PUBLISHING.md](PUBLISHING.md)
+for how releases are built.
+
+### Package managers (recommended)
+
+```sh
+# macOS / Linux — Homebrew
+brew install hugs7/tap/bb
+
+# Windows — Scoop
+scoop bucket add hugs7 https://github.com/hugs7/scoop-bucket
+scoop install bb
+
+# Debian / Ubuntu — apt
+curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.deb.sh' | sudo -E bash
+sudo apt install bb
+
+# Fedora / RHEL — dnf
+curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.rpm.sh' | sudo -E bash
+sudo dnf install bb
+
+# Alpine — apk
+curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.alpine.sh' | sudo -E bash
+sudo apk add bb
+```
+
+### Install scripts (no package manager required)
+
+Useful for CI, Docker images, exotic distros, or just trying it
+quickly:
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install.ps1 | iex
+```
+
+### From source
 
 ```sh
 git clone https://github.com/hugs7/bitbucket-cli
-cd bb
+cd bitbucket-cli
 go build -o bb ./cmd/bb
 ./bb --help
 ```
 
-Planned distribution (via [GoReleaser](https://goreleaser.com/)):
+## Updating
 
-```sh
-brew install bitbucket-cli/tap/bb     # macOS / Linux
-sudo apt install bb                   # Debian / Ubuntu (apt repo)
-winget install bb                     # Windows
-scoop install bb                      # Windows
-```
+| Installed via | Update with |
+|---|---|
+| Homebrew | `brew upgrade bb` |
+| Scoop | `scoop update bb` |
+| apt (Cloudsmith) | `sudo apt update && sudo apt upgrade bb` |
+| dnf (Cloudsmith) | `sudo dnf upgrade bb` |
+| apk (Cloudsmith) | `sudo apk upgrade bb` |
+| `curl \| sh` script / direct binary | `bb upgrade` |
+
+`bb upgrade` checks GitHub Releases and atomically replaces the
+running binary on Linux, macOS and Windows. Use `bb upgrade --check`
+to peek without installing.
 
 ## Configuration
 

@@ -64,6 +64,28 @@ nfpms:
       - rpm
       - apk
 
+# Push the .deb / .rpm / .apk files to Cloudsmith so users can install
+# and update them via apt / dnf / apk natively. Requires the
+# `cloudsmith-cli` Python package on the runner (installed in the
+# release workflow) and a CLOUDSMITH_API_KEY repo secret.
+#
+# Distro is set to "any-distro/any-version" (alpine/any-version for
+# .apk) so we publish a single set of artifacts that works across
+# Debian, Ubuntu, Mint, Fedora, RHEL, etc.
+publishers:
+  - name: cloudsmith
+    ids: [bb]
+    # Skip anything that isn't a Linux package (archives, checksums…).
+    disable: '{{ if not (or (eq .Ext ".deb") (eq .Ext ".rpm") (eq .Ext ".apk")) }}true{{ end }}'
+    cmd: >-
+      cloudsmith push
+      {{- if eq .Ext ".deb" }} deb hugs7/bb/any-distro/any-version
+      {{- else if eq .Ext ".rpm" }} rpm hugs7/bb/any-distro/any-version
+      {{- else }} alpine hugs7/bb/alpine/any-version{{ end }}
+      {{ .ArtifactPath }}
+    env:
+      - CLOUDSMITH_API_KEY={{ .Env.CLOUDSMITH_API_KEY }}
+
 brews:
   - name: bb
     repository:
@@ -83,14 +105,3 @@ scoops:
     homepage: https://github.com/hugs7/bitbucket-cli
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
-
-winget:
-  - name: bb
-    publisher: hugs7
-    license: MIT
-    homepage: https://github.com/hugs7/bitbucket-cli
-    short_description: A comprehensive command-line interface for Bitbucket.
-    repository:
-      owner: hugs7
-      name: winget-pkgs
-      branch: bb-{{.Version}}

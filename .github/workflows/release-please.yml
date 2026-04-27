@@ -1,0 +1,30 @@
+name: release-please
+
+# release-please watches commits to main, parses Conventional Commits
+# (feat:, fix:, chore:, BREAKING CHANGE: …) and maintains an open
+# "Release PR" that bumps the version + updates CHANGELOG.md. When you
+# merge that PR it creates a git tag like v0.2.0, which then triggers
+# .github/workflows/release.yml to build & publish the release.
+#
+# To cut a release:
+#   1. Land commits on main using Conventional Commit messages.
+#   2. Watch the "release-please" PR update itself.
+#   3. Merge the PR. The tag + GitHub Release happen automatically.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write       # create tags & GitHub Release
+  pull-requests: write  # open / update the Release PR
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
