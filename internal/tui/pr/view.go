@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
@@ -21,7 +22,7 @@ func (m model) helpView() string {
 	case viewDiff:
 		km = m.keys.viewerHelp()
 	case viewDetail:
-		km = m.keys.detailHelp()
+		km = m.contextualDetailHelp()
 	case viewComments:
 		km = m.keys.commentsHelp()
 	case viewConfirmDelete:
@@ -35,9 +36,78 @@ func (m model) helpView() string {
 	case viewSettings:
 		km = m.keys.settingsHelp()
 	default:
-		km = m.keys.listHelp()
+		km = m.contextualListHelp()
 	}
 	return m.help.View(km)
+}
+
+// contextualListHelp / contextualDetailHelp swap Approve ↔ Unapprove
+// based on the current user's review status on the selected PR. When
+// the user has already approved we hide the no-op Approve action and
+// surface Unapprove instead. NeedsWork is shown only when the user
+// hasn't already marked the PR as needs-work.
+func (m model) contextualListHelp() help.KeyMap {
+	base := m.keys.listHelp()
+	if it, ok := m.list.SelectedItem().(prItem); ok {
+		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr))
+	}
+	return base
+}
+
+func (m model) contextualDetailHelp() help.KeyMap {
+	base := m.keys.detailHelp()
+	if it, ok := m.list.SelectedItem().(prItem); ok {
+		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr))
+	}
+	return base
+}
+
+// applyReviewContext rewrites a modeKeyMap so the visible review
+// actions match what the current user can usefully do. Own PRs hide
+// every review action (Bitbucket rejects self-review). Already-
+// approved PRs hide Approve and surface Unapprove. PRs already
+// flagged needs-work hide NeedsWork.
+func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR bool) modeKeyMap {
+	allow := func(b key.Binding) bool {
+		if ownPR && (b.Help().Key == k.Approve.Help().Key ||
+			b.Help().Key == k.Unapprove.Help().Key ||
+			b.Help().Key == k.NeedsWork.Help().Key) {
+			return false
+		}
+		switch b.Help().Key {
+		case k.Approve.Help().Key:
+			return status != "APPROVED"
+		case k.Unapprove.Help().Key:
+			// Only show unapprove when there's something to undo —
+			// either an explicit approval or a needs-work flag.
+			return status == "APPROVED" || status == "NEEDS_WORK"
+		case k.NeedsWork.Help().Key:
+			return status != "NEEDS_WORK"
+		}
+		return true
+	}
+	return modeKeyMap{
+		short: filterRows(km.short, allow),
+		full:  filterRows(km.full, allow),
+	}
+}
+
+// filterRows returns a new [][]key.Binding with each row having the
+// disallowed bindings stripped out.
+func filterRows(rows [][]key.Binding, allow func(key.Binding) bool) [][]key.Binding {
+	out := make([][]key.Binding, 0, len(rows))
+	for _, row := range rows {
+		kept := make([]key.Binding, 0, len(row))
+		for _, b := range row {
+			if allow(b) {
+				kept = append(kept, b)
+			}
+		}
+		if len(kept) > 0 {
+			out = append(out, kept)
+		}
+	}
+	return out
 }
 
 // ---------- view ----------

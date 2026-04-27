@@ -71,7 +71,11 @@ func buildPaletteItems(mode viewMode) []list.Item {
 			paletteItem{label: "Approve PR", hint: "a", run: func(m *model) tea.Cmd {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
 					if m.isOwnPR(it.pr) {
-						m.status = "✗ can't approve your own PR"
+						m.status = theme.ErrPrefix() + "can't approve your own PR"
+						return nil
+					}
+					if m.hasApproved(it.pr) {
+						m.status = theme.OKPrefix() + "already approved — use Unapprove instead"
 						return nil
 					}
 					id := it.pr.ID
@@ -94,6 +98,14 @@ func buildPaletteItems(mode viewMode) []list.Item {
 			}},
 			paletteItem{label: "Mark needs work", hint: "N", run: func(m *model) tea.Cmd {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
+					if m.isOwnPR(it.pr) {
+						m.status = theme.ErrPrefix() + "can't mark your own PR as needs work"
+						return nil
+					}
+					if m.hasMarkedNeedsWork(it.pr) {
+						m.status = theme.OKPrefix() + "already marked needs work"
+						return nil
+					}
 					id := it.pr.ID
 					m.loading = true
 					return tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("#%d needs work", id), true, func() error {

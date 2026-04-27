@@ -121,7 +121,7 @@ func (m modeKeyMap) FullHelp() [][]key.Binding { return m.full }
 
 func (k keyMap) listHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Merge, k.AddReviewer, k.CreatePR, k.DeclinePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.AddReviewer, k.CreatePR, k.DeclinePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
@@ -148,7 +148,7 @@ func (k keyMap) viewerHelp() modeKeyMap {
 // hopping back to the list first.
 func (k keyMap) detailHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Diff, k.Comments, k.Approve, k.Merge, k.AddReviewer, k.DeclinePR, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.AddReviewer, k.DeclinePR, k.Back, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Diff, k.Comments, k.Open},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},

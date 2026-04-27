@@ -376,6 +376,39 @@ func (m *model) isOwnPR(pr api.PullRequest) bool {
 	return strings.EqualFold(strings.TrimSpace(pr.Author), me)
 }
 
+// myReviewerStatus returns the current user's review status on the
+// PR — one of "APPROVED", "NEEDS_WORK", "UNAPPROVED", or "" when the
+// user is not on the reviewer list. Used to hide the Approve action
+// once the user has already approved (and to surface Unapprove
+// instead) so the action panel never offers a no-op.
+func (m *model) myReviewerStatus(pr api.PullRequest) string {
+	me := strings.ToLower(strings.TrimSpace(m.svc.Me()))
+	if me == "" {
+		return ""
+	}
+	for _, r := range pr.Reviewers {
+		if strings.EqualFold(strings.TrimSpace(r.Username), me) {
+			if r.Status != "" {
+				return strings.ToUpper(r.Status)
+			}
+			if r.Approved {
+				return "APPROVED"
+			}
+			return "UNAPPROVED"
+		}
+	}
+	return ""
+}
+
+// hasApproved / hasMarkedNeedsWork are convenience wrappers around
+// myReviewerStatus for the action-gating call sites.
+func (m *model) hasApproved(pr api.PullRequest) bool {
+	return m.myReviewerStatus(pr) == "APPROVED"
+}
+func (m *model) hasMarkedNeedsWork(pr api.PullRequest) bool {
+	return m.myReviewerStatus(pr) == "NEEDS_WORK"
+}
+
 // currentFilePath returns the path of the file the diff cursor is
 // currently inside, by walking the file-header index. Empty when
 // no diff is loaded.
@@ -1514,7 +1547,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case key.Matches(msg, m.keys.Approve):
 					if m.isOwnPR(it.pr) {
-						m.status = "✗ can't approve your own PR"
+						m.status = theme.ErrPrefix() + "can't approve your own PR"
+						return m, nil
+					}
+					if m.hasApproved(it.pr) {
+						m.status = theme.OKPrefix() + "already approved — press A to unapprove"
 						return m, nil
 					}
 					m.loading = true
@@ -1528,7 +1565,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}))
 				case key.Matches(msg, m.keys.NeedsWork):
 					if m.isOwnPR(it.pr) {
-						m.status = "✗ can't mark your own PR as needs work"
+						m.status = theme.ErrPrefix() + "can't mark your own PR as needs work"
+						return m, nil
+					}
+					if m.hasMarkedNeedsWork(it.pr) {
+						m.status = theme.OKPrefix() + "already marked needs work — press A to clear"
 						return m, nil
 					}
 					m.loading = true
@@ -1762,7 +1803,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Approve):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				if m.isOwnPR(it.pr) {
-					m.status = "✗ can't approve your own PR"
+					m.status = theme.ErrPrefix() + "can't approve your own PR"
+					return m, nil
+				}
+				if m.hasApproved(it.pr) {
+					m.status = theme.OKPrefix() + "already approved — press A to unapprove"
 					return m, nil
 				}
 				id := it.pr.ID
@@ -1782,7 +1827,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.NeedsWork):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				if m.isOwnPR(it.pr) {
-					m.status = "✗ can't mark your own PR as needs work"
+					m.status = theme.ErrPrefix() + "can't mark your own PR as needs work"
+					return m, nil
+				}
+				if m.hasMarkedNeedsWork(it.pr) {
+					m.status = theme.OKPrefix() + "already marked needs work — press A to clear"
 					return m, nil
 				}
 				id := it.pr.ID
