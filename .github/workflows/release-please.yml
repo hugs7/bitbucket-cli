@@ -28,3 +28,8 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Use a PAT instead of the default GITHUB_TOKEN so that the
+          # tag release-please creates triggers the release.yml workflow.
+          # GitHub deliberately suppresses workflow runs for events
+          # caused by the default GITHUB_TOKEN to prevent loops.
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
