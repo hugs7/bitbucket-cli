@@ -23,6 +23,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
 	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
@@ -372,7 +373,7 @@ func (m *repoModel) refreshPreview() {
 				Render("(no README found on default branch)")
 		}
 	} else {
-		body = renderSimpleMarkdown(body)
+		body = mdrender.Render(body, m.preview.Width)
 	}
 	if m.repo != nil && m.repo.Description != "" {
 		desc := lipgloss.NewStyle().Italic(true).
@@ -381,27 +382,6 @@ func (m *repoModel) refreshPreview() {
 		body = desc + "\n\n" + body
 	}
 	m.preview.SetContent(body)
-}
-
-// renderSimpleMarkdown is a deliberately tiny pass: bold headings
-// (lines starting with '#') and dim blockquotes ('> '). Everything
-// else is left literal so we can stream READMEs of any length without
-// pulling in a full markdown renderer.
-func renderSimpleMarkdown(body string) string {
-	heading := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("159"))
-	quote := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-	var out []string
-	for _, line := range strings.Split(body, "\n") {
-		switch {
-		case strings.HasPrefix(line, "#"):
-			out = append(out, heading.Render(line))
-		case strings.HasPrefix(line, "> "):
-			out = append(out, quote.Render(line))
-		default:
-			out = append(out, line)
-		}
-	}
-	return strings.Join(out, "\n")
 }
 
 // rightPane composes the right summary column: a list of recent open

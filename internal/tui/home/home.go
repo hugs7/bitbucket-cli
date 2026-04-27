@@ -22,6 +22,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
 	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
@@ -433,6 +434,8 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if body == "" {
 			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
 				Render("(no README found — press p to open this repo's PRs, o to open in browser)")
+		} else {
+			body = mdrender.Render(body, m.preview.Width)
 		}
 		m.preview.SetContent(m.readmeHeader(msg.project, msg.slug) + "\n\n" + body)
 		m.preview.GotoTop()
