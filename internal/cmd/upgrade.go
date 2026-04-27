@@ -47,8 +47,8 @@ package manager's update command instead:
 
   brew upgrade bb
   scoop update bb
-  sudo apt update && sudo apt upgrade bb
-  sudo dnf upgrade bb`,
+  sudo apt update && sudo apt upgrade bitbucket-cli
+  sudo dnf upgrade bitbucket-cli`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpgrade(info, check, force)

@@ -39,15 +39,15 @@ scoop install bb
 
 # Debian / Ubuntu — apt
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.deb.sh' | sudo -E bash
-sudo apt install bb
+sudo apt install bitbucket-cli
 
 # Fedora / RHEL — dnf
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.rpm.sh' | sudo -E bash
-sudo dnf install bb
+sudo dnf install bitbucket-cli
 
 # Alpine — apk
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.alpine.sh' | sudo -E bash
-sudo apk add bb
+sudo apk add bitbucket-cli
 ```
 
 ### Install scripts (no package manager required)
@@ -78,9 +78,9 @@ go build -o bb ./cmd/bb
 |---|---|
 | Homebrew | `brew upgrade bb` |
 | Scoop | `scoop update bb` |
-| apt (Cloudsmith) | `sudo apt update && sudo apt upgrade bb` |
-| dnf (Cloudsmith) | `sudo dnf upgrade bb` |
-| apk (Cloudsmith) | `sudo apk upgrade bb` |
+| apt (Cloudsmith) | `sudo apt update && sudo apt upgrade bitbucket-cli` |
+| dnf (Cloudsmith) | `sudo dnf upgrade bitbucket-cli` |
+| apk (Cloudsmith) | `sudo apk upgrade bitbucket-cli` |
 | `curl \| sh` script / direct binary | `bb upgrade` |
 
 `bb upgrade` checks GitHub Releases and atomically replaces the

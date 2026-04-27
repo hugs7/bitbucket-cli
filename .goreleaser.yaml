@@ -53,10 +53,21 @@ changelog:
 
 nfpms:
   - id: bb
-    package_name: bb
-    vendor: bb contributors
+    # Package name is the long, descriptive form ("bitbucket-cli") so
+    # `apt install bitbucket-cli` reads naturally. The binary itself
+    # stays short (`bb`) — see builds[].binary above. We also declare
+    # `bb` as a virtual provides/replaces so anyone who installed the
+    # earlier v0.1.0 (which was packaged as `bb`) is upgraded cleanly.
+    package_name: bitbucket-cli
+    provides:
+      - bb
+    replaces:
+      - bb
+    conflicts:
+      - bb
+    vendor: bitbucket-cli contributors
     homepage: https://github.com/hugs7/bitbucket-cli
-    maintainer: bb contributors
+    maintainer: bitbucket-cli contributors
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
     formats:
