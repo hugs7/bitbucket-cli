@@ -266,16 +266,22 @@ var (
 			Foreground(lipgloss.Color("231")).Background(lipgloss.Color("57")).
 			Padding(0, 1)
 	dashSecCount = lipgloss.NewStyle().Foreground(lipgloss.Color("159"))
-	dashRowSel   = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("231")).Bold(true).
-			Border(lipgloss.Border{Left: "▎"}, false, false, false, true).
-			BorderForeground(lipgloss.Color("213")).
-			PaddingLeft(1)
-	dashRowIdle = lipgloss.NewStyle().
+	dashRowIdle  = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
 			PaddingLeft(2)
 	dashRowMeta = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
+
+// dashRowSel is built per-call so it picks up theme.AccentRule()
+// when the active palette changes (e.g. swapping into 3270, where
+// the upper-eighth block becomes a plain ASCII '|').
+func dashRowSel() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("231")).Bold(true).
+		Border(lipgloss.Border{Left: theme.AccentRule()}, false, false, false, true).
+		BorderForeground(lipgloss.Color("213")).
+		PaddingLeft(1)
+}
 
 // renderDashboard renders the four stacked sections, drives the
 // viewport with the rendered content, and snaps the viewport's
@@ -308,8 +314,21 @@ func (m *homeModel) renderDashboard(innerW, innerH int) string {
 			sb.WriteString("\n")
 		}
 		count := len(sec.rows)
-		header := dashSecHeader.Render(" "+sec.title+" ") + " " +
-			dashSecCount.Render(fmt.Sprintf("(%d)", count))
+		var header string
+		if theme.Mainframe() {
+			// CICS-panel style: bright bold uppercase title flanked
+			// by `===` rules, with a `(n)` count after the title.
+			title := strings.ToUpper(sec.title)
+			rule := strings.Repeat("=", 3)
+			titleLine := lipgloss.NewStyle().Bold(true).
+				Foreground(lipgloss.Color("14")).
+				Render(rule + " " + title + " " + rule)
+			header = titleLine + " " +
+				dashSecCount.Render(fmt.Sprintf("(%d)", count))
+		} else {
+			header = dashSecHeader.Render(" "+sec.title+" ") + " " +
+				dashSecCount.Render(fmt.Sprintf("(%d)", count))
+		}
 		sb.WriteString(header)
 		sb.WriteString("\n")
 		if count == 0 {
@@ -348,7 +367,7 @@ func (m *homeModel) renderDashRow(r dashRow, selected bool, innerW int) string {
 		meta = strutil.Truncate(desc, innerW-6)
 	}
 	if selected {
-		return dashRowSel.Render(title) + "\n" +
+		return dashRowSel().Render(title) + "\n" +
 			dashRowMeta.PaddingLeft(3).Render(meta)
 	}
 	return dashRowIdle.Render(title) + "\n" +

@@ -88,6 +88,25 @@ var builtinThemes = []Theme{
 		Branch:        lipgloss.Color("#8fbcbb"),
 		Author:        lipgloss.Color("#b48ead"),
 	},
+	{
+		// IBM 3270 / Reflection green-screen tribute. Bright cyan
+		// for protected fields, bright green for the operator
+		// status line, bright red for errors, bright yellow for
+		// attention/warnings — same palette every Westpac mainframe
+		// terminal has shipped since the 80s. Pair with a black
+		// terminal background and a monospaced font for full effect.
+		Name:          "3270",
+		StatusOK:      lipgloss.Color("10"), // bright green (operator status)
+		StatusErr:     lipgloss.Color("9"),  // bright red (X SYSTEM error)
+		StatusInfo:    lipgloss.Color("14"), // bright cyan
+		TitleChip:     lipgloss.Color("14"), // bright cyan (protected field)
+		TitleChipDim:  lipgloss.Color("6"),  // dim cyan
+		TitleChipWarn: lipgloss.Color("11"), // bright yellow (attention)
+		TitleBadgeBg:  lipgloss.Color("14"),
+		TitleBadgeFg:  lipgloss.Color("0"), // black on cyan
+		Branch:        lipgloss.Color("14"),
+		Author:        lipgloss.Color("10"),
+	},
 }
 
 // Current is the in-process active theme. Read by Apply on init and
@@ -131,7 +150,12 @@ func Apply(t Theme) {
 	TitleChipWarn = lipgloss.NewStyle().Foreground(t.TitleChipWarn)
 	TitleBadge = lipgloss.NewStyle().Bold(true).
 		Foreground(t.TitleBadgeFg).Background(t.TitleBadgeBg).Padding(0, 1)
-	TitleSep = lipgloss.NewStyle().Foreground(t.TitleChipDim).Render(" • ")
+	sep := " • "
+	if t.Name == "3270" {
+		// CICS panels separate fields with double-bars, not bullets.
+		sep = " || "
+	}
+	TitleSep = lipgloss.NewStyle().Foreground(t.TitleChipDim).Render(sep)
 }
 
 // Next returns the theme name following `current` in the cycle,

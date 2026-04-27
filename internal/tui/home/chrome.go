@@ -33,7 +33,7 @@ func paneBorder(focused bool, w, h int) lipgloss.Style {
 		c = lipgloss.Color("57")
 	}
 	s := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Border()).
 		BorderForeground(c).
 		Width(w - 2).
 		Height(h - 2)
@@ -44,7 +44,7 @@ func paneBorder(focused bool, w, h int) lipgloss.Style {
 // messages) sized to fit the inner pane area.
 func card(borderColor string, w, h int, body string) string {
 	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Border()).
 		BorderForeground(lipgloss.Color(borderColor)).
 		Padding(1, 2).
 		Width(w - 4)
@@ -80,7 +80,7 @@ func (m *homeModel) readmeHeader(project, slug string) string {
 		}
 	}
 	if repo.DefaultRef != "" {
-		chips = append(chips, theme.TitleSep, theme.TitleChip.Render("⎇ "+repo.DefaultRef))
+		chips = append(chips, theme.TitleSep, theme.TitleChip.Render(theme.BranchGlyph()+repo.DefaultRef))
 	}
 	if repo.Description != "" {
 		chips = append(chips, theme.TitleSep, theme.TitleChipDim.Render(repo.Description))
@@ -98,14 +98,31 @@ func (m *homeModel) readmeHeader(project, slug string) string {
 // matching underline beneath it so the eye can immediately locate the
 // current tab without re-reading colours.
 func (m homeModel) renderTabs() string {
-	active := lipgloss.NewStyle().Bold(true).
-		Foreground(lipgloss.Color("231")).
-		Background(lipgloss.Color("57")).
-		Padding(0, 2)
-	inactive := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("245")).
-		Padding(0, 2)
+	// 3270 tabs: bright cyan bold + ALL CAPS, no background pill (no
+	// CICS panel ever shipped a coloured chip — function-key labels
+	// were just bright text on the dark screen). Keep the underline
+	// rule so the active tab still has an unmistakable anchor.
+	var active, inactive lipgloss.Style
+	if theme.Mainframe() {
+		active = lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color("14")).
+			Padding(0, 1)
+		inactive = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")).
+			Padding(0, 1)
+	} else {
+		active = lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color("231")).
+			Background(lipgloss.Color("57")).
+			Padding(0, 2)
+		inactive = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Padding(0, 2)
+	}
 	underlineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("57"))
+	if theme.Mainframe() {
+		underlineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	}
 
 	rendered := make([]string, 0, len(allTabs))
 	widths := make([]int, 0, len(allTabs))
@@ -117,6 +134,9 @@ func (m homeModel) renderTabs() string {
 			if n > 0 {
 				label = fmt.Sprintf("%s (%d)", label, n)
 			}
+		}
+		if theme.Mainframe() {
+			label = strings.ToUpper(label)
 		}
 		var s string
 		if t == m.tab {
@@ -139,7 +159,7 @@ func (m homeModel) renderTabs() string {
 			ub.WriteString(" ")
 		}
 		if i == activeIdx {
-			ub.WriteString(underlineStyle.Render(strings.Repeat("▔", w)))
+			ub.WriteString(underlineStyle.Render(strings.Repeat(theme.ActiveTabUnderline(), w)))
 		} else {
 			ub.WriteString(strings.Repeat(" ", w))
 		}

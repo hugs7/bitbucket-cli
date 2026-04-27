@@ -22,6 +22,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -96,6 +97,9 @@ func (t homeTab) name() string {
 	case tabDashboard:
 		return "Dashboard"
 	case tabFavourites:
+		if theme.Mainframe() {
+			return "* Favourites"
+		}
 		return "★ Favourites"
 	case tabBrowse:
 		return "Browse"
@@ -151,6 +155,10 @@ type homeModel struct {
 	// Cleared after each field is consumed.
 	restore *State
 
+	// settings overlay (toggled with `,`).
+	settings     settings.Model
+	settingsOpen bool
+
 	next *Action
 }
 
@@ -168,6 +176,11 @@ func accentDelegate() list.DefaultDelegate {
 }
 
 func newHomeModel(svc api.Service) homeModel {
+	// Apply the user's persisted theme up-front so every style we
+	// build below (and every chrome helper Border/SearchPrompt call)
+	// already reflects the active palette.
+	theme.Init()
+
 	fl := list.New(nil, accentDelegate(), 0, 0)
 	fl.Title = "Pinned repos"
 	fl.SetShowHelp(false)
@@ -178,14 +191,21 @@ func newHomeModel(svc api.Service) homeModel {
 
 	ti := textinput.New()
 	ti.Placeholder = "name fragment, e.g. checkout · or workspace/name"
-	ti.Prompt = "🔎 "
+	ti.Prompt = theme.SearchPrompt()
 	ti.CharLimit = 120
 
 	pv := viewport.New(0, 0)
 	dashVP := viewport.New(0, 0)
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	// Use the simple |/-\ TTY spinner under the 3270 theme so it
+	// matches the operator-area "X SYSTEM" cadence; everywhere else
+	// the soft braille dot reads better on modern terminals.
+	if theme.Mainframe() {
+		sp.Spinner = spinner.Line
+	} else {
+		sp.Spinner = spinner.Dot
+	}
 
 	m := homeModel{
 		svc:         svc,
@@ -198,6 +218,7 @@ func newHomeModel(svc api.Service) homeModel {
 		search:      ti,
 		preview:     pv,
 		spinner:     sp,
+		settings:    settings.New(),
 		loading:     true,
 		searchCache: map[string][]api.Repo{},
 	}
@@ -446,10 +467,26 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case homeErrMsg:
 		m.loading = false
 		m.searching = false
-		m.status = "✗ " + msg.err.Error()
+		m.status = theme.ErrPrefix() + msg.err.Error()
 		return m, nil
 
 	case tea.KeyMsg:
+		// Settings overlay owns all keys while open: esc closes,
+		// q / ctrl+c still quit, everything else flows into the
+		// settings list (navigation + enter/space toggles).
+		if m.settingsOpen {
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Back):
+				m.settingsOpen = false
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.settings, cmd = m.settings.Update(msg)
+			return m, cmd
+		}
+
 		// If the search input is focused, route most keys there until
 		// the user hits enter or esc. Arrow keys / PgUp / PgDn /
 		// Home / End fall through to the browse list so users can
@@ -519,6 +556,14 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()
 			return m, nil
+		case key.Matches(msg, m.keys.Settings):
+			// Open the universal settings overlay (theme, editor
+			// modes, …). Same surface as the PR settings overlay so
+			// users land on a familiar list no matter where they
+			// triggered it from.
+			m.settingsOpen = true
+			m.settings.SetSize(m.width, m.height-4)
+			return m, nil
 		case key.Matches(msg, m.keys.Tab):
 			m.tab = (m.tab + 1) % homeTab(len(allTabs))
 			return m, m.refreshPreviewForTab()
@@ -535,10 +580,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			host := m.svc.Host()
 			if config.IsFavourite(host, project, slug) {
 				_ = config.RemoveFavourite(host, project, slug)
-				m.status = fmt.Sprintf("✓ removed %s/%s from favourites", project, slug)
+				m.status = fmt.Sprintf("%sremoved %s/%s from favourites", theme.OKPrefix(), project, slug)
 			} else {
 				_ = config.AddFavourite(config.FavRepo{Host: host, Project: project, Slug: slug, Name: name})
-				m.status = fmt.Sprintf("✓ added %s/%s to favourites", project, slug)
+				m.status = fmt.Sprintf("%sadded %s/%s to favourites", theme.OKPrefix(), project, slug)
 			}
 			m.refreshFavourites()
 			return m, nil
@@ -707,6 +752,18 @@ func (m homeModel) View() string {
 		return "" // wait for first WindowSizeMsg before painting.
 	}
 
+	// Settings overlay replaces the body so the user has the whole
+	// frame to navigate toggles. Header chrome stays so they
+	// remember where they came from. Esc returns to the dashboard.
+	if m.settingsOpen {
+		settingsHeader := theme.TitleBar("SETTINGS",
+			theme.TitleChipDim.Render("persisted to ~/.config/bb/config.yml"))
+		footer := m.help.View(m.keys)
+		statusLine := theme.RenderStatusLine(m.loading, m.spinner.View(), m.status)
+		return settingsHeader + "\n" + m.settings.View() + "\n" +
+			theme.JoinFooter(statusLine, footer)
+	}
+
 	header := theme.TitleBar("BB · HOME",
 		theme.TitleChip.Render(m.svc.Host()),
 		theme.TitleChipDim.Render("tab to switch · / to search · ? for help"),
@@ -767,7 +824,7 @@ func (m homeModel) View() string {
 
 	// Subtle vertical separator between panes.
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sepCol := sepStyle.Render(strings.TrimRight(strings.Repeat("│\n", contentH), "\n"))
+	sepCol := sepStyle.Render(strings.TrimRight(strings.Repeat(theme.VerticalRule()+"\n", contentH), "\n"))
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sepCol, rightPane)
 

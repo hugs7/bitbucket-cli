@@ -9,16 +9,20 @@ import "strings"
 
 // RenderStatusLine produces the toast string shown in the footer of
 // every TUI: a coloured "loading…" with a spinner glyph, a "✓"/"✗"
-// prefixed user toast, or empty when nothing is in flight.
+// (or 3270 "OK"/"X") prefixed user toast, or empty when nothing is in
+// flight.
 func RenderStatusLine(loading bool, spinnerView, status string) string {
 	switch {
 	case loading:
+		if Mainframe() {
+			return StatusInfo.Render("X SYSTEM " + spinnerView)
+		}
 		return StatusInfo.Render(spinnerView + " loading…")
 	case status == "":
 		return ""
-	case strings.HasPrefix(status, "✗"):
+	case strings.HasPrefix(status, "✗"), strings.HasPrefix(status, "X "):
 		return StatusErr.Render(status)
-	case strings.HasPrefix(status, "✓"):
+	case strings.HasPrefix(status, "✓"), strings.HasPrefix(status, "OK "):
 		return StatusOK.Render(status)
 	default:
 		return StatusInfo.Render(status)

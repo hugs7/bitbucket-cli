@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
 type repoBrowseItem struct{ r api.Repo }
@@ -121,7 +122,7 @@ func (m *homeModel) searchBox(innerW int) string {
 		c = lipgloss.Color("57")
 	}
 	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Border()).
 		BorderForeground(c).
 		Padding(0, 1).
 		Width(innerW - 2)
@@ -131,9 +132,9 @@ func (m *homeModel) searchBox(innerW int) string {
 	case focused:
 		body = m.search.View()
 	case m.browseQ != "":
-		body = "🔎 " + m.browseQ + homeMuted.Render("   (/ to search again · ctrl-u to clear)")
+		body = theme.SearchPrompt() + m.browseQ + homeMuted.Render("   (/ to search again · ctrl-u to clear)")
 	default:
-		body = homeMuted.Render("🔎 press / to search repos")
+		body = homeMuted.Render(theme.SearchPrompt() + "press / to search repos")
 	}
 	return box.Render(body)
 }
