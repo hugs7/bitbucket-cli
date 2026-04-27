@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.4.0](https://github.com/hugs7/bitbucket-cli/compare/v0.3.0...v0.4.0) (2026-04-27)
+
+
+### Features
+
+* **auth:** reject http(s):// in host input ([599229c](https://github.com/hugs7/bitbucket-cli/commit/599229c4bb32c1386056eda1bee6d1ace88ea250))
+* **home:** T toggles pane focus so the README preview can scroll ([6216f31](https://github.com/hugs7/bitbucket-cli/commit/6216f31a2d20dd930b901dbe0f50c4cf60fc458e))
+* **pr create:** rebind tab to accept autocomplete suggestion ([a980d5f](https://github.com/hugs7/bitbucket-cli/commit/a980d5fff52d403fb7d0a8f32413a8be2d52fdfe))
+* **pr:** autocomplete-driven PR create form (replaces vim template) ([4248915](https://github.com/hugs7/bitbucket-cli/commit/4248915a27dc6c18025f7534d83b86200ffbc177))
+* **pr:** debounced reviewer directory search ([3e49b91](https://github.com/hugs7/bitbucket-cli/commit/3e49b910de2e94a1aa42ab8ed00e25f298994308))
+* **pr:** delete-PR action, full-help footer, alt+enter submit ([0286eca](https://github.com/hugs7/bitbucket-cli/commit/0286eca914a629847fa009200ec2f7c84177b9c0))
+* **pr:** incremental picks + common-reviewers history in reviewer search ([0c618c3](https://github.com/hugs7/bitbucket-cli/commit/0c618c3068c53122ad24d2549cd4236a497bd744))
+* **pr:** keep existing reviewers visible while searching ([7a15777](https://github.com/hugs7/bitbucket-cli/commit/7a15777e6c154f5ce32dd674371c23611ecf82ee))
+* **pr:** pick merge strategy in the merge-confirm dialog ([ec7c7e9](https://github.com/hugs7/bitbucket-cli/commit/ec7c7e9c4ebd47abd9a89afb00e2ab1ceceac40d))
+* **pr:** swap reviewer-search keys — enter submits, tab queues ([a480299](https://github.com/hugs7/bitbucket-cli/commit/a4802994a5d852ac328e6fd66cec78f1f0385db5))
+* **pr:** unified manage-reviewers modal with stacked backdrop ([2522991](https://github.com/hugs7/bitbucket-cli/commit/252299134474a07a2a9f6aee4c8b3f5ca53977df))
+* **pr:** visible Actions panel + reviewer status badge in detail pane ([c8e141a](https://github.com/hugs7/bitbucket-cli/commit/c8e141aa68009a79c1728e18e77d2faa6523155b))
+* **release:** ship shell completions in every install path ([9102684](https://github.com/hugs7/bitbucket-cli/commit/910268418416ed8b0f48cc0efb17da0758a6a51b))
+* support tasks on PRs ([5ffa2c3](https://github.com/hugs7/bitbucket-cli/commit/5ffa2c338034e43875b1065c4bc4bfacd669b204))
+* **tui:** render PR descriptions as markdown via shared mdrender ([3c95eab](https://github.com/hugs7/bitbucket-cli/commit/3c95eab803820b0723f680a52ff180702f30d913))
+* **upgrade:** --insecure / --no-proxy flags for corp networks ([d82a32b](https://github.com/hugs7/bitbucket-cli/commit/d82a32b1d13ffbcd1f6a061db79cc66a6e099f3c))
+* **upgrade:** notify the user when a newer release is available ([4304800](https://github.com/hugs7/bitbucket-cli/commit/430480038b94c2082f18d7474ce5f40d7d27f9d9))
+* **upgrade:** refuse to clobber package-manager-owned binaries ([2e8d30c](https://github.com/hugs7/bitbucket-cli/commit/2e8d30ccffa27b7fff6e8b7583463c66a0d7910d))
+
+
+### Bug Fixes
+
+* **home:** Enter on a dashboard repo row opens the repo overview ([75dbbd8](https://github.com/hugs7/bitbucket-cli/commit/75dbbd8584246cdf092bfa1709d432131627e776))
+* **home:** Enter on Favourites / Browse repos opens the repo overview ([7a61d3f](https://github.com/hugs7/bitbucket-cli/commit/7a61d3f727c5867619a9d514f1fd853eabf74d74))
+* **home:** forward mouse wheel events to the dashboard viewport ([6ea5c92](https://github.com/hugs7/bitbucket-cli/commit/6ea5c9242497c3b804c4d38fbb5c46f756d2961b))
+* **home:** populate dashVP content in Update so scroll actually moves ([9f6f985](https://github.com/hugs7/bitbucket-cli/commit/9f6f985e26a2eb65d8e9cefc8171bca32f23d72e))
+* **pr:** require explicit selection before Enter submits picks ([56d0a81](https://github.com/hugs7/bitbucket-cli/commit/56d0a8114509f63a84861669401bd574cef19d36))
+* **tui:** force dark glamour style so README markdown actually styles ([0f8191c](https://github.com/hugs7/bitbucket-cli/commit/0f8191c22915f78a3c6ae87c0cba7995c45edd74))
+
 ## [0.3.0](https://github.com/hugs7/bitbucket-cli/compare/v0.2.0...v0.3.0) (2026-04-27)
 
 
