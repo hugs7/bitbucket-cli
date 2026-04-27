@@ -24,7 +24,10 @@ Works against:
 
 ## Install
 
-Once a release has been cut (see [PUBLISHING.md](PUBLISHING.md)):
+Pick the method for your platform. See [PUBLISHING.md](PUBLISHING.md)
+for how releases are built.
+
+### Package managers (recommended)
 
 ```sh
 # macOS / Linux — Homebrew
@@ -34,26 +37,33 @@ brew install hugs7/tap/bb
 scoop bucket add hugs7 https://github.com/hugs7/scoop-bucket
 scoop install bb
 
-# Debian / Ubuntu — apt (via Cloudsmith)
+# Debian / Ubuntu — apt
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.deb.sh' | sudo -E bash
 sudo apt install bb
 
-# Fedora / RHEL — dnf (via Cloudsmith)
+# Fedora / RHEL — dnf
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.rpm.sh' | sudo -E bash
 sudo dnf install bb
 
-# Alpine — apk (via Cloudsmith)
+# Alpine — apk
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.alpine.sh' | sudo -E bash
 sudo apk add bb
+```
 
-# Anywhere — install script
+### Install scripts (no package manager required)
+
+Useful for CI, Docker images, exotic distros, or just trying it
+quickly:
+
+```sh
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install.sh | sh
 
-# Windows — install script
+# Windows (PowerShell)
 irm https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install.ps1 | iex
 ```
 
-From source:
+### From source
 
 ```sh
 git clone https://github.com/hugs7/bitbucket-cli
