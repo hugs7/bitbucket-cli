@@ -16,20 +16,16 @@
 // taking over the whole frame.
 //
 // Key bindings:
-//   - enter / tab        → toggle the highlighted row's pick state
-//                          (add-or-remove depending on whether the
-//                          user is already on the PR), clear input,
-//                          stay in the modal so the user can pick
-//                          another.
-//   - ctrl+s / ctrl+enter → submit (call AddReviewers and/or
-//                           RemoveReviewers as appropriate).
-//                           Note: ctrl+enter only reaches the
-//                           terminal in iTerm2/Alacritty/Kitty/tmux;
-//                           macOS Terminal.app collapses it onto
-//                           plain Enter so ctrl+s is the universal
-//                           fallback.
-//   - esc / ctrl+c        → cancel.
-//   - ctrl+u              → clear input.
+//   - enter        → submit. If nothing is queued, the cursor row is
+//                    picked-and-submitted as a shortcut so the common
+//                    flow ("add Alice") is just type → Enter → done.
+//   - tab          → queue the cursor row's pick (add-or-remove
+//                    depending on whether they're already on the PR),
+//                    clear the input, keep the modal open. Use this
+//                    when picking multiple reviewers in one go.
+//   - ctrl+s       → submit (mirrors the inline editor's save key).
+//   - esc / ctrl+c → cancel.
+//   - ctrl+u       → clear input.
 //
 // On Bitbucket Cloud SearchUsers is a stub returning (nil, nil); the
 // flow falls back to the legacy free-text editor in the empty-results
@@ -332,12 +328,12 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "enter", "tab":
-		// Toggle the highlighted user's pick state. Whether that's
-		// an add or a remove is decided by whether the user is
-		// already on the PR (see togglePickFromCursor). After a
-		// pick we clear the input so the user can search for the
-		// next person without reaching for backspace.
+	case "tab":
+		// Tab queues the cursor row (toggle add-or-remove based
+		// on whether the user is already on the PR), clears the
+		// input, and keeps the modal open so the user can pick
+		// another. This is the multi-pick path; single-pick users
+		// just press Enter.
 		if !s.togglePickFromCursor() {
 			m.status = "no candidates to pick"
 			return m, nil
@@ -345,20 +341,15 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.input.SetValue("")
 		s.cursor = 0
 		// Refresh the empty-query result set so the visible list
-		// looks lively after a pick.
+		// stays lively after a pick.
 		s.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
 
-	case "ctrl+s", "ctrl+enter", "alt+enter":
-		// Submit: fire AddReviewers / RemoveReviewers as needed.
-		// We accept ctrl+s (universal), ctrl+enter (iTerm2 /
-		// Alacritty / Kitty / tmux) and alt+enter (so users on
-		// macOS who've mapped ⌘ to Meta in their terminal get
-		// ⌘+Enter as a submit shortcut). macOS Terminal.app
-		// collapses both ctrl+enter and ⌘+enter onto plain Enter,
-		// so ctrl+s is the safe fallback there. If nothing has
-		// been queued, treat the cursor row as a shortcut
-		// single-pick so the user can get out in one keystroke.
+	case "enter", "ctrl+s":
+		// Enter submits — if nothing is queued, treat the cursor
+		// row as a shortcut single-pick so the common flow is
+		// "type → Enter → done". ctrl+s mirrors the inline
+		// editor's save shortcut as a familiar fallback.
 		if len(s.pickedAdd) == 0 && len(s.pickedRemove) == 0 {
 			if !s.togglePickFromCursor() {
 				m.status = "no reviewers picked"
@@ -496,7 +487,7 @@ func (m model) renderReviewerSearch() string {
 	innerW := width - 2
 
 	header := theme.TitleBadge.Render(" MANAGE REVIEWERS ") + "  " +
-		theme.TitleChipDim.Render("enter pick · ctrl+s/alt+enter submit · esc cancel · ctrl+u clear")
+		theme.TitleChipDim.Render("enter submit · tab queue another · esc cancel · ctrl+u clear")
 
 	sectionHeader := func(label string) string {
 		return theme.TitleChipDim.Render("── " + label + " ──")
