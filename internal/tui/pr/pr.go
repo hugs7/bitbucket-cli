@@ -49,6 +49,7 @@ const (
 	viewComments
 	viewConfirmDelete
 	viewConfirmDecline
+	viewConfirmDeletePR
 	viewConfirmMerge
 	viewPalette
 	viewEditor
@@ -88,6 +89,9 @@ type model struct {
 
 	// when set, we're in a decline-PR confirm sub-mode
 	pendingDeclinePRID int
+
+	// when set, we're in a delete-PR confirm sub-mode
+	pendingDeletePRID int
 
 	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
 	// whether to remove the source branch after a successful merge;
@@ -289,6 +293,11 @@ func newPRModel(svc api.Service, project, slug string) model {
 	sl.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
 	cfg := config.Get()
+	// ShowAll renders FullHelp (multi-row, wraps as needed) instead
+	// of the cramped single-line ShortHelp. Users can still toggle
+	// it via '?' if they want the compact view back.
+	h := help.New()
+	h.ShowAll = true
 	return model{
 		svc: svc, project: project, slug: slug,
 		state:          "OPEN",
@@ -299,7 +308,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		palette:        newPaletteWidget(),
 		settings:       sl,
 		spinner:        sp,
-		help:           help.New(),
+		help:           h,
 		keys:           defaultKeys(),
 		loading:        true,
 		diffSplit:      cfg.DiffSplit,
@@ -1646,6 +1655,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingDeclinePRID = id
 					m.mode = viewConfirmDecline
 					return m, nil
+				case key.Matches(msg, m.keys.DeletePR):
+					m.pendingDeletePRID = id
+					m.mode = viewConfirmDeletePR
+					return m, nil
 				case key.Matches(msg, m.keys.ManageReviewers):
 					return m, m.startManageReviewers(id, it.pr.Reviewers, viewDetail)
 				}
@@ -1697,6 +1710,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingDeclinePRID = 0
 				m.mode = viewList
 				m.status = "decline cancelled"
+				return m, nil
+			}
+			return m, nil
+		case viewConfirmDeletePR:
+			switch {
+			case key.Matches(msg, m.keys.ConfirmYes):
+				prID := m.pendingDeletePRID
+				m.pendingDeletePRID = 0
+				m.mode = viewList
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("deleted #%d", prID), true, func() error {
+					return m.svc.DeletePR(m.project, m.slug, prID)
+				}))
+			case key.Matches(msg, m.keys.ConfirmNo):
+				m.pendingDeletePRID = 0
+				m.mode = viewList
+				m.status = "delete cancelled"
 				return m, nil
 			}
 			return m, nil
@@ -1906,6 +1936,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				m.pendingDeclinePRID = it.pr.ID
 				m.mode = viewConfirmDecline
+				return m, nil
+			}
+		case key.Matches(msg, m.keys.DeletePR):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				m.pendingDeletePRID = it.pr.ID
+				m.mode = viewConfirmDeletePR
 				return m, nil
 			}
 		case key.Matches(msg, m.keys.ManageReviewers):

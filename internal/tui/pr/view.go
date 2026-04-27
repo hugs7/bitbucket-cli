@@ -29,6 +29,8 @@ func (m model) helpView() string {
 		km = m.keys.confirmHelp()
 	case viewConfirmDecline:
 		km = m.keys.confirmHelp()
+	case viewConfirmDeletePR:
+		km = m.keys.confirmHelp()
 	case viewConfirmMerge:
 		km = m.keys.confirmHelp()
 	case viewPalette:
@@ -224,6 +226,16 @@ func (m model) renderForMode(mode viewMode) string {
 			BorderForeground(lipgloss.Color("9")).
 			Padding(0, 2)
 		body = "\n  " + warn.Render(fmt.Sprintf("Decline PR #%d?  [y/n]", m.pendingDeclinePRID))
+	case viewConfirmDeletePR:
+		warn := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("9")).
+			Bold(true).
+			BorderStyle(theme.Border()).
+			BorderForeground(lipgloss.Color("9")).
+			Padding(0, 2)
+		body = "\n  " + warn.Render(fmt.Sprintf(
+			"Delete PR #%d?  [y/n]\n  irreversible · Bitbucket Server only · usually requires admin",
+			m.pendingDeletePRID))
 	case viewConfirmMerge:
 		box := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("10")).

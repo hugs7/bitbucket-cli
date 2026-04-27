@@ -22,7 +22,7 @@ type keyMap struct {
 
 	Approve, Unapprove, NeedsWork, Merge key.Binding
 	EditDesc, Comments, AddComment       key.Binding
-	CreatePR, DeclinePR                  key.Binding
+	CreatePR, DeclinePR, DeletePR        key.Binding
 	ManageReviewers                      key.Binding
 
 	// settings-mode actions
@@ -73,6 +73,7 @@ func defaultKeys() keyMap {
 		AddComment: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new comment")),
 		CreatePR:   key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "create PR")),
 		DeclinePR:  key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "decline PR")),
+		DeletePR:   key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete PR")),
 
 		ManageReviewers: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "manage reviewers")),
 
@@ -120,12 +121,12 @@ func (m modeKeyMap) FullHelp() [][]key.Binding { return m.full }
 
 func (k keyMap) listHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.CreatePR, k.DeclinePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
 			{k.EditDesc, k.Comments, k.Refresh, k.State},
-			{k.ManageReviewers, k.CreatePR, k.DeclinePR},
+			{k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR},
 			{k.PaletteOpen, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
 		},
 	}
@@ -147,11 +148,11 @@ func (k keyMap) viewerHelp() modeKeyMap {
 // hopping back to the list first.
 func (k keyMap) detailHelp() modeKeyMap {
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.DeclinePR, k.Back, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Back, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Diff, k.Comments, k.Open},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
-			{k.EditDesc, k.ManageReviewers, k.DeclinePR, k.Help, k.Back, k.Quit},
+			{k.EditDesc, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Help, k.Back, k.Quit},
 		},
 	}
 }

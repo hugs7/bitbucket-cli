@@ -231,6 +231,14 @@ func (c *cloudService) DeclinePR(workspace, slug string, id int) error {
 	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/decline", workspace, slug, id), nil, nil)
 }
 
+// DeletePR is not supported by Bitbucket Cloud — the REST 2.0 API
+// has no DELETE on /pullrequests/{id}. Decline + close is as far as
+// the platform goes. Surface a clear error so the TUI can show a
+// useful toast instead of an HTTP 405.
+func (c *cloudService) DeletePR(workspace, slug string, id int) error {
+	return fmt.Errorf("deleting PRs is not supported on Bitbucket Cloud (decline closes the PR)")
+}
+
 // DeleteBranch removes a branch from the remote repo via Cloud's
 // refs/branches endpoint. URL-encoded so feature/foo branches work.
 func (c *cloudService) DeleteBranch(workspace, slug, branch string) error {

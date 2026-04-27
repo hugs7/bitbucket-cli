@@ -31,6 +31,12 @@ type Service interface {
 	MergePR(project, slug string, id int) error
 	DeclinePR(project, slug string, id int) error
 
+	// DeletePR removes a PR entirely. Bitbucket Server supports this
+	// via DELETE /pull-requests/{id} (typically only effective once
+	// the PR is declined and the caller has admin permission).
+	// Bitbucket Cloud has no equivalent endpoint and returns an error.
+	DeletePR(project, slug string, id int) error
+
 	// DeleteBranch removes a branch from the remote repo. Used after
 	// MergePR to clean up the source branch when the user opted into
 	// "delete branch on merge".

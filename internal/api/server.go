@@ -242,6 +242,21 @@ func (s *serverService) DeclinePR(project, slug string, id int) error {
 	return s.client.postJSON(endpoint, nil, nil)
 }
 
+// DeletePR removes the PR via Bitbucket Server's DELETE endpoint.
+// Server requires the current version in the JSON body (same pattern
+// as merge / decline) so we fetch the PR first to grab it. Typically
+// only effective on declined PRs and requires repo-admin permission;
+// the API surfaces a clear error in either case.
+func (s *serverService) DeletePR(project, slug string, id int) error {
+	var raw struct{ Version int `json:"version"` }
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
+		return err
+	}
+	body := map[string]any{"version": raw.Version}
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id)
+	return s.client.bodyJSON("DELETE", endpoint, body, nil)
+}
+
 // DeleteBranch removes a branch via the branch-utils REST plugin
 // (shipped with Bitbucket Server / Data Center). The endpoint sits
 // under /rest/branch-utils/ rather than the core API base, so we

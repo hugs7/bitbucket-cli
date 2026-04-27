@@ -349,11 +349,16 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
 
-	case "ctrl+s", "ctrl+enter":
+	case "ctrl+s", "ctrl+enter", "alt+enter":
 		// Submit: fire AddReviewers / RemoveReviewers as needed.
-		// If nothing has been queued, treat the cursor row as a
-		// shortcut single-pick so the user can get out in one
-		// keystroke.
+		// We accept ctrl+s (universal), ctrl+enter (iTerm2 /
+		// Alacritty / Kitty / tmux) and alt+enter (so users on
+		// macOS who've mapped ⌘ to Meta in their terminal get
+		// ⌘+Enter as a submit shortcut). macOS Terminal.app
+		// collapses both ctrl+enter and ⌘+enter onto plain Enter,
+		// so ctrl+s is the safe fallback there. If nothing has
+		// been queued, treat the cursor row as a shortcut
+		// single-pick so the user can get out in one keystroke.
 		if len(s.pickedAdd) == 0 && len(s.pickedRemove) == 0 {
 			if !s.togglePickFromCursor() {
 				m.status = "no reviewers picked"
@@ -491,7 +496,7 @@ func (m model) renderReviewerSearch() string {
 	innerW := width - 2
 
 	header := theme.TitleBadge.Render(" MANAGE REVIEWERS ") + "  " +
-		theme.TitleChipDim.Render("enter pick · ctrl+s submit · esc cancel · ctrl+u clear")
+		theme.TitleChipDim.Render("enter pick · ctrl+s/alt+enter submit · esc cancel · ctrl+u clear")
 
 	sectionHeader := func(label string) string {
 		return theme.TitleChipDim.Render("── " + label + " ──")
