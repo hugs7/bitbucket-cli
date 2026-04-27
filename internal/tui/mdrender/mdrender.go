@@ -8,6 +8,7 @@
 package mdrender
 
 import (
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
@@ -30,8 +31,21 @@ func Render(body string, width int) string {
 	if width <= 0 {
 		width = 80
 	}
+	// glamour.WithAutoStyle relies on termenv's terminal-color
+	// detection (OSC 11 / DA1 query). Inside our bubbletea TUIs that
+	// detection is unreliable — bubbletea owns /dev/tty in raw mode
+	// and consumes the terminal's response before termenv can read
+	// it, so glamour falls back to its no-color "ascii" style and
+	// READMEs render as literal `# headings` and `**bold**` markup.
+	// Force the dark style by default (bb's chrome is dark across
+	// every theme) and let power users override with GLAMOUR_STYLE
+	// the same way gh / glow do.
+	style := os.Getenv("GLAMOUR_STYLE")
+	if style == "" {
+		style = "dark"
+	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
