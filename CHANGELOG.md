@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/hugs7/bitbucket-cli/compare/v0.2.0...v0.3.0) (2026-04-27)
+
+
+### Features
+
+* **packaging:** rename Homebrew formula to bitbucket-cli, keep bb binary ([8131618](https://github.com/hugs7/bitbucket-cli/commit/81316186ebfbebdce5d540ca6948653688250c18))
+
 ## [0.2.0](https://github.com/hugs7/bitbucket-cli/compare/v0.1.0...v0.2.0) (2026-04-27)
 
 
