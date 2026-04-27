@@ -374,12 +374,42 @@ func (s *serverService) prVersion(project, slug string, id int) (int, error) {
 	return raw.Version, nil
 }
 
+// prVersionAndReviewers fetches the PR's current optimistic-locking
+// version along with its reviewer list, formatted ready for inclusion
+// in a PUT body. Used by mutating endpoints that must re-send the
+// reviewer list to avoid wiping it (Bitbucket Server treats an
+// omitted `reviewers` field as "set to empty list").
+func (s *serverService) prVersionAndReviewers(project, slug string, id int) (int, []map[string]any, error) {
+	var raw struct {
+		Version   int              `json:"version"`
+		Reviewers []srvParticipant `json:"reviewers"`
+	}
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
+		return 0, nil, err
+	}
+	reviewers := make([]map[string]any, 0, len(raw.Reviewers))
+	for _, r := range raw.Reviewers {
+		if r.User.Name == "" {
+			continue
+		}
+		reviewers = append(reviewers, map[string]any{"user": map[string]string{"name": r.User.Name}})
+	}
+	return raw.Version, reviewers, nil
+}
+
 func (s *serverService) UpdatePRDescription(project, slug string, id int, description string) error {
-	v, err := s.prVersion(project, slug, id)
+	// Bitbucket Server's PUT /pull-requests/{id} treats an absent
+	// `reviewers` field as an instruction to clear the list, so we
+	// must round-trip the existing reviewers back into the body.
+	v, reviewers, err := s.prVersionAndReviewers(project, slug, id)
 	if err != nil {
 		return err
 	}
-	body := map[string]any{"version": v, "description": description}
+	body := map[string]any{
+		"version":     v,
+		"description": description,
+		"reviewers":   reviewers,
+	}
 	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), body, nil)
 }
 
