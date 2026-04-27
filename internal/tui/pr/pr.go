@@ -963,11 +963,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reviewerSearch.err = nil
-		// Empty query → rebuild the unified list (existing + recents
-		// + directory) so the user keeps seeing who's on the PR and
-		// the ★ recents row when they clear the input. Non-empty
-		// queries replace results with just the directory matches so
-		// search feels precise.
+		// Always pin existing reviewers at the top of the list so
+		// the user can still pick them for removal while searching.
+		// Empty queries also surface the per-host recents (★ row)
+		// as quick picks; non-empty queries hide recents because
+		// they're an empty-state suggestion, not a search refinement.
 		if strings.TrimSpace(msg.query) == "" {
 			m.reviewerSearch.results = buildManageResults(
 				m.reviewerSearch.existingDisplay,
@@ -975,7 +975,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.users,
 			)
 		} else {
-			m.reviewerSearch.results = msg.users
+			m.reviewerSearch.results = buildManageResults(
+				m.reviewerSearch.existingDisplay,
+				nil,
+				msg.users,
+			)
+			// Existing reviewers sit at the top of the list as
+			// "[on PR]" rows so the user can still queue them for
+			// removal while searching — but the typing flow expects
+			// Enter to land on the first new match, not on a row
+			// that's already on the PR. Skip past the pinned
+			// existing block to the first directory hit so the
+			// "type → Enter → add" muscle memory still works.
+			m.reviewerSearch.cursor = firstNonExistingIdx(
+				m.reviewerSearch.results, m.reviewerSearch.existing)
 		}
 		m.reviewerSearch.clampCursor()
 		return m, nil

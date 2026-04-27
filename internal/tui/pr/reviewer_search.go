@@ -252,6 +252,22 @@ func (m *model) runReviewerSearchNow(version int, query string) tea.Cmd {
 	}
 }
 
+// firstNonExistingIdx returns the index of the first row in results
+// whose username isn't already on the PR. Used right after a search
+// response lands so the cursor skips past the pinned "[on PR]" rows
+// and lands on the top fresh match — keeping Enter's "submit the
+// top result" feel even though existing reviewers stay visible.
+// Returns 0 when every row is an existing reviewer (rare; means the
+// search produced no new candidates) so the cursor stays in bounds.
+func firstNonExistingIdx(results []api.User, existing map[string]struct{}) int {
+	for i, u := range results {
+		if _, on := existing[strings.ToLower(u.Username)]; !on {
+			return i
+		}
+	}
+	return 0
+}
+
 // clampCursor keeps the cursor within the visible result range.
 func (s *reviewerSearchState) clampCursor() {
 	if s.cursor >= len(s.results) {
