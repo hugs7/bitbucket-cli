@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/hugs7/bitbucket-cli/compare/v0.4.0...v0.5.0) (2026-04-27)
+
+
+### Features
+
+* **cli:** support bb &lt;path&gt; and bb pr &lt;url&gt; as direct entry points ([52bc8a3](https://github.com/hugs7/bitbucket-cli/commit/52bc8a30e1f2535eaf628944f29c9ae40009b118))
+
+
+### Bug Fixes
+
+* **pr edit:** preserve reviewers when updating description ([cb45a8e](https://github.com/hugs7/bitbucket-cli/commit/cb45a8e58ad93e6d93cbba5be1963dd28d699ed0))
+
 ## [0.4.0](https://github.com/hugs7/bitbucket-cli/compare/v0.3.0...v0.4.0) (2026-04-27)
 
 
