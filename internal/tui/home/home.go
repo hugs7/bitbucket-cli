@@ -678,8 +678,20 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// navigation, so Enter doesn't need to (re)trigger it.
 			switch m.tab {
 			case tabDashboard:
+				// Dashboard mixes PR rows and repo rows in one
+				// flat cursor. PR rows go straight into the PR
+				// TUI for that repo (the user's intent there is
+				// "look at this PR's repo"), while repo rows from
+				// "Recently viewed repositories" should land on
+				// the single-repo overview screen so the user
+				// gets the README + builds dashboard rather than
+				// the bare PR list.
 				if r := m.selectedDashRow(); r != nil {
-					m.next = &Action{Kind: "prs", Project: r.project(), Slug: r.slug()}
+					kind := "prs"
+					if r.kind == "repo" {
+						kind = "repo"
+					}
+					m.next = &Action{Kind: kind, Project: r.project(), Slug: r.slug()}
 					return m, tea.Quit
 				}
 			case tabFavourites:
