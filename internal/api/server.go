@@ -216,7 +216,7 @@ func (s *serverService) CreatePR(project, slug string, in CreatePRInput) (*PullR
 	return &out, nil
 }
 
-func (s *serverService) MergePR(project, slug string, id int) error {
+func (s *serverService) MergePR(project, slug string, id int, strategyID string) error {
 	pr, err := s.GetPR(project, slug, id)
 	if err != nil {
 		return err
@@ -227,10 +227,71 @@ func (s *serverService) MergePR(project, slug string, id int) error {
 		return err
 	}
 	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/merge?version=%d", project, slug, id, raw.Version)
-	if err := s.client.postJSON(endpoint, nil, nil); err != nil {
+	body := map[string]any{"version": raw.Version}
+	if strategyID != "" {
+		body["strategyId"] = strategyID
+	}
+	if err := s.client.postJSON(endpoint, body, nil); err != nil {
 		return fmt.Errorf("merge PR %d: %w", pr.ID, err)
 	}
 	return nil
+}
+
+// MergeStrategies queries the repo's PR merge configuration via
+// /settings/pull-requests/git. Falls back to the documented Server
+// default set when the endpoint is unavailable so the dialog still
+// has something to show. The returned list contains only enabled
+// strategies; the repo's default is flagged on its entry.
+func (s *serverService) MergeStrategies(project, slug string) ([]MergeStrategy, error) {
+	var resp struct {
+		MergeConfig struct {
+			DefaultStrategy struct {
+				ID string `json:"id"`
+			} `json:"defaultStrategy"`
+			Strategies []struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Enabled bool   `json:"enabled"`
+			} `json:"strategies"`
+		} `json:"mergeConfig"`
+	}
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/settings/pull-requests/git", project, slug), &resp); err != nil {
+		// Fallback: the well-known Server strategies. Better than
+		// blocking the merge dialog when a permission or version
+		// quirk hides /settings.
+		return defaultServerStrategies(), nil
+	}
+	defID := resp.MergeConfig.DefaultStrategy.ID
+	out := make([]MergeStrategy, 0, len(resp.MergeConfig.Strategies))
+	for _, st := range resp.MergeConfig.Strategies {
+		if !st.Enabled {
+			continue
+		}
+		out = append(out, MergeStrategy{
+			ID:      st.ID,
+			Name:    st.Name,
+			Default: st.ID == defID,
+		})
+	}
+	if len(out) == 0 {
+		return defaultServerStrategies(), nil
+	}
+	return out, nil
+}
+
+// defaultServerStrategies is the standard Bitbucket Server merge
+// strategy list, used as a safety net when /settings/pull-requests
+// is unreachable. Names match what the web UI shows.
+func defaultServerStrategies() []MergeStrategy {
+	return []MergeStrategy{
+		{ID: "no-ff", Name: "Merge commit", Default: true},
+		{ID: "ff", Name: "Fast-forward"},
+		{ID: "ff-only", Name: "Fast-forward only"},
+		{ID: "rebase-no-ff", Name: "Rebase + merge commit"},
+		{ID: "rebase-ff-only", Name: "Rebase + fast-forward"},
+		{ID: "squash", Name: "Squash"},
+		{ID: "squash-ff-only", Name: "Squash + fast-forward only"},
+	}
 }
 
 func (s *serverService) DeclinePR(project, slug string, id int) error {

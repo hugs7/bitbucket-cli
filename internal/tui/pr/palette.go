@@ -116,11 +116,10 @@ func buildPaletteItems(mode viewMode) []list.Item {
 			}},
 			paletteItem{label: "Merge PR", hint: "M", run: func(m *model) tea.Cmd {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
-					m.pendingMergePRID = it.pr.ID
-					m.pendingMergeSourceRef = it.pr.SourceRef
-					m.pendingMergeDeleteBranch = false
-					m.mode = viewConfirmMerge
 					m.paletteReturnTo = viewList
+					m.loading = true
+					return tea.Batch(m.spinner.Tick,
+						m.fetchMergeStrategies(it.pr.ID, it.pr.SourceRef))
 				}
 				return nil
 			}},

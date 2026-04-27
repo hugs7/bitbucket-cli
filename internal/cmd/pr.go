@@ -266,7 +266,10 @@ func newPRMergeCmd() *cobra.Command {
 			if !confirm {
 				return nil
 			}
-			if err := svc.MergePR(project, slug, id); err != nil {
+			// Empty strategy → use the repo's configured default
+			// merge mode. The TUI exposes per-merge picking; the
+			// CLI keeps the simpler "honour repo default" behaviour.
+			if err := svc.MergePR(project, slug, id, ""); err != nil {
 				return err
 			}
 			fmt.Printf("✓ Merged PR #%d\n", id)

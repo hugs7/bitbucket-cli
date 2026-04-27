@@ -247,8 +247,25 @@ func (m model) renderForMode(mode viewMode) string {
 		if m.pendingMergeDeleteBranch {
 			check = "[x]"
 		}
-		text := fmt.Sprintf("Merge PR #%d?  [y/n]\n  %s d  delete source branch %q after merge",
-			m.pendingMergePRID, check, m.pendingMergeSourceRef)
+		// Strategy picker: ←/→ cycles through whatever the repo
+		// allows. Hidden if the API returned nothing (defensive —
+		// shouldn't happen in practice given the API-side fallback).
+		stratLine := ""
+		if n := len(m.pendingMergeStrategies); n > 0 {
+			idx := m.pendingMergeStrategyIdx
+			if idx < 0 || idx >= n {
+				idx = 0
+			}
+			st := m.pendingMergeStrategies[idx]
+			tag := ""
+			if st.Default {
+				tag = "  (repo default)"
+			}
+			stratLine = fmt.Sprintf("\n  Strategy: ← %s →  [%d/%d]%s",
+				st.Name, idx+1, n, tag)
+		}
+		text := fmt.Sprintf("Merge PR #%d?  [y/n]%s\n  %s d  delete source branch %q after merge",
+			m.pendingMergePRID, stratLine, check, m.pendingMergeSourceRef)
 		body = "\n  " + box.Render(text)
 	case viewPalette:
 		// Render whatever view we came from as the background, then

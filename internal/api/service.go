@@ -28,7 +28,19 @@ type Service interface {
 	ListPRs(project, slug string, state string, limit int) ([]PullRequest, error)
 	GetPR(project, slug string, id int) (*PullRequest, error)
 	CreatePR(project, slug string, in CreatePRInput) (*PullRequest, error)
-	MergePR(project, slug string, id int) error
+	// MergePR merges a PR. strategyID is the merge-strategy
+	// identifier (e.g. "no-ff", "squash", "rebase-no-ff" on Server
+	// or "merge_commit", "squash", "fast_forward" on Cloud); pass
+	// "" to use the repo's configured default.
+	MergePR(project, slug string, id int, strategyID string) error
+
+	// MergeStrategies returns the merge modes the repo allows.
+	// Bitbucket Server reports this via /settings/pull-requests/git;
+	// Cloud doesn't expose the per-repo allowed list via API so the
+	// three documented strategies are returned and the merge call
+	// will surface a clear error if the repo restricts them.
+	MergeStrategies(project, slug string) ([]MergeStrategy, error)
+
 	DeclinePR(project, slug string, id int) error
 
 	// DeletePR removes a PR entirely. Bitbucket Server supports this

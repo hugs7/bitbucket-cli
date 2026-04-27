@@ -96,9 +96,15 @@ type model struct {
 	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
 	// whether to remove the source branch after a successful merge;
 	// the user flips it with 'd' on the confirm screen.
+	// pendingMergeStrategies is the list of strategies the repo
+	// allows (fetched lazily before the dialog opens); the user
+	// cycles through them with ←/→ and the chosen one is sent
+	// to MergePR.
 	pendingMergePRID         int
 	pendingMergeSourceRef    string
 	pendingMergeDeleteBranch bool
+	pendingMergeStrategies   []api.MergeStrategy
+	pendingMergeStrategyIdx  int
 
 	// prBuilds caches the latest build state per PR id so the list
 	// can render a status dot without re-fetching on every keystroke.
@@ -487,6 +493,18 @@ func (m *model) applyDiffJump(t diffJumpTarget) bool {
 	return false
 }
 
+// fetchMergeStrategies asynchronously loads the repo's allowed merge
+// strategies. The result lands as mergeStrategiesLoadedMsg, which
+// opens the merge-confirm dialog with the strategies prepared.
+func (m *model) fetchMergeStrategies(prID int, sourceRef string) tea.Cmd {
+	svc := m.svc
+	project, slug := m.project, m.slug
+	return func() tea.Msg {
+		ss, err := svc.MergeStrategies(project, slug)
+		return mergeStrategiesLoadedMsg{prID: prID, sourceRef: sourceRef, strategies: ss, err: err}
+	}
+}
+
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		err := fn()
@@ -846,6 +864,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
 		})
+
+	case mergeStrategiesLoadedMsg:
+		// Strategies fetched — populate the dialog state and switch
+		// into the confirm view. On error we still show the dialog
+		// (with whatever fallback list the API layer provided) so
+		// the merge action stays usable.
+		m.loading = false
+		m.pendingMergePRID = msg.prID
+		m.pendingMergeSourceRef = msg.sourceRef
+		m.pendingMergeDeleteBranch = false
+		m.pendingMergeStrategies = msg.strategies
+		m.pendingMergeStrategyIdx = 0
+		for i, st := range msg.strategies {
+			if st.Default {
+				m.pendingMergeStrategyIdx = i
+				break
+			}
+		}
+		m.mode = viewConfirmMerge
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "merge strategies: " + msg.err.Error()
+		}
+		return m, nil
 
 	case reviewerSearchTickMsg:
 		// Stale tick (a newer keystroke superseded this one) — drop.
@@ -1641,11 +1682,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.svc.NeedsWorkPR(m.project, m.slug, id)
 					}))
 				case key.Matches(msg, m.keys.Merge):
-					m.pendingMergePRID = id
-					m.pendingMergeSourceRef = it.pr.SourceRef
-					m.pendingMergeDeleteBranch = false
-					m.mode = viewConfirmMerge
-					return m, nil
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick,
+						m.fetchMergeStrategies(id, it.pr.SourceRef))
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
@@ -1738,21 +1777,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// their mind before pressing y.
 				m.pendingMergeDeleteBranch = !m.pendingMergeDeleteBranch
 				return m, nil
+			case "left", "h":
+				// Cycle strategies backwards. Wraps around so users
+				// can step in either direction without lifting off
+				// the arrow keys.
+				if n := len(m.pendingMergeStrategies); n > 0 {
+					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx - 1 + n) % n
+				}
+				return m, nil
+			case "right", "l":
+				if n := len(m.pendingMergeStrategies); n > 0 {
+					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx + 1) % n
+				}
+				return m, nil
 			case "y", "Y", "enter":
 				prID := m.pendingMergePRID
 				src := m.pendingMergeSourceRef
 				del := m.pendingMergeDeleteBranch
+				strategyID := ""
+				strategyName := ""
+				if idx := m.pendingMergeStrategyIdx; idx >= 0 && idx < len(m.pendingMergeStrategies) {
+					strategyID = m.pendingMergeStrategies[idx].ID
+					strategyName = m.pendingMergeStrategies[idx].Name
+				}
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
 				m.pendingMergeDeleteBranch = false
+				m.pendingMergeStrategies = nil
+				m.pendingMergeStrategyIdx = 0
 				m.mode = viewList
 				m.loading = true
 				label := fmt.Sprintf("merged #%d", prID)
+				if strategyName != "" {
+					label = fmt.Sprintf("merged #%d (%s)", prID, strategyName)
+				}
 				if del {
-					label = fmt.Sprintf("merged #%d + deleted %s", prID, src)
+					label += fmt.Sprintf(" + deleted %s", src)
 				}
 				return m, tea.Batch(m.spinner.Tick, m.doAction(label, true, func() error {
-					if err := m.svc.MergePR(m.project, m.slug, prID); err != nil {
+					if err := m.svc.MergePR(m.project, m.slug, prID, strategyID); err != nil {
 						return err
 					}
 					if del && src != "" {
@@ -1769,6 +1832,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
 				m.pendingMergeDeleteBranch = false
+				m.pendingMergeStrategies = nil
+				m.pendingMergeStrategyIdx = 0
 				m.mode = viewList
 				m.status = "merge cancelled"
 				return m, nil
@@ -1919,11 +1984,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.Merge):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				m.pendingMergePRID = it.pr.ID
-				m.pendingMergeSourceRef = it.pr.SourceRef
-				m.pendingMergeDeleteBranch = false
-				m.mode = viewConfirmMerge
-				return m, nil
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick,
+					m.fetchMergeStrategies(it.pr.ID, it.pr.SourceRef))
 			}
 		case key.Matches(msg, m.keys.EditDesc):
 			if it, ok := m.list.SelectedItem().(prItem); ok {

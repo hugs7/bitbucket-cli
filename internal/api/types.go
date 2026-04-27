@@ -84,6 +84,16 @@ type WebhookInput struct {
 	Description string
 }
 
+// MergeStrategy describes one merge mode the repo allows when
+// merging a PR. ID is what MergePR's strategyID parameter expects;
+// Name is the human label rendered in the confirm dialog. Default
+// flags the repo's configured default so the UI can preselect it.
+type MergeStrategy struct {
+	ID      string
+	Name    string
+	Default bool
+}
+
 // Build represents a build/pipeline run associated with a repo or commit.
 type Build struct {
 	ID        string

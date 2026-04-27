@@ -223,8 +223,26 @@ func (c *cloudService) CreatePR(workspace, slug string, in CreatePRInput) (*Pull
 	return &out, nil
 }
 
-func (c *cloudService) MergePR(workspace, slug string, id int) error {
-	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/merge", workspace, slug, id), map[string]any{}, nil)
+func (c *cloudService) MergePR(workspace, slug string, id int, strategyID string) error {
+	body := map[string]any{}
+	if strategyID != "" {
+		body["merge_strategy"] = strategyID
+	}
+	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/merge", workspace, slug, id), body, nil)
+}
+
+// MergeStrategies returns the three documented Bitbucket Cloud merge
+// strategies. Cloud doesn't expose a per-repo allowed-list endpoint
+// (branch restrictions of kind "allow_merge_strategies" can hide
+// some at the branch level but aren't queryable cheaply); we list
+// all three and let the merge endpoint surface a clear error if the
+// repo restricts the chosen one.
+func (c *cloudService) MergeStrategies(workspace, slug string) ([]MergeStrategy, error) {
+	return []MergeStrategy{
+		{ID: "merge_commit", Name: "Merge commit", Default: true},
+		{ID: "squash", Name: "Squash"},
+		{ID: "fast_forward", Name: "Fast-forward"},
+	}, nil
 }
 
 func (c *cloudService) DeclinePR(workspace, slug string, id int) error {

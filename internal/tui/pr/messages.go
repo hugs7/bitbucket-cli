@@ -54,3 +54,14 @@ type aiDescribeDoneMsg struct {
 	text string
 	err  error
 }
+
+// mergeStrategiesLoadedMsg lands after the M-key handler has fetched
+// the repo's allowed merge strategies. The Update handler stages the
+// strategy list, picks the default index, and switches into the
+// merge-confirm view.
+type mergeStrategiesLoadedMsg struct {
+	prID       int
+	sourceRef  string
+	strategies []api.MergeStrategy
+	err        error
+}
