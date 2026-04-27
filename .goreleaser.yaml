@@ -76,11 +76,13 @@ publishers:
   - name: cloudsmith
     ids: [bb]
     # Skip anything that isn't a Linux package (archives, checksums…).
-    disable: '{{ if not (or (eq .Ext ".deb") (eq .Ext ".rpm") (eq .Ext ".apk")) }}true{{ end }}'
+    # The publisher template uses .Format ("deb"/"rpm"/"apk"/"tar.gz"/"zip"),
+    # not .Ext.
+    disable: '{{ if not (or (eq .Format "deb") (eq .Format "rpm") (eq .Format "apk")) }}true{{ end }}'
     cmd: >-
       cloudsmith push
-      {{- if eq .Ext ".deb" }} deb hugs7/bb/any-distro/any-version
-      {{- else if eq .Ext ".rpm" }} rpm hugs7/bb/any-distro/any-version
+      {{- if eq .Format "deb" }} deb hugs7/bb/any-distro/any-version
+      {{- else if eq .Format "rpm" }} rpm hugs7/bb/any-distro/any-version
       {{- else }} alpine hugs7/bb/alpine/any-version{{ end }}
       {{ .ArtifactPath }}
     env:
