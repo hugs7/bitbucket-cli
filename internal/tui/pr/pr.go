@@ -106,6 +106,20 @@ type model struct {
 	pendingMergeStrategies   []api.MergeStrategy
 	pendingMergeStrategyIdx  int
 
+	// pendingMergeTasks is the open-tasks list fetched in the
+	// background after the dialog opens — used to show "Open
+	// tasks: N" and to drive the "resolve all tasks before merge"
+	// toggle. pendingMergeTasksLoading is true while the fetch is
+	// in flight so the dialog can render a spinner instead of
+	// showing a stale "0 open" before the response lands.
+	// pendingMergeResolveTasks, when true, makes the y-key handler
+	// resolve every open task before firing the merge so the user
+	// doesn't get vetoed by leftover blocker comments.
+	pendingMergeTasks        []api.Task
+	pendingMergeTasksLoading bool
+	pendingMergeTasksErr     error
+	pendingMergeResolveTasks bool
+
 	// prBuilds caches the latest build state per PR id so the list
 	// can render a status dot without re-fetching on every keystroke.
 	prBuilds map[int]string
@@ -125,11 +139,19 @@ type model struct {
 	// we can anchor inline comments to the correct (path, side, line).
 	// The viewport itself only knows how to scroll a string, so we
 	// re-render with a row marker each time the cursor moves.
-	diffLines        []diffLine
-	diffRows         []diffRow
-	diffCursor       int
-	diffCursorSide   int  // 0=old (LHS), 1=new (RHS); split mode only
-	diffSplit        bool // false=unified, true=side-by-side
+	diffLines      []diffLine
+	diffRows       []diffRow
+	diffCursor     int
+	diffCursorSide int  // 0=old (LHS), 1=new (RHS); split mode only
+	diffSplit      bool // false=unified, true=side-by-side
+
+	// diffRowYs maps a diffRow index to the visual line offset it
+	// occupies in the rendered viewport content. With split-mode
+	// line wrapping a single logical row can span multiple visual
+	// lines, so we track the offset per row to keep cursor scroll
+	// math honest. Length = len(diffRows)+1 (last entry is the
+	// total visual line count, useful for "go to bottom" maths).
+	diffRowYs []int
 	diffShowInline   bool // overlay inline review comments
 	diffComments     []api.Comment
 	diffCommentsPRID int
@@ -505,6 +527,19 @@ func (m *model) fetchMergeStrategies(prID int, sourceRef string) tea.Cmd {
 	}
 }
 
+// fetchMergeTasks asynchronously loads the PR's open tasks (blocker
+// comments) so the merge confirm dialog can display the count and
+// drive the "resolve before merge" toggle. The result lands as
+// mergeTasksLoadedMsg.
+func (m *model) fetchMergeTasks(prID int) tea.Cmd {
+	svc := m.svc
+	project, slug := m.project, m.slug
+	return func() tea.Msg {
+		ts, err := svc.ListTasks(project, slug, prID)
+		return mergeTasksLoadedMsg{prID: prID, tasks: ts, err: err}
+	}
+}
+
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		err := fn()
@@ -869,7 +904,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Strategies fetched — populate the dialog state and switch
 		// into the confirm view. On error we still show the dialog
 		// (with whatever fallback list the API layer provided) so
-		// the merge action stays usable.
+		// the merge action stays usable. Kick off the task fetch in
+		// parallel so "open tasks: N" lights up moments later.
 		m.loading = false
 		m.pendingMergePRID = msg.prID
 		m.pendingMergeSourceRef = msg.sourceRef
@@ -882,9 +918,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		m.pendingMergeTasks = nil
+		m.pendingMergeTasksErr = nil
+		m.pendingMergeTasksLoading = true
+		m.pendingMergeResolveTasks = false
 		m.mode = viewConfirmMerge
 		if msg.err != nil {
 			m.status = theme.ErrPrefix() + "merge strategies: " + msg.err.Error()
+		}
+		return m, tea.Batch(m.spinner.Tick, m.fetchMergeTasks(msg.prID))
+
+	case mergeTasksLoadedMsg:
+		// Stale response (user already cancelled or merged) — drop.
+		if m.mode != viewConfirmMerge || msg.prID != m.pendingMergePRID {
+			return m, nil
+		}
+		m.pendingMergeTasksLoading = false
+		m.pendingMergeTasks = msg.tasks
+		m.pendingMergeTasksErr = msg.err
+		// Default the "resolve all tasks before merge" toggle ON
+		// when there's something to resolve — that's the whole
+		// point of surfacing the count, and the user can flip it
+		// off with `t` if they really want the merge to be vetoed.
+		if msg.err == nil && len(msg.tasks) > 0 {
+			m.pendingMergeResolveTasks = true
 		}
 		return m, nil
 
@@ -1191,20 +1248,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			n := len(m.diffRows)
 
 			// Complete a pending vim z-motion (zz / zt / zb).
+			// Translate the cursor's logical row into a visual line
+			// offset first — wrapping in split mode means a single
+			// row can span multiple lines, so naive math would put
+			// the cursor a few lines off-screen.
 			if m.zPending {
 				m.zPending = false
 				m.status = ""
+				cursorTop, cursorBot := m.diffCursorVisualRange()
 				switch s {
 				case "z":
-					off := m.diffCursor - m.diff.Height/2
+					off := cursorTop - m.diff.Height/2
 					if off < 0 {
 						off = 0
 					}
 					m.diff.SetYOffset(off)
 				case "t":
-					m.diff.SetYOffset(m.diffCursor)
+					m.diff.SetYOffset(cursorTop)
 				case "b":
-					off := m.diffCursor - m.diff.Height + 1
+					off := cursorBot - m.diff.Height + 1
 					if off < 0 {
 						off = 0
 					}
@@ -1777,15 +1839,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// their mind before pressing y.
 				m.pendingMergeDeleteBranch = !m.pendingMergeDeleteBranch
 				return m, nil
-			case "left", "h":
+			case "t":
+				// Toggle "resolve all open tasks before merging".
+				// Only meaningful when there are tasks to resolve;
+				// keep the toggle inert otherwise so a stray press
+				// doesn't enable a no-op flag.
+				if len(m.pendingMergeTasks) > 0 {
+					m.pendingMergeResolveTasks = !m.pendingMergeResolveTasks
+				}
+				return m, nil
+			case "up", "k", "left", "h":
 				// Cycle strategies backwards. Wraps around so users
 				// can step in either direction without lifting off
-				// the arrow keys.
+				// the navigation keys; up/down are the primary
+				// keys now that the dialog renders as a vertical
+				// list, with h/l/←/→ kept as aliases.
 				if n := len(m.pendingMergeStrategies); n > 0 {
 					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx - 1 + n) % n
 				}
 				return m, nil
-			case "right", "l":
+			case "down", "j", "right", "l":
 				if n := len(m.pendingMergeStrategies); n > 0 {
 					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx + 1) % n
 				}
@@ -1794,6 +1867,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				prID := m.pendingMergePRID
 				src := m.pendingMergeSourceRef
 				del := m.pendingMergeDeleteBranch
+				resolveTasks := m.pendingMergeResolveTasks
+				tasks := append([]api.Task(nil), m.pendingMergeTasks...)
 				strategyID := ""
 				strategyName := ""
 				if idx := m.pendingMergeStrategyIdx; idx >= 0 && idx < len(m.pendingMergeStrategies) {
@@ -1805,16 +1880,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergeDeleteBranch = false
 				m.pendingMergeStrategies = nil
 				m.pendingMergeStrategyIdx = 0
+				m.pendingMergeTasks = nil
+				m.pendingMergeTasksErr = nil
+				m.pendingMergeTasksLoading = false
+				m.pendingMergeResolveTasks = false
 				m.mode = viewList
 				m.loading = true
 				label := fmt.Sprintf("merged #%d", prID)
 				if strategyName != "" {
 					label = fmt.Sprintf("merged #%d (%s)", prID, strategyName)
 				}
+				if resolveTasks && len(tasks) > 0 {
+					label = fmt.Sprintf("resolved %d task(s) + ", len(tasks)) + label
+				}
 				if del {
 					label += fmt.Sprintf(" + deleted %s", src)
 				}
 				return m, tea.Batch(m.spinner.Tick, m.doAction(label, true, func() error {
+					// Resolve every open task first so blocker
+					// comments don't veto the merge. Surface the
+					// first failure verbatim — partial-resolve
+					// state is fine; the next merge attempt sees
+					// fewer open tasks.
+					if resolveTasks {
+						for _, t := range tasks {
+							if err := m.svc.ResolveTask(m.project, m.slug, prID, t.ID); err != nil {
+								return fmt.Errorf("resolve task #%d: %w", t.ID, err)
+							}
+						}
+					}
 					if err := m.svc.MergePR(m.project, m.slug, prID, strategyID); err != nil {
 						return err
 					}
@@ -1834,6 +1928,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergeDeleteBranch = false
 				m.pendingMergeStrategies = nil
 				m.pendingMergeStrategyIdx = 0
+				m.pendingMergeTasks = nil
+				m.pendingMergeTasksErr = nil
+				m.pendingMergeTasksLoading = false
+				m.pendingMergeResolveTasks = false
 				m.mode = viewList
 				m.status = "merge cancelled"
 				return m, nil

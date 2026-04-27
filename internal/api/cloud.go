@@ -878,3 +878,16 @@ func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) 
 func (c *cloudService) SearchUsers(query string, limit int) ([]User, error) {
 	return nil, nil
 }
+
+// ListTasks is a no-op on Bitbucket Cloud — the platform deprecated
+// PR tasks in 2022 in favour of GFM checklists in the description.
+// Returning an empty slice (rather than an error) lets the merge
+// confirm view simply hide the "open tasks" section on Cloud.
+func (c *cloudService) ListTasks(workspace, slug string, prID int) ([]Task, error) {
+	return nil, nil
+}
+
+// ResolveTask is not supported on Bitbucket Cloud (see ListTasks).
+func (c *cloudService) ResolveTask(workspace, slug string, prID, taskID int) error {
+	return fmt.Errorf("resolving PR tasks is not supported on Bitbucket Cloud")
+}

@@ -75,6 +75,18 @@ type Service interface {
 	AddReviewers(project, slug string, prID int, usernames []string) error
 	RemoveReviewers(project, slug string, prID int, usernames []string) error
 
+	// ListTasks returns the blocker comments (a.k.a. "tasks" in the
+	// Bitbucket UI) for a PR. Bitbucket Server / DC reports them via
+	// /pull-requests/{id}/blocker-comments. Bitbucket Cloud's task
+	// API was deprecated in favour of description checklists; the
+	// Cloud implementation returns an empty slice.
+	ListTasks(project, slug string, prID int) ([]Task, error)
+
+	// ResolveTask marks a task (blocker comment) as RESOLVED so it
+	// no longer vetoes a PR merge. Server requires the comment's
+	// current version, fetched internally. Cloud returns an error.
+	ResolveTask(project, slug string, prID, taskID int) error
+
 	// SearchUsers performs a directory search for reviewers,
 	// matching the query against display name / username / email.
 	// An empty query returns the first `limit` users (most-recent

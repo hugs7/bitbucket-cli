@@ -84,6 +84,18 @@ type WebhookInput struct {
 	Description string
 }
 
+// Task represents an actionable "task" on a pull request. Bitbucket
+// Server / Data Center 7+ models tasks as blocker comments: comments
+// with severity=BLOCKER and a state of OPEN or RESOLVED. Cloud's
+// task feature has been deprecated in favour of GFM checklists in the
+// description, so the Cloud implementation returns no tasks.
+type Task struct {
+	ID     int
+	Text   string
+	Author string
+	State  string // OPEN | RESOLVED
+}
+
 // MergeStrategy describes one merge mode the repo allows when
 // merging a PR. ID is what MergePR's strategyID parameter expects;
 // Name is the human label rendered in the confirm dialog. Default

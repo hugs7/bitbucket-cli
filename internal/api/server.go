@@ -281,16 +281,28 @@ func (s *serverService) MergeStrategies(project, slug string) ([]MergeStrategy, 
 
 // defaultServerStrategies is the standard Bitbucket Server merge
 // strategy list, used as a safety net when /settings/pull-requests
-// is unreachable. Names match what the web UI shows.
+// is unreachable. Names match the labels in Atlassian's web UI.
+//
+// Strategy IDs and behaviour:
+//   - no-ff           "Merge commit"           (--no-ff)
+//   - ff              "Fast-forward"           (--ff)
+//   - ff-only         "Fast-forward only"      (--ff-only)
+//   - rebase-no-ff    "Rebase, merge"            (rebase + merge --no-ff)
+//   - rebase-ff-only  "Rebase, fast-forward"     (rebase + merge --ff-only)
+//   - squash          "Squash"                   (--squash)
+//   - squash-ff-only  "Squash, fast-forward only" (--squash --ff-only)
+//
+// In practice the repo's /settings/pull-requests/git response wins;
+// this fallback only fires if that endpoint returns an error.
 func defaultServerStrategies() []MergeStrategy {
 	return []MergeStrategy{
 		{ID: "no-ff", Name: "Merge commit", Default: true},
 		{ID: "ff", Name: "Fast-forward"},
 		{ID: "ff-only", Name: "Fast-forward only"},
-		{ID: "rebase-no-ff", Name: "Rebase + merge commit"},
-		{ID: "rebase-ff-only", Name: "Rebase + fast-forward"},
+		{ID: "rebase-no-ff", Name: "Rebase, merge"},
+		{ID: "rebase-ff-only", Name: "Rebase, fast-forward"},
 		{ID: "squash", Name: "Squash"},
-		{ID: "squash-ff-only", Name: "Squash + fast-forward only"},
+		{ID: "squash-ff-only", Name: "Squash, fast-forward only"},
 	}
 }
 
@@ -581,6 +593,55 @@ func (s *serverService) ReplyComment(project, slug string, prID, parentID int, t
 		ID: c.ID, Author: c.Author.DisplayName, Text: c.Text,
 		CreatedAt: time.UnixMilli(c.CreatedDate), UpdatedAt: time.UnixMilli(c.UpdatedDate),
 	}, nil
+}
+
+// ListTasks returns OPEN blocker comments on a PR. Bitbucket Server
+// 7+ replaced the dedicated tasks API with blocker comments: any
+// comment with severity=BLOCKER and state=OPEN counts as a task and
+// vetoes the merge. The /blocker-comments endpoint already filters by
+// severity; we surface only the OPEN ones to the caller so "resolve
+// all tasks" doesn't act on already-resolved comments.
+func (s *serverService) ListTasks(project, slug string, prID int) ([]Task, error) {
+	var page srvPaged[struct {
+		ID       int     `json:"id"`
+		Text     string  `json:"text"`
+		Author   srvUser `json:"author"`
+		State    string  `json:"state"`
+		Severity string  `json:"severity"`
+	}]
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/blocker-comments%s",
+		project, slug, prID,
+		queryString(map[string]string{"limit": "100"}),
+	)
+	if err := s.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]Task, 0, len(page.Values))
+	for _, c := range page.Values {
+		if c.State != "" && c.State != "OPEN" {
+			continue
+		}
+		out = append(out, Task{
+			ID:     c.ID,
+			Text:   c.Text,
+			Author: c.Author.DisplayName,
+			State:  "OPEN",
+		})
+	}
+	return out, nil
+}
+
+// ResolveTask flips a blocker comment's state from OPEN to RESOLVED
+// via PUT /comments/{id}. Server requires the current version (same
+// optimistic-locking pattern as edit/delete), so we fetch it first.
+func (s *serverService) ResolveTask(project, slug string, prID, taskID int) error {
+	v, err := s.commentVersion(project, slug, prID, taskID)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"version": v, "state": "RESOLVED"}
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d", project, slug, prID, taskID)
+	return s.client.putJSON(endpoint, body, nil)
 }
 
 // AddReviewers / RemoveReviewers update the PR's reviewers list. Server

@@ -65,3 +65,13 @@ type mergeStrategiesLoadedMsg struct {
 	strategies []api.MergeStrategy
 	err        error
 }
+
+// mergeTasksLoadedMsg lands after the merge confirm view kicks off
+// its background task fetch. It just refreshes the open-tasks count
+// shown in the dialog — the merge confirm view stays visible the
+// whole time so users can still y/n without waiting.
+type mergeTasksLoadedMsg struct {
+	prID  int
+	tasks []api.Task
+	err   error
+}
