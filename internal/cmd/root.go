@@ -28,6 +28,14 @@ func NewRootCmd(info BuildInfo) *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return config.Load(cfgPath)
 		},
+		// Print the "a new release is available" nag *after* the
+		// command has finished so a user running a long-running TUI
+		// sees it on exit, not buried under the alt-screen output.
+		// Subcommands inherit this from cobra unless they set their
+		// own PersistentPostRun, which none of ours do.
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			notifyIfUpdateAvailable(info)
+		},
 		// `bb` with no args opens the interactive home dashboard. The
 		// home model can return a "next action" (e.g. open the PR
 		// browser for a particular repo); we loop until the user

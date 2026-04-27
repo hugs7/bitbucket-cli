@@ -63,3 +63,32 @@ func TestDetectPackageManager_EmptyPath(t *testing.T) {
 		t.Errorf("empty path returned %q — expected nil", got.name)
 	}
 }
+
+// TestIsNewerVersion locks in the basic semver comparison the update
+// notifier relies on. Edge cases that have bitten string-compare
+// implementations in the past — the 9→10 minor jump, mismatched
+// "v" prefixes, and pre-release suffixes — get explicit coverage.
+func TestIsNewerVersion(t *testing.T) {
+	cases := []struct {
+		latest, current string
+		want            bool
+	}{
+		{"0.3.1", "0.3.0", true},
+		{"0.3.0", "0.3.0", false},
+		{"0.3.0", "0.3.1", false},
+		{"0.10.0", "0.9.9", true},  // string-compare would say false
+		{"1.0.0", "0.99.99", true}, // major bump beats anything below
+		{"v0.4.0", "0.3.0", true},  // tolerates the leading "v"
+		{"0.3.0", "v0.3.0", false},
+		{"0.4.0-rc1", "0.3.0", true}, // strips pre-release suffix
+		{"0.3.0", "0.4.0-rc1", false},
+		{"garbage", "0.3.0", false}, // unparseable → never "newer"
+	}
+	for _, c := range cases {
+		got := isNewerVersion(c.latest, c.current)
+		if got != c.want {
+			t.Errorf("isNewerVersion(%q, %q) = %v, want %v",
+				c.latest, c.current, got, c.want)
+		}
+	}
+}
