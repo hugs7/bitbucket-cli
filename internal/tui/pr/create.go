@@ -12,8 +12,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 )
 
 // currentGitBranch returns the current local git branch name (or "" on
@@ -100,6 +101,23 @@ func (f *createPRForm) SetStdout(w io.Writer) { f.stdout = w }
 func (f *createPRForm) SetStderr(w io.Writer) { f.stderr = w }
 
 func (f *createPRForm) Run() error {
+	// Default huh keymap binds tab to "next field" and ctrl+e to
+	// "accept suggestion". For a branch-name autocomplete that's
+	// backwards from every shell anyone has ever used: tab should
+	// commit the highlighted suggestion. We swap so:
+	//   tab          → accept the autocomplete suggestion
+	//   enter        → next field / submit
+	//   shift+tab    → previous field
+	keymap := huh.NewDefaultKeyMap()
+	keymap.Input.AcceptSuggestion = key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "complete"),
+	)
+	keymap.Input.Next = key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "next"),
+	)
+
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Source branch").Value(&f.source).
 			Suggestions(f.branches).Validate(formNonEmpty),
@@ -107,7 +125,7 @@ func (f *createPRForm) Run() error {
 			Suggestions(f.branches).Validate(formNonEmpty),
 		huh.NewInput().Title("Title").Value(&f.title).Validate(formNonEmpty),
 		huh.NewText().Title("Description (optional)").Value(&f.body),
-	)).WithInput(f.stdin).WithOutput(f.stdout)
+	)).WithInput(f.stdin).WithOutput(f.stdout).WithKeyMap(keymap)
 
 	if err := form.Run(); err != nil {
 		// huh returns ErrUserAborted when the user hits ctrl+c / esc;
