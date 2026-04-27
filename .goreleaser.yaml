@@ -75,16 +75,18 @@ nfpms:
 publishers:
   - name: cloudsmith
     ids: [bb]
-    # Skip anything that isn't a Linux package (archives, checksums…).
-    # The publisher template uses .Format ("deb"/"rpm"/"apk"/"tar.gz"/"zip"),
-    # not .Ext.
-    disable: '{{ if not (or (eq .Format "deb") (eq .Format "rpm") (eq .Format "apk")) }}true{{ end }}'
-    cmd: >-
-      cloudsmith push
-      {{- if eq .Format "deb" }} deb hugs7/bb/any-distro/any-version
-      {{- else if eq .Format "rpm" }} rpm hugs7/bb/any-distro/any-version
-      {{- else }} alpine hugs7/bb/alpine/any-version{{ end }}
-      {{ .ArtifactPath }}
+    # GoReleaser passes every artifact in the `bb` build group (.deb,
+    # .rpm, .apk, .tar.gz, .zip, …) to this publisher. We dispatch on
+    # the file extension in shell rather than via a `disable:` template
+    # because the publisher template context doesn't reliably expose
+    # .Format / .Ext for all artifact types.
+    cmd: |
+      sh -c 'case "{{ .ArtifactPath }}" in
+        *.deb) exec cloudsmith push deb hugs7/bb/any-distro/any-version "{{ .ArtifactPath }}" ;;
+        *.rpm) exec cloudsmith push rpm hugs7/bb/any-distro/any-version "{{ .ArtifactPath }}" ;;
+        *.apk) exec cloudsmith push alpine hugs7/bb/alpine/any-version "{{ .ArtifactPath }}" ;;
+        *)     echo "cloudsmith: skipping {{ .ArtifactPath }}"; exit 0 ;;
+      esac'
     env:
       - CLOUDSMITH_API_KEY={{ .Env.CLOUDSMITH_API_KEY }}
 
