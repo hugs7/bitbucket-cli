@@ -22,7 +22,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
-	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
+	"github.com/hugs7/bitbucket-cli/internal/tui/preview"
 	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
@@ -437,13 +437,11 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case readmeLoadedMsg:
 		m.loading = false
-		body := strings.TrimSpace(msg.body)
-		if body == "" {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("(no README found — press p to open this repo's PRs, o to open in browser)")
-		} else {
-			body = mdrender.Render(body, m.preview.Width)
-		}
+		// Description is empty here because home already surfaces it
+		// in the readmeHeader chip strip — adding it again would
+		// just duplicate the metadata above the README body.
+		body := preview.Body(msg.body, "", m.preview.Width,
+			"(no README found — press p to open this repo's PRs, o to open in browser)")
 		m.preview.SetContent(m.readmeHeader(msg.project, msg.slug) + "\n\n" + body)
 		m.preview.GotoTop()
 		return m, nil

@@ -12,11 +12,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/tui/preview"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
-// homeMuted is the canonical muted-hint colour used across home.
-var homeMuted = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+// homeMuted aliases the canonical preview.Muted hint colour so home
+// stays visually in sync with the repo TUI's placeholder text — both
+// surfaces want the same dim grey for "(no README)" / "loading…"
+// style hints, and centralising the style means a future palette
+// tweak only has to be made in one place.
+var homeMuted = preview.Muted
 
 // homeLoadBanner is the prominent "we're working" pill shared by the
 // loader cards (reviews loading, browse searching, etc).
