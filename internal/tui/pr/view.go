@@ -49,7 +49,11 @@ func (m model) helpView() string {
 func (m model) contextualListHelp() help.KeyMap {
 	base := m.keys.listHelp()
 	if it, ok := m.list.SelectedItem().(prItem); ok {
-		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr))
+		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr), true)
+	} else {
+		// Empty list: nothing to act on — strip every PR-action key
+		// so the help bar doesn't dangle keys that produce a no-op.
+		base = applyReviewContext(base, m.keys, "", false, false)
 	}
 	return base
 }
@@ -57,18 +61,41 @@ func (m model) contextualListHelp() help.KeyMap {
 func (m model) contextualDetailHelp() help.KeyMap {
 	base := m.keys.detailHelp()
 	if it, ok := m.list.SelectedItem().(prItem); ok {
-		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr))
+		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr), true)
+	} else {
+		base = applyReviewContext(base, m.keys, "", false, false)
 	}
 	return base
 }
 
 // applyReviewContext rewrites a modeKeyMap so the visible review
-// actions match what the current user can usefully do. Own PRs hide
-// every review action (Bitbucket rejects self-review). Already-
-// approved PRs hide Approve and surface Unapprove. PRs already
-// flagged needs-work hide NeedsWork.
-func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR bool) modeKeyMap {
+// actions match what the current user can usefully do.
+//   - hasSelection=false → strip every PR-action key (empty list).
+//   - own PR → hide every review action (Bitbucket rejects self-review).
+//   - already-approved → hide Approve, surface Unapprove.
+//   - already-needs-work → hide NeedsWork, surface Unapprove.
+//   - otherwise → show Approve + NeedsWork, hide Unapprove.
+func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR, hasSelection bool) modeKeyMap {
+	// Keys that only make sense when there's a PR selected. Stripped
+	// wholesale when hasSelection is false.
+	prActionKeys := map[string]bool{
+		k.Approve.Help().Key:        true,
+		k.Unapprove.Help().Key:      true,
+		k.NeedsWork.Help().Key:      true,
+		k.Merge.Help().Key:          true,
+		k.EditDesc.Help().Key:       true,
+		k.Comments.Help().Key:       true,
+		k.Diff.Help().Key:           true,
+		k.Open.Help().Key:           true,
+		k.DeclinePR.Help().Key:      true,
+		k.AddReviewer.Help().Key:    true,
+		k.RemoveReviewer.Help().Key: true,
+	}
+
 	allow := func(b key.Binding) bool {
+		if !hasSelection && prActionKeys[b.Help().Key] {
+			return false
+		}
 		if ownPR && (b.Help().Key == k.Approve.Help().Key ||
 			b.Help().Key == k.Unapprove.Help().Key ||
 			b.Help().Key == k.NeedsWork.Help().Key) {

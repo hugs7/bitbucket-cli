@@ -114,6 +114,9 @@ func computeStackPositions(prs []api.PullRequest) map[int]stackPosition {
 func (m *model) updateDetail() {
 	it, ok := m.list.SelectedItem().(prItem)
 	if !ok {
+		// Empty list / no selection: leave the detail pane blank
+		// rather than showing a stale PR's metadata. The action
+		// panel is also suppressed because there's nothing to act on.
 		m.detail.SetContent("")
 		return
 	}
@@ -135,10 +138,125 @@ func (m *model) updateDetail() {
 		fmt.Fprintln(&sb, muted.Render(fmt.Sprintf("stack: position %d of %d  ·  ]/[ to navigate", it.stackPos, it.stackTotal)))
 	}
 	fmt.Fprintln(&sb, muted.Render(p.WebURL))
+
+	// Reviewer status badge: shows the current user's review state
+	// against this PR so own-vs-other and approved-vs-pending are
+	// visible at a glance without paging through reviewers.
+	if badge := m.reviewerBadge(p); badge != "" {
+		fmt.Fprintln(&sb)
+		sb.WriteString(badge)
+	}
+
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
 		sb.WriteString(p.Description)
 	}
+
+	// Actions panel: a conditional cheat-sheet so users always know
+	// which keys are live for *this* PR. Mirrors the contextual help
+	// filter (own PRs hide Approve/Unapprove/NeedsWork; already-
+	// approved PRs swap Approve→Unapprove; etc.) so users don't have
+	// to read the bottom help bar to see what's available.
+	if panel := m.actionsPanel(p); panel != "" {
+		fmt.Fprintln(&sb)
+		fmt.Fprintln(&sb)
+		sb.WriteString(panel)
+	}
+
 	m.detail.SetContent(sb.String())
+}
+
+// reviewerBadge renders a one-line chip describing the current user's
+// review state for the given PR — author, approved, needs-work,
+// pending, or "not a reviewer". Empty when the user isn't configured.
+func (m *model) reviewerBadge(p api.PullRequest) string {
+	if m.svc.Me() == "" {
+		return ""
+	}
+	chip := lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	switch {
+	case m.isOwnPR(p):
+		return chip.Background(lipgloss.Color("13")).Foreground(lipgloss.Color("231")).
+			Render(" YOUR PR ")
+	}
+	switch m.myReviewerStatus(p) {
+	case "APPROVED":
+		return chip.Background(lipgloss.Color("10")).Foreground(lipgloss.Color("231")).
+			Render(" YOU APPROVED ")
+	case "NEEDS_WORK":
+		return chip.Background(lipgloss.Color("9")).Foreground(lipgloss.Color("231")).
+			Render(" YOU FLAGGED NEEDS WORK ")
+	case "UNAPPROVED":
+		return chip.Background(lipgloss.Color("11")).Foreground(lipgloss.Color("0")).
+			Render(" PENDING YOUR REVIEW ")
+	}
+	return ""
+}
+
+// actionsPanel composes the conditional cheat-sheet shown in the PR
+// detail pane. Layout: a heading, then two columns of "key  → label"
+// rows. Returned as a single string ready to embed in the viewport
+// content.
+func (m *model) actionsPanel(p api.PullRequest) string {
+	heading := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("Actions")
+	rule := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
+		Render(strings.Repeat("─", 40))
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+	type row struct{ key, label string }
+	var rows []row
+
+	// Always-available navigation / read actions.
+	rows = append(rows,
+		row{"d", "view diff"},
+		row{"c", "view comments"},
+		row{"o", "open in browser"},
+		row{"e", "edit description"},
+	)
+
+	// Review actions are scoped to other-people's PRs only — Bitbucket
+	// rejects self-review so showing them on own PRs is just noise.
+	if !m.isOwnPR(p) {
+		status := m.myReviewerStatus(p)
+		if status != "APPROVED" {
+			rows = append(rows, row{"a", "approve"})
+		}
+		if status != "NEEDS_WORK" {
+			rows = append(rows, row{"N", "mark needs work"})
+		}
+		if status == "APPROVED" || status == "NEEDS_WORK" {
+			rows = append(rows, row{"A", "unapprove / clear status"})
+		}
+	}
+
+	// Author-specific destructive actions.
+	if m.isOwnPR(p) {
+		rows = append(rows,
+			row{"M", "merge"},
+			row{"X", "decline (closes the PR)"},
+		)
+	} else {
+		rows = append(rows, row{"M", "merge"})
+	}
+
+	// Reviewer mgmt is universal.
+	rows = append(rows,
+		row{"v", "add reviewer"},
+		row{"V", "remove reviewer"},
+	)
+
+	// Format two-column.
+	var sb strings.Builder
+	sb.WriteString(heading)
+	sb.WriteString("\n")
+	sb.WriteString(rule)
+	sb.WriteString("\n")
+	for _, r := range rows {
+		sb.WriteString(fmt.Sprintf("  %s  %s\n",
+			keyStyle.Render(fmt.Sprintf("%-3s", r.key)),
+			muted.Render(r.label)))
+	}
+	return sb.String()
 }
 
