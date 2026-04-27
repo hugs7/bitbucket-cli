@@ -102,7 +102,11 @@ publishers:
       - CLOUDSMITH_API_KEY={{ .Env.CLOUDSMITH_API_KEY }}
 
 brews:
-  - name: bb
+  # Formula name is the descriptive form ("bitbucket-cli") so users
+  # type `brew install hugs7/tap/bitbucket-cli`. The installed binary
+  # is still `bb` (set in builds[].binary) — Homebrew formula name and
+  # binary name don't have to match.
+  - name: bitbucket-cli
     repository:
       owner: hugs7
       name: homebrew-tap

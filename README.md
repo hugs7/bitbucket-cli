@@ -31,7 +31,7 @@ for how releases are built.
 
 ```sh
 # macOS / Linux — Homebrew
-brew install hugs7/tap/bb
+brew install hugs7/tap/bitbucket-cli
 
 # Windows — Scoop
 scoop bucket add hugs7 https://github.com/hugs7/scoop-bucket
@@ -76,7 +76,7 @@ go build -o bb ./cmd/bb
 
 | Installed via | Update with |
 |---|---|
-| Homebrew | `brew upgrade bb` |
+| Homebrew | `brew upgrade bitbucket-cli` |
 | Scoop | `scoop update bb` |
 | apt (Cloudsmith) | `sudo apt update && sudo apt upgrade bitbucket-cli` |
 | dnf (Cloudsmith) | `sudo dnf upgrade bitbucket-cli` |

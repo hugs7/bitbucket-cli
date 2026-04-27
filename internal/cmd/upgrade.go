@@ -45,7 +45,7 @@ func newUpgradeCmd(info BuildInfo) *cobra.Command {
 If you installed bb via Homebrew, Scoop, apt or dnf, prefer your
 package manager's update command instead:
 
-  brew upgrade bb
+  brew upgrade bitbucket-cli
   scoop update bb
   sudo apt update && sudo apt upgrade bitbucket-cli
   sudo dnf upgrade bitbucket-cli`,
