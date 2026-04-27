@@ -4,8 +4,23 @@
 // with a textinput at the top and a results list below. As the user
 // types, a 200ms debounced SearchUsers call refreshes the results —
 // the same pattern Bitbucket's web UI uses ("type three letters,
-// wait, results appear"). Space toggles selection; enter submits;
-// esc cancels.
+// wait, results appear").
+//
+// Key bindings:
+//   - enter         → add the highlighted user to the picked set,
+//                     clear the input, and stay in the modal so
+//                     the user can pick another. tab does the same.
+//   - ctrl+enter / ctrl+s → submit the picked set (call the API)
+//   - esc / ctrl+c  → cancel
+//   - ctrl+u        → clear input
+//
+// The pane shows three sections:
+//   - "On this PR"     — current reviewers (info / dedup hint in
+//                        add mode; the source list in remove mode)
+//   - "Common reviewers" — recently-used reviewers from per-host
+//                          config history (add mode, empty query only)
+//   - "Search results" — live SearchUsers results / filtered remove list
+//   - "Picked"         — what will be sent on submit
 //
 // Add mode pulls candidates from svc.SearchUsers (Bitbucket Server
 // reviewer directory). Remove mode operates entirely on the PR's
@@ -25,6 +40,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -34,9 +50,9 @@ import (
 const reviewerSearchDebounce = 200 * time.Millisecond
 
 // reviewerSearchState holds everything the reviewer-search overlay
-// needs: the input, the current result set, the user's selections,
-// and a search-version counter so stale debounced ticks can be
-// discarded when newer keystrokes have superseded them.
+// needs: the input, the current result set, the user's picks, and a
+// search-version counter so stale debounced ticks can be discarded
+// when newer keystrokes have superseded them.
 type reviewerSearchState struct {
 	prID   int
 	remove bool
@@ -52,10 +68,10 @@ type reviewerSearchState struct {
 	results []api.User
 	cursor  int
 
-	// selected is the set of usernames the user has toggled on.
-	// Map (rather than slice) so toggling stays O(1); the value is
-	// the human label for the toast.
-	selected map[string]string
+	// picked is the ordered list of users the user has chosen so
+	// far. Slice (not map) so the pane can render them in the
+	// order they were added.
+	picked []api.User
 
 	// searchVersion increments on every keystroke so stale debounced
 	// ticks return early and don't overwrite fresher results.
@@ -66,9 +82,21 @@ type reviewerSearchState struct {
 	// remove mode it doubles as the source list.
 	existing map[string]struct{}
 
+	// existingDisplay is the original PR reviewer list, kept around
+	// so the "On this PR" pane can show display names.
+	existingDisplay []api.Reviewer
+
 	// allReviewers (remove mode only) is the static list we filter
 	// client-side as the user types.
 	allReviewers []api.Reviewer
+
+	// recents is the per-host common-reviewers list from config,
+	// merged into the top of the results list when the input is
+	// empty so the user can pick a frequent collaborator with a
+	// single Enter. recentSet is the lower-cased username set
+	// used to render a ★ marker against those rows.
+	recents   []config.RecentReviewer
+	recentSet map[string]struct{}
 }
 
 // reviewerSearchTickMsg is posted by tea.Tick after the debounce
@@ -81,9 +109,11 @@ type reviewerSearchTickMsg struct {
 
 // reviewerSearchResultsMsg carries SearchUsers results back to the
 // model. version lets us discard responses for queries that have
-// since been superseded by newer keystrokes.
+// since been superseded by newer keystrokes; query lets the handler
+// decide whether to merge recents (empty query only).
 type reviewerSearchResultsMsg struct {
 	version int
+	query   string
 	users   []api.User
 	err     error
 }
@@ -111,7 +141,9 @@ func (m *model) startAddReviewer(prID int) tea.Cmd {
 	}
 
 	existing := map[string]struct{}{}
+	var existingDisplay []api.Reviewer
 	if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.ID == prID {
+		existingDisplay = it.pr.Reviewers
 		for _, r := range it.pr.Reviewers {
 			existing[strings.ToLower(r.Username)] = struct{}{}
 		}
@@ -124,15 +156,24 @@ func (m *model) startAddReviewer(prID int) tea.Cmd {
 	ti.CharLimit = 80
 	ti.Focus()
 
-	m.reviewerSearch = &reviewerSearchState{
-		prID:     prID,
-		remove:   false,
-		input:    ti,
-		results:  users,
-		cursor:   0,
-		selected: map[string]string{},
-		existing: existing,
+	recents := filterRecentsAgainstExisting(config.RecentReviewers(m.svc.Host()), existing)
+	recentSet := map[string]struct{}{}
+	for _, r := range recents {
+		recentSet[strings.ToLower(r.Username)] = struct{}{}
 	}
+
+	m.reviewerSearch = &reviewerSearchState{
+		prID:            prID,
+		remove:          false,
+		input:           ti,
+		cursor:          0,
+		picked:          nil,
+		existing:        existing,
+		existingDisplay: existingDisplay,
+		recents:         recents,
+		recentSet:       recentSet,
+	}
+	m.reviewerSearch.results = mergeRecentsWithUsers(recents, users)
 	m.mode = viewReviewerSearch
 	return textinput.Blink
 }
@@ -154,12 +195,13 @@ func (m *model) startRemoveReviewer(prID int, reviewers []api.Reviewer) tea.Cmd 
 	ti.Focus()
 
 	m.reviewerSearch = &reviewerSearchState{
-		prID:         prID,
-		remove:       true,
-		input:        ti,
-		cursor:       0,
-		selected:     map[string]string{},
-		allReviewers: reviewers,
+		prID:            prID,
+		remove:          true,
+		input:           ti,
+		cursor:          0,
+		picked:          nil,
+		allReviewers:    reviewers,
+		existingDisplay: reviewers,
 	}
 	m.reviewerSearch.results = reviewersToUsers(reviewers)
 	m.mode = viewReviewerSearch
@@ -193,6 +235,55 @@ func filterOutExisting(users []api.User, existing map[string]struct{}) []api.Use
 	return out
 }
 
+// filterRecentsAgainstExisting hides recents that are already on the PR.
+func filterRecentsAgainstExisting(recents []config.RecentReviewer, existing map[string]struct{}) []config.RecentReviewer {
+	if len(recents) == 0 {
+		return nil
+	}
+	out := make([]config.RecentReviewer, 0, len(recents))
+	for _, r := range recents {
+		if _, dup := existing[strings.ToLower(r.Username)]; dup {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// mergeRecentsWithUsers prepends recents (as User shape) to a
+// directory-search result slice, deduping by lower-cased username so
+// a recent reviewer who also appears in the API response only shows
+// once. Used to make the "common reviewers" list pickable via the
+// same cursor that navigates search results.
+func mergeRecentsWithUsers(recents []config.RecentReviewer, users []api.User) []api.User {
+	if len(recents) == 0 {
+		return users
+	}
+	out := make([]api.User, 0, len(recents)+len(users))
+	seen := map[string]struct{}{}
+	for _, r := range recents {
+		key := strings.ToLower(r.Username)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, api.User{
+			Username:    r.Username,
+			DisplayName: r.DisplayName,
+			Email:       r.Email,
+		})
+	}
+	for _, u := range users {
+		key := strings.ToLower(u.Username)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, u)
+	}
+	return out
+}
+
 // scheduleReviewerSearch increments searchVersion and emits a
 // debounced tick. Only the latest tick (matching the current
 // version) actually fires the API call; older in-flight ticks are
@@ -215,7 +306,7 @@ func (m *model) runReviewerSearchNow(version int, query string) tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
 		users, err := svc.SearchUsers(query, 50)
-		return reviewerSearchResultsMsg{version: version, users: users, err: err}
+		return reviewerSearchResultsMsg{version: version, query: query, users: users, err: err}
 	}
 }
 
@@ -236,12 +327,49 @@ func (s *reviewerSearchState) applyReviewerFilter() {
 		}
 		s.results = out
 	}
+	s.clampCursor()
+}
+
+// clampCursor keeps the cursor within the visible result range.
+func (s *reviewerSearchState) clampCursor() {
 	if s.cursor >= len(s.results) {
 		s.cursor = len(s.results) - 1
 	}
 	if s.cursor < 0 {
 		s.cursor = 0
 	}
+}
+
+// pickByUsername adds a user to the picked list, deduping on username.
+func (s *reviewerSearchState) pickByUsername(u api.User) {
+	for _, p := range s.picked {
+		if p.Username == u.Username {
+			return
+		}
+	}
+	s.picked = append(s.picked, u)
+}
+
+// pickFromCursor adds the user under the cursor to the picked list,
+// then clears the input so the user can search for another. Returns
+// true if a pick was made (false when the result list is empty).
+func (s *reviewerSearchState) pickFromCursor() bool {
+	if s.cursor < 0 || s.cursor >= len(s.results) {
+		return false
+	}
+	u := s.results[s.cursor]
+	s.pickByUsername(u)
+	s.input.SetValue("")
+	s.cursor = 0
+	// In remove mode the candidate list is the static reviewer list,
+	// so we just re-filter against the (now empty) input. Add mode's
+	// candidate list will be replaced by the next debounced tick or
+	// by the empty-query results that were preloaded; do nothing
+	// here so the user can keep scrolling the previous results.
+	if s.remove {
+		s.applyReviewerFilter()
+	}
+	return true
 }
 
 // handleReviewerSearchKey owns every keystroke while the overlay is
@@ -270,54 +398,37 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "tab":
-		// Toggle the user under the cursor without leaving the form
-		// so multi-select is one tab-tap per pick. Space is reserved
-		// for the search input so users can type display names with
-		// spaces (e.g. "Alice Smith").
-		if s.cursor >= 0 && s.cursor < len(s.results) {
-			u := s.results[s.cursor]
-			if _, ok := s.selected[u.Username]; ok {
-				delete(s.selected, u.Username)
-			} else {
-				s.selected[u.Username] = formatUserLabel(u)
-			}
+	case "enter", "tab":
+		// "Pick the highlighted user and stay open" — clears the
+		// input so the user can immediately search for another.
+		// Submitting (the API call) is on ctrl+s / ctrl+enter.
+		if !s.pickFromCursor() {
+			m.status = "no candidates to pick"
+		}
+		// In add mode: refresh candidates for the now-empty query so
+		// the list keeps looking lively (the empty-query response
+		// was loaded at startup and may be stale after picks).
+		if !s.remove {
+			s.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
 		}
 		return m, nil
 
-	case "enter":
-		// If nothing was toggled with space, treat enter on the
-		// cursor as "pick this one and submit" — the common case
-		// for "I just want to add Alice".
-		if len(s.selected) == 0 && s.cursor >= 0 && s.cursor < len(s.results) {
-			u := s.results[s.cursor]
-			s.selected[u.Username] = formatUserLabel(u)
+	case "ctrl+s", "ctrl+enter":
+		// Submit: call AddReviewers / RemoveReviewers with the
+		// picked set. ctrl+enter is what most terminals send for
+		// shift+enter / cmd+enter so we accept both — and ctrl+s
+		// is a universal fallback (the inline editor uses it too).
+		if len(s.picked) == 0 {
+			// Fall back to "submit the cursor row" for the
+			// single-pick case so users who never tapped enter
+			// can still get out in one keystroke.
+			if !s.pickFromCursor() {
+				m.status = "no reviewers picked"
+				return m, nil
+			}
 		}
-		if len(s.selected) == 0 {
-			m.status = "no reviewers selected"
-			return m, nil
-		}
-		usernames := make([]string, 0, len(s.selected))
-		labels := make([]string, 0, len(s.selected))
-		for u, l := range s.selected {
-			usernames = append(usernames, u)
-			labels = append(labels, l)
-		}
-		prID := s.prID
-		remove := s.remove
-		m.reviewerSearch = nil
-		m.mode = viewDetail
-		m.loading = true
-		if remove {
-			return m, tea.Batch(m.spinner.Tick, m.doAction(
-				fmt.Sprintf("removed reviewer(s) %s", strings.Join(labels, ", ")), true, func() error {
-					return m.svc.RemoveReviewers(m.project, m.slug, prID, usernames)
-				}))
-		}
-		return m, tea.Batch(m.spinner.Tick, m.doAction(
-			fmt.Sprintf("added reviewer(s) %s", strings.Join(labels, ", ")), true, func() error {
-				return m.svc.AddReviewers(m.project, m.slug, prID, usernames)
-			}))
+		return m.submitReviewerPicks()
 
 	case "ctrl+u":
 		s.input.SetValue("")
@@ -341,6 +452,54 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// submitReviewerPicks fires AddReviewers / RemoveReviewers with the
+// current picked set, persists each added reviewer to the per-host
+// recents list, and closes the overlay.
+func (m model) submitReviewerPicks() (tea.Model, tea.Cmd) {
+	s := m.reviewerSearch
+	if s == nil || len(s.picked) == 0 {
+		return m, nil
+	}
+	usernames := make([]string, 0, len(s.picked))
+	labels := make([]string, 0, len(s.picked))
+	for _, u := range s.picked {
+		usernames = append(usernames, u.Username)
+		labels = append(labels, formatUserLabel(u))
+	}
+	prID := s.prID
+	remove := s.remove
+	host := m.svc.Host()
+	picked := s.picked
+	m.reviewerSearch = nil
+	m.mode = viewDetail
+	m.loading = true
+	if remove {
+		return m, tea.Batch(m.spinner.Tick, m.doAction(
+			fmt.Sprintf("removed reviewer(s) %s", strings.Join(labels, ", ")), true, func() error {
+				return m.svc.RemoveReviewers(m.project, m.slug, prID, usernames)
+			}))
+	}
+	return m, tea.Batch(m.spinner.Tick, m.doAction(
+		fmt.Sprintf("added reviewer(s) %s", strings.Join(labels, ", ")), true, func() error {
+			if err := m.svc.AddReviewers(m.project, m.slug, prID, usernames); err != nil {
+				return err
+			}
+			// Persist each successfully-added reviewer to the
+			// per-host recents list so the next overlay can offer
+			// them as quick picks. Best-effort — the reviewers are
+			// already on the PR, so a save failure shouldn't fail
+			// the action.
+			for _, u := range picked {
+				_ = config.AddRecentReviewer(host, config.RecentReviewer{
+					Username:    u.Username,
+					DisplayName: u.DisplayName,
+					Email:       u.Email,
+				})
+			}
+			return nil
+		}))
+}
+
 // formatUserLabel produces "Display Name (username) <email>" — used
 // in the toast and in selection set so the user sees a friendly name
 // rather than a UUID.
@@ -362,8 +521,7 @@ func formatUserLabel(u api.User) string {
 }
 
 // renderReviewerSearch draws the centred overlay: a bordered box with
-// the input on top, the results list in the middle, and a help line
-// at the bottom.
+// the input on top and the various reviewer panes below.
 func (m model) renderReviewerSearch() string {
 	s := m.reviewerSearch
 	if s == nil {
@@ -378,65 +536,112 @@ func (m model) renderReviewerSearch() string {
 	}
 
 	header := theme.TitleBadge.Render(" "+title+" ") + "  " +
-		theme.TitleChipDim.Render("tab toggle · enter submit · esc cancel · ctrl+u clear")
+		theme.TitleChipDim.Render("enter pick · ctrl+s submit · esc cancel · ctrl+u clear")
 
-	inputView := s.input.View()
+	sectionHeader := func(label string) string {
+		return theme.TitleChipDim.Render("── " + label + " ──")
+	}
 
-	statusLine := ""
+	parts := []string{header, ""}
+
+	// "On this PR" pane: lists the existing reviewers so the user
+	// can see who's already there before picking. In remove mode
+	// this is also the source list, but the search results pane
+	// repeats them filtered — keep the section to anchor the modal.
+	if len(s.existingDisplay) > 0 {
+		parts = append(parts, sectionHeader("On this PR"))
+		for _, r := range s.existingDisplay {
+			line := "  " + r.DisplayName
+			if r.DisplayName == "" {
+				line = "  " + r.Username
+			} else if r.Username != r.DisplayName {
+				line += "  (" + r.Username + ")"
+			}
+			if r.Status != "" {
+				line += "  " + theme.TitleChipDim.Render("["+strings.ToLower(r.Status)+"]")
+			}
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(line))
+		}
+		parts = append(parts, "")
+	}
+
+	// Search input + status line.
+	parts = append(parts, s.input.View())
 	switch {
 	case s.loading:
-		statusLine = theme.TitleChipDim.Render(m.spinner.View() + " searching…")
+		parts = append(parts, theme.TitleChipDim.Render(m.spinner.View()+" searching…"))
 	case s.err != nil:
-		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("error: " + s.err.Error())
-	case len(s.results) == 0:
-		statusLine = theme.TitleChipDim.Render("(no matches)")
-	default:
-		statusLine = theme.TitleChipDim.Render(fmt.Sprintf("%d match%s · %d selected",
-			len(s.results), plural(len(s.results)), len(s.selected)))
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
+			Render("error: "+s.err.Error()))
+	}
+	parts = append(parts, "")
+
+	// Results pane: live SearchUsers results in add mode (with the
+	// per-host "common reviewers" pinned at the top — marked with
+	// ★), client-side-filtered reviewer list in remove mode.
+	resultsLabel := "Search results"
+	if s.remove {
+		resultsLabel = "Reviewers on PR"
+	} else if strings.TrimSpace(s.input.Value()) == "" && len(s.recents) > 0 {
+		resultsLabel = "Common reviewers + directory"
+	}
+	parts = append(parts, sectionHeader(resultsLabel))
+	if len(s.results) == 0 {
+		parts = append(parts, theme.TitleChipDim.Render("  (no matches)"))
+	} else {
+		maxRows := 10
+		if maxRows > len(s.results) {
+			maxRows = len(s.results)
+		}
+		// Window the results around the cursor so it stays visible
+		// when the list is longer than maxRows.
+		start := 0
+		if s.cursor >= maxRows {
+			start = s.cursor - maxRows + 1
+		}
+		end := start + maxRows
+		if end > len(s.results) {
+			end = len(s.results)
+		}
+		for i := start; i < end; i++ {
+			u := s.results[i]
+			marker := "  "
+			if pickedHas(s.picked, u.Username) {
+				marker = "✓ "
+			} else if _, recent := s.recentSet[strings.ToLower(u.Username)]; recent {
+				marker = "★ "
+			}
+			line := marker + formatUserLabel(u)
+			if i == s.cursor {
+				line = lipgloss.NewStyle().
+					Background(lipgloss.Color("57")).
+					Foreground(lipgloss.Color("231")).
+					Bold(true).
+					Width(innerW - 4).
+					Render(line)
+			}
+			parts = append(parts, line)
+		}
+		if len(s.results) > maxRows {
+			parts = append(parts, theme.TitleChipDim.Render(
+				fmt.Sprintf("  (%d more — keep typing to narrow)", len(s.results)-maxRows)))
+		}
 	}
 
-	rows := make([]string, 0, len(s.results))
-	maxRows := 12
-	if maxRows > len(s.results) {
-		maxRows = len(s.results)
-	}
-	// Window the results around the cursor so it stays visible when
-	// the list is longer than maxRows. Simple "scroll-to-keep-cursor-
-	// visible" — no fancy easing.
-	start := 0
-	if s.cursor >= maxRows {
-		start = s.cursor - maxRows + 1
-	}
-	end := start + maxRows
-	if end > len(s.results) {
-		end = len(s.results)
-	}
-	for i := start; i < end; i++ {
-		u := s.results[i]
-		marker := "  "
-		if _, picked := s.selected[u.Username]; picked {
-			marker = "✓ "
+	// Picked pane: what gets sent on submit.
+	if len(s.picked) > 0 {
+		parts = append(parts, "")
+		pickLabel := "Picked to add"
+		if s.remove {
+			pickLabel = "Picked to remove"
 		}
-		line := marker + formatUserLabel(u)
-		if i == s.cursor {
-			line = lipgloss.NewStyle().
-				Background(lipgloss.Color("57")).
-				Foreground(lipgloss.Color("231")).
-				Bold(true).
-				Width(innerW - 4).
-				Render(line)
+		parts = append(parts, sectionHeader(pickLabel))
+		for _, u := range s.picked {
+			parts = append(parts, "  ✓ "+formatUserLabel(u))
 		}
-		rows = append(rows, line)
-	}
-	if len(s.results) > maxRows {
-		rows = append(rows, theme.TitleChipDim.Render(
-			fmt.Sprintf("(%d more — keep typing to narrow)", len(s.results)-maxRows)))
 	}
 
-	body := header + "\n\n" +
-		inputView + "\n" +
-		statusLine + "\n\n" +
-		strings.Join(rows, "\n")
+	body := strings.Join(parts, "\n")
 
 	box := lipgloss.NewStyle().
 		Border(theme.Border()).
@@ -450,9 +655,12 @@ func (m model) renderReviewerSearch() string {
 	)
 }
 
-func plural(n int) string {
-	if n == 1 {
-		return ""
+// pickedHas reports whether username is in the picked slice.
+func pickedHas(picked []api.User, username string) bool {
+	for _, p := range picked {
+		if p.Username == username {
+			return true
+		}
 	}
-	return "es"
+	return false
 }

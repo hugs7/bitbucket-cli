@@ -853,13 +853,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reviewerSearch.err = nil
-		m.reviewerSearch.results = filterOutExisting(msg.users, m.reviewerSearch.existing)
-		if m.reviewerSearch.cursor >= len(m.reviewerSearch.results) {
-			m.reviewerSearch.cursor = len(m.reviewerSearch.results) - 1
+		filtered := filterOutExisting(msg.users, m.reviewerSearch.existing)
+		// Empty query → keep recents pinned at the top so the user
+		// can pick a frequent collaborator with one tap. Non-empty
+		// queries replace results entirely so search feels precise.
+		if strings.TrimSpace(msg.query) == "" {
+			m.reviewerSearch.results = mergeRecentsWithUsers(m.reviewerSearch.recents, filtered)
+		} else {
+			m.reviewerSearch.results = filtered
 		}
-		if m.reviewerSearch.cursor < 0 {
-			m.reviewerSearch.cursor = 0
-		}
+		m.reviewerSearch.clampCursor()
 		return m, nil
 
 	case editorResultMsg:

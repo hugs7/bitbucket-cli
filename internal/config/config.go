@@ -56,6 +56,13 @@ type Config struct {
 	// Either way, F11 toggles between modes for the current edit.
 	InlineEditor bool `yaml:"inline_editor,omitempty"`
 
+	// RecentReviewers tracks the most-recently-added reviewer
+	// usernames per host so the reviewer-search overlay can offer
+	// quick "common reviewers" suggestions before the user has typed
+	// anything. Most-recent first; capped to a reasonable size in
+	// AddRecentReviewer.
+	RecentReviewers map[string][]RecentReviewer `yaml:"recent_reviewers,omitempty"`
+
 	// PTYEditor enables the experimental PTY-embedded editor for
 	// diff-anchored comment edits — the user's real $EDITOR (vim,
 	// nvim, …) runs inside a pseudo-terminal rendered between diff
@@ -74,6 +81,20 @@ type FavRepo struct {
 	Slug    string `yaml:"slug"`
 	Name    string `yaml:"name,omitempty"`
 }
+
+// RecentReviewer is one entry in the per-host "common reviewers"
+// list. Username is what AddReviewers wants; DisplayName / Email are
+// kept so the overlay can render a friendly label without re-hitting
+// the directory.
+type RecentReviewer struct {
+	Username    string `yaml:"username"`
+	DisplayName string `yaml:"display_name,omitempty"`
+	Email       string `yaml:"email,omitempty"`
+}
+
+// recentReviewerCap is how many reviewers we keep per host. Older
+// entries fall off the end as new ones are added.
+const recentReviewerCap = 20
 
 // Editor returns the user's preferred text editor command.
 // Resolution order: config.editor → $VISUAL → $EDITOR → "nano".
@@ -211,6 +232,49 @@ func AddFavourite(f FavRepo) error {
 		}
 	}
 	loaded.Favourites = append(loaded.Favourites, f)
+	return save()
+}
+
+// RecentReviewers returns the persisted "common reviewers" list for
+// a host (most-recent first). Returns nil when the host has no
+// history yet — callers should treat that as "show nothing".
+func RecentReviewers(host string) []RecentReviewer {
+	if loaded.RecentReviewers == nil {
+		return nil
+	}
+	src := loaded.RecentReviewers[host]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]RecentReviewer, len(src))
+	copy(out, src)
+	return out
+}
+
+// AddRecentReviewer pushes a reviewer onto the front of the host's
+// common-reviewers list (deduping any earlier entry for the same
+// username) and trims to recentReviewerCap. Best-effort persistence;
+// callers can ignore the error.
+func AddRecentReviewer(host string, r RecentReviewer) error {
+	if host == "" || r.Username == "" {
+		return nil
+	}
+	if loaded.RecentReviewers == nil {
+		loaded.RecentReviewers = map[string][]RecentReviewer{}
+	}
+	cur := loaded.RecentReviewers[host]
+	out := make([]RecentReviewer, 0, len(cur)+1)
+	out = append(out, r)
+	for _, ex := range cur {
+		if ex.Username == r.Username {
+			continue
+		}
+		out = append(out, ex)
+		if len(out) >= recentReviewerCap {
+			break
+		}
+	}
+	loaded.RecentReviewers[host] = out
 	return save()
 }
 
