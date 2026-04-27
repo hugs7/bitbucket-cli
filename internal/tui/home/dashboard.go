@@ -15,6 +15,7 @@ import (
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -141,6 +142,14 @@ func (m *homeModel) dashboardKey(msg tea.KeyMsg) tea.Cmd {
 	if m.dashCursor == prev {
 		return nil
 	}
+	// Refresh content so dashVP knows how many lines exist; without
+	// this snapDashViewport's clamp against maxYOffset (computed
+	// from the stale empty line buffer) sticks YOffset at 0.
+	innerW := m.dashVP.Width
+	if innerW == 0 {
+		innerW = m.width
+	}
+	m.refreshDashContent(innerW)
 	m.snapDashViewport()
 	return m.refreshDashboardPreview(false)
 }
@@ -253,7 +262,11 @@ func (m *homeModel) renderPRDetail(rp api.ReviewPR) string {
 	}
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
-		sb.WriteString(p.Description)
+		// PR descriptions on Bitbucket are markdown — render them
+		// through the shared glamour wrapper so headings, lists,
+		// fenced code blocks etc. look the same as a README in the
+		// preview pane next door.
+		sb.WriteString(mdrender.Render(p.Description, m.preview.Width))
 	}
 	return sb.String()
 }
@@ -305,8 +318,22 @@ func (m *homeModel) renderDashboard(innerW, innerH int) string {
 		return card("57", innerW, innerH, body)
 	}
 
-	// Walk sections, rendering header + rows. The viewport's
-	// YOffset (set in Update via snapDashViewport) handles scroll.
+	// Push the latest content into dashVP so View renders the right
+	// rows AND so the next mouse-wheel / key event sees a populated
+	// line list. Without this Update-side refresh the stored model's
+	// dashVP.lines stays empty (View only mutates a throwaway copy)
+	// and viewport.ScrollDown bails out with "len(lines)==0".
+	m.refreshDashContent(innerW)
+	return m.dashVP.View()
+}
+
+// refreshDashContent rebuilds the dashboard's flat row list and
+// stores it on dashVP so wheel scrolling / cursor-snap math work
+// against an up-to-date line buffer. Safe to call repeatedly — the
+// viewport preserves YOffset across SetContent calls (clamping to
+// the new max if the content shrank).
+func (m *homeModel) refreshDashContent(innerW int) {
+	sections := m.dashboardSections()
 	var sb strings.Builder
 	globalIdx := 0
 	for i, sec := range sections {
@@ -343,9 +370,7 @@ func (m *homeModel) renderDashboard(innerW, innerH int) string {
 			globalIdx++
 		}
 	}
-
 	m.dashVP.SetContent(sb.String())
-	return m.dashVP.View()
 }
 
 // renderDashRow renders a single dashboard row (PR or repo). The

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -139,10 +140,23 @@ func newPRCreateCmd() *cobra.Command {
 			}
 
 			// Pre-load remote branches from local git so the
-			// source/target inputs autocomplete (tab-cycle) through
-			// real branch names instead of forcing the user to type
-			// them blind.
+			// source/target inputs autocomplete through real branch
+			// names instead of forcing the user to type them blind.
 			branches := remoteBranches()
+
+			// Rebind tab to "accept suggestion" (the default
+			// ctrl+e is unintuitive for anyone used to a shell);
+			// enter still moves to the next field / submits.
+			keymap := huh.NewDefaultKeyMap()
+			keymap.Input.AcceptSuggestion = key.NewBinding(
+				key.WithKeys("tab"),
+				key.WithHelp("tab", "complete"),
+			)
+			keymap.Input.Next = key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("enter", "next"),
+			)
+
 			form := huh.NewForm(huh.NewGroup(
 				huh.NewInput().Title("Source branch").Value(&source).
 					Suggestions(branches).Validate(nonEmpty),
@@ -150,7 +164,7 @@ func newPRCreateCmd() *cobra.Command {
 					Suggestions(branches).Validate(nonEmpty),
 				huh.NewInput().Title("Title").Value(&title).Validate(nonEmpty),
 				huh.NewText().Title("Description (optional)").Value(&body),
-			))
+			)).WithKeyMap(keymap)
 			if err := form.Run(); err != nil {
 				return err
 			}
@@ -252,7 +266,10 @@ func newPRMergeCmd() *cobra.Command {
 			if !confirm {
 				return nil
 			}
-			if err := svc.MergePR(project, slug, id); err != nil {
+			// Empty strategy → use the repo's configured default
+			// merge mode. The TUI exposes per-merge picking; the
+			// CLI keeps the simpler "honour repo default" behaviour.
+			if err := svc.MergePR(project, slug, id, ""); err != nil {
 				return err
 			}
 			fmt.Printf("✓ Merged PR #%d\n", id)

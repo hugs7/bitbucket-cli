@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -215,7 +216,7 @@ func (s *serverService) CreatePR(project, slug string, in CreatePRInput) (*PullR
 	return &out, nil
 }
 
-func (s *serverService) MergePR(project, slug string, id int) error {
+func (s *serverService) MergePR(project, slug string, id int, strategyID string) error {
 	pr, err := s.GetPR(project, slug, id)
 	if err != nil {
 		return err
@@ -226,10 +227,83 @@ func (s *serverService) MergePR(project, slug string, id int) error {
 		return err
 	}
 	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/merge?version=%d", project, slug, id, raw.Version)
-	if err := s.client.postJSON(endpoint, nil, nil); err != nil {
+	body := map[string]any{"version": raw.Version}
+	if strategyID != "" {
+		body["strategyId"] = strategyID
+	}
+	if err := s.client.postJSON(endpoint, body, nil); err != nil {
 		return fmt.Errorf("merge PR %d: %w", pr.ID, err)
 	}
 	return nil
+}
+
+// MergeStrategies queries the repo's PR merge configuration via
+// /settings/pull-requests/git. Falls back to the documented Server
+// default set when the endpoint is unavailable so the dialog still
+// has something to show. The returned list contains only enabled
+// strategies; the repo's default is flagged on its entry.
+func (s *serverService) MergeStrategies(project, slug string) ([]MergeStrategy, error) {
+	var resp struct {
+		MergeConfig struct {
+			DefaultStrategy struct {
+				ID string `json:"id"`
+			} `json:"defaultStrategy"`
+			Strategies []struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Enabled bool   `json:"enabled"`
+			} `json:"strategies"`
+		} `json:"mergeConfig"`
+	}
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/settings/pull-requests/git", project, slug), &resp); err != nil {
+		// Fallback: the well-known Server strategies. Better than
+		// blocking the merge dialog when a permission or version
+		// quirk hides /settings.
+		return defaultServerStrategies(), nil
+	}
+	defID := resp.MergeConfig.DefaultStrategy.ID
+	out := make([]MergeStrategy, 0, len(resp.MergeConfig.Strategies))
+	for _, st := range resp.MergeConfig.Strategies {
+		if !st.Enabled {
+			continue
+		}
+		out = append(out, MergeStrategy{
+			ID:      st.ID,
+			Name:    st.Name,
+			Default: st.ID == defID,
+		})
+	}
+	if len(out) == 0 {
+		return defaultServerStrategies(), nil
+	}
+	return out, nil
+}
+
+// defaultServerStrategies is the standard Bitbucket Server merge
+// strategy list, used as a safety net when /settings/pull-requests
+// is unreachable. Names match the labels in Atlassian's web UI.
+//
+// Strategy IDs and behaviour:
+//   - no-ff           "Merge commit"           (--no-ff)
+//   - ff              "Fast-forward"           (--ff)
+//   - ff-only         "Fast-forward only"      (--ff-only)
+//   - rebase-no-ff    "Rebase, merge"            (rebase + merge --no-ff)
+//   - rebase-ff-only  "Rebase, fast-forward"     (rebase + merge --ff-only)
+//   - squash          "Squash"                   (--squash)
+//   - squash-ff-only  "Squash, fast-forward only" (--squash --ff-only)
+//
+// In practice the repo's /settings/pull-requests/git response wins;
+// this fallback only fires if that endpoint returns an error.
+func defaultServerStrategies() []MergeStrategy {
+	return []MergeStrategy{
+		{ID: "no-ff", Name: "Merge commit", Default: true},
+		{ID: "ff", Name: "Fast-forward"},
+		{ID: "ff-only", Name: "Fast-forward only"},
+		{ID: "rebase-no-ff", Name: "Rebase, merge"},
+		{ID: "rebase-ff-only", Name: "Rebase, fast-forward"},
+		{ID: "squash", Name: "Squash"},
+		{ID: "squash-ff-only", Name: "Squash, fast-forward only"},
+	}
 }
 
 func (s *serverService) DeclinePR(project, slug string, id int) error {
@@ -239,6 +313,21 @@ func (s *serverService) DeclinePR(project, slug string, id int) error {
 	}
 	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/decline?version=%d", project, slug, id, raw.Version)
 	return s.client.postJSON(endpoint, nil, nil)
+}
+
+// DeletePR removes the PR via Bitbucket Server's DELETE endpoint.
+// Server requires the current version in the JSON body (same pattern
+// as merge / decline) so we fetch the PR first to grab it. Typically
+// only effective on declined PRs and requires repo-admin permission;
+// the API surfaces a clear error in either case.
+func (s *serverService) DeletePR(project, slug string, id int) error {
+	var raw struct{ Version int `json:"version"` }
+	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
+		return err
+	}
+	body := map[string]any{"version": raw.Version}
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id)
+	return s.client.bodyJSON("DELETE", endpoint, body, nil)
 }
 
 // DeleteBranch removes a branch via the branch-utils REST plugin
@@ -504,6 +593,55 @@ func (s *serverService) ReplyComment(project, slug string, prID, parentID int, t
 		ID: c.ID, Author: c.Author.DisplayName, Text: c.Text,
 		CreatedAt: time.UnixMilli(c.CreatedDate), UpdatedAt: time.UnixMilli(c.UpdatedDate),
 	}, nil
+}
+
+// ListTasks returns OPEN blocker comments on a PR. Bitbucket Server
+// 7+ replaced the dedicated tasks API with blocker comments: any
+// comment with severity=BLOCKER and state=OPEN counts as a task and
+// vetoes the merge. The /blocker-comments endpoint already filters by
+// severity; we surface only the OPEN ones to the caller so "resolve
+// all tasks" doesn't act on already-resolved comments.
+func (s *serverService) ListTasks(project, slug string, prID int) ([]Task, error) {
+	var page srvPaged[struct {
+		ID       int     `json:"id"`
+		Text     string  `json:"text"`
+		Author   srvUser `json:"author"`
+		State    string  `json:"state"`
+		Severity string  `json:"severity"`
+	}]
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/blocker-comments%s",
+		project, slug, prID,
+		queryString(map[string]string{"limit": "100"}),
+	)
+	if err := s.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := make([]Task, 0, len(page.Values))
+	for _, c := range page.Values {
+		if c.State != "" && c.State != "OPEN" {
+			continue
+		}
+		out = append(out, Task{
+			ID:     c.ID,
+			Text:   c.Text,
+			Author: c.Author.DisplayName,
+			State:  "OPEN",
+		})
+	}
+	return out, nil
+}
+
+// ResolveTask flips a blocker comment's state from OPEN to RESOLVED
+// via PUT /comments/{id}. Server requires the current version (same
+// optimistic-locking pattern as edit/delete), so we fetch it first.
+func (s *serverService) ResolveTask(project, slug string, prID, taskID int) error {
+	v, err := s.commentVersion(project, slug, prID, taskID)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"version": v, "state": "RESOLVED"}
+	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d", project, slug, prID, taskID)
+	return s.client.putJSON(endpoint, body, nil)
 }
 
 // AddReviewers / RemoveReviewers update the PR's reviewers list. Server
@@ -960,6 +1098,43 @@ func (s *serverService) ListBuildsForRef(project, slug, ref string, limit int) (
 			Ref:       ref,
 			Commit:    commit,
 			CreatedAt: time.UnixMilli(b.DateAdded),
+		})
+	}
+	return out, nil
+}
+
+// SearchUsers performs a directory search via /rest/api/1.0/users.
+// The Server REST API matches the filter against username, name and
+// email — exactly what the Bitbucket UI's reviewer search does. An
+// empty filter returns the first `limit` users (alphabetical).
+func (s *serverService) SearchUsers(query string, limit int) ([]User, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	endpoint := fmt.Sprintf("users?limit=%d", limit)
+	if query != "" {
+		endpoint += "&filter=" + url.QueryEscape(query)
+	}
+	var resp struct {
+		Values []struct {
+			Name         string `json:"name"`
+			DisplayName  string `json:"displayName"`
+			EmailAddress string `json:"emailAddress"`
+			Active       bool   `json:"active"`
+		} `json:"values"`
+	}
+	if err := s.client.getJSON(endpoint, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(resp.Values))
+	for _, u := range resp.Values {
+		if !u.Active {
+			continue
+		}
+		out = append(out, User{
+			Username:    u.Name,
+			DisplayName: u.DisplayName,
+			Email:       u.EmailAddress,
 		})
 	}
 	return out, nil

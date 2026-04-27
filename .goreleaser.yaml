@@ -9,6 +9,16 @@ project_name: bb
 before:
   hooks:
     - go mod tidy
+    # Generate shell completion scripts for bash, zsh and fish from
+    # the cobra command tree. The output files are picked up further
+    # down by archives.files (so manual / curl-tar users find them
+    # in the tarball) and nfpms.contents (so apt / dnf / apk drop
+    # them into the system-wide completion dirs at install time).
+    # The completions/ dir is gitignored — it's a build artifact.
+    - mkdir -p completions
+    - sh -c "go run ./cmd/bb completion bash > completions/bb.bash"
+    - sh -c "go run ./cmd/bb completion zsh > completions/_bb"
+    - sh -c "go run ./cmd/bb completion fish > completions/bb.fish"
 
 builds:
   - id: bb
@@ -36,6 +46,13 @@ archives:
     format_overrides:
       - goos: windows
         format: zip
+    # Bundle the generated completion scripts alongside the binary
+    # so users who install via curl + tar (or `bb upgrade`) can drop
+    # them into their shell's completion dir manually.
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
 
 checksum:
   name_template: checksums.txt
@@ -74,6 +91,23 @@ nfpms:
       - deb
       - rpm
       - apk
+    # Drop the generated completion scripts into the standard
+    # system-wide locations so `apt install bitbucket-cli` /
+    # `dnf install bitbucket-cli` / `apk add bitbucket-cli` enable
+    # tab completion automatically — no extra steps for the user.
+    contents:
+      - src: ./completions/bb.bash
+        dst: /usr/share/bash-completion/completions/bb
+        file_info:
+          mode: 0644
+      - src: ./completions/_bb
+        dst: /usr/share/zsh/site-functions/_bb
+        file_info:
+          mode: 0644
+      - src: ./completions/bb.fish
+        dst: /usr/share/fish/vendor_completions.d/bb.fish
+        file_info:
+          mode: 0644
 
 # Push the .deb / .rpm / .apk files to Cloudsmith so users can install
 # and update them via apt / dnf / apk natively. Requires the
@@ -113,6 +147,14 @@ brews:
     homepage: https://github.com/hugs7/bitbucket-cli
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
+    # Wire the bundled completion scripts into Homebrew's per-shell
+    # completion dirs. brew automatically links them onto the user's
+    # FPATH / bash-completion path during `brew install`, so tab
+    # completion lights up the moment a new shell session starts.
+    extra_install: |
+      bash_completion.install "completions/bb.bash" => "bb"
+      zsh_completion.install "completions/_bb"
+      fish_completion.install "completions/bb.fish"
     test: |
       system "#{bin}/bb version"
 

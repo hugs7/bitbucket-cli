@@ -23,6 +23,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/preview"
 	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
@@ -362,46 +363,18 @@ func (m *repoModel) layout() {
 // viewport. Called whenever the README, repo metadata, or window
 // size changes.
 func (m *repoModel) refreshPreview() {
-	body := m.readme
-	if body == "" {
-		if m.loading > 0 {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("Loading README…")
-		} else {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("(no README found on default branch)")
-		}
-	} else {
-		body = renderSimpleMarkdown(body)
+	// Pick the muted placeholder shown while we have no README to
+	// display: "Loading…" while a fetch is still in flight, the
+	// "no README" hint once everything has come back empty.
+	fallback := "(no README found on default branch)"
+	if m.loading > 0 && m.readme == "" {
+		fallback = "Loading README…"
 	}
-	if m.repo != nil && m.repo.Description != "" {
-		desc := lipgloss.NewStyle().Italic(true).
-			Foreground(lipgloss.Color("245")).
-			Render(m.repo.Description)
-		body = desc + "\n\n" + body
+	desc := ""
+	if m.repo != nil {
+		desc = m.repo.Description
 	}
-	m.preview.SetContent(body)
-}
-
-// renderSimpleMarkdown is a deliberately tiny pass: bold headings
-// (lines starting with '#') and dim blockquotes ('> '). Everything
-// else is left literal so we can stream READMEs of any length without
-// pulling in a full markdown renderer.
-func renderSimpleMarkdown(body string) string {
-	heading := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("159"))
-	quote := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-	var out []string
-	for _, line := range strings.Split(body, "\n") {
-		switch {
-		case strings.HasPrefix(line, "#"):
-			out = append(out, heading.Render(line))
-		case strings.HasPrefix(line, "> "):
-			out = append(out, quote.Render(line))
-		default:
-			out = append(out, line)
-		}
-	}
-	return strings.Join(out, "\n")
+	m.preview.SetContent(preview.Body(m.readme, desc, m.preview.Width, fallback))
 }
 
 // rightPane composes the right summary column: a list of recent open

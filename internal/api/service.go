@@ -28,8 +28,26 @@ type Service interface {
 	ListPRs(project, slug string, state string, limit int) ([]PullRequest, error)
 	GetPR(project, slug string, id int) (*PullRequest, error)
 	CreatePR(project, slug string, in CreatePRInput) (*PullRequest, error)
-	MergePR(project, slug string, id int) error
+	// MergePR merges a PR. strategyID is the merge-strategy
+	// identifier (e.g. "no-ff", "squash", "rebase-no-ff" on Server
+	// or "merge_commit", "squash", "fast_forward" on Cloud); pass
+	// "" to use the repo's configured default.
+	MergePR(project, slug string, id int, strategyID string) error
+
+	// MergeStrategies returns the merge modes the repo allows.
+	// Bitbucket Server reports this via /settings/pull-requests/git;
+	// Cloud doesn't expose the per-repo allowed list via API so the
+	// three documented strategies are returned and the merge call
+	// will surface a clear error if the repo restricts them.
+	MergeStrategies(project, slug string) ([]MergeStrategy, error)
+
 	DeclinePR(project, slug string, id int) error
+
+	// DeletePR removes a PR entirely. Bitbucket Server supports this
+	// via DELETE /pull-requests/{id} (typically only effective once
+	// the PR is declined and the caller has admin permission).
+	// Bitbucket Cloud has no equivalent endpoint and returns an error.
+	DeletePR(project, slug string, id int) error
 
 	// DeleteBranch removes a branch from the remote repo. Used after
 	// MergePR to clean up the source branch when the user opted into
@@ -56,6 +74,25 @@ type Service interface {
 
 	AddReviewers(project, slug string, prID int, usernames []string) error
 	RemoveReviewers(project, slug string, prID int, usernames []string) error
+
+	// ListTasks returns the blocker comments (a.k.a. "tasks" in the
+	// Bitbucket UI) for a PR. Bitbucket Server / DC reports them via
+	// /pull-requests/{id}/blocker-comments. Bitbucket Cloud's task
+	// API was deprecated in favour of description checklists; the
+	// Cloud implementation returns an empty slice.
+	ListTasks(project, slug string, prID int) ([]Task, error)
+
+	// ResolveTask marks a task (blocker comment) as RESOLVED so it
+	// no longer vetoes a PR merge. Server requires the comment's
+	// current version, fetched internally. Cloud returns an error.
+	ResolveTask(project, slug string, prID, taskID int) error
+
+	// SearchUsers performs a directory search for reviewers,
+	// matching the query against display name / username / email.
+	// An empty query returns the first `limit` users (most-recent
+	// first on Cloud, alphabetical on Server). The username on the
+	// returned User is what AddReviewers / RemoveReviewers want.
+	SearchUsers(query string, limit int) ([]User, error)
 
 	CreateRepo(in CreateRepoInput) (*Repo, error)
 

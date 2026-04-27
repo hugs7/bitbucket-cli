@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
-
+	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
 )
 
 type prItem struct {
@@ -114,6 +114,9 @@ func computeStackPositions(prs []api.PullRequest) map[int]stackPosition {
 func (m *model) updateDetail() {
 	it, ok := m.list.SelectedItem().(prItem)
 	if !ok {
+		// Empty list / no selection: leave the detail pane blank
+		// rather than showing a stale PR's metadata. The action
+		// panel is also suppressed because there's nothing to act on.
 		m.detail.SetContent("")
 		return
 	}
@@ -135,10 +138,52 @@ func (m *model) updateDetail() {
 		fmt.Fprintln(&sb, muted.Render(fmt.Sprintf("stack: position %d of %d  ·  ]/[ to navigate", it.stackPos, it.stackTotal)))
 	}
 	fmt.Fprintln(&sb, muted.Render(p.WebURL))
+
+	// Reviewer status badge: shows the current user's review state
+	// against this PR so own-vs-other and approved-vs-pending are
+	// visible at a glance without paging through reviewers.
+	if badge := m.reviewerBadge(p); badge != "" {
+		fmt.Fprintln(&sb)
+		sb.WriteString(badge)
+	}
+
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
-		sb.WriteString(p.Description)
+		// PR descriptions on Bitbucket are markdown — same shared
+		// glamour wrapper as README rendering in the home and repo
+		// previews so the styling stays uniform across surfaces.
+		sb.WriteString(mdrender.Render(p.Description, m.detail.Width))
 	}
+
 	m.detail.SetContent(sb.String())
 }
+
+// reviewerBadge renders a one-line chip describing the current user's
+// review state for the given PR — author, approved, needs-work,
+// pending, or "not a reviewer". Empty when the user isn't configured.
+func (m *model) reviewerBadge(p api.PullRequest) string {
+	if m.svc.Me() == "" {
+		return ""
+	}
+	chip := lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	switch {
+	case m.isOwnPR(p):
+		return chip.Background(lipgloss.Color("13")).Foreground(lipgloss.Color("231")).
+			Render(" YOUR PR ")
+	}
+	switch m.myReviewerStatus(p) {
+	case "APPROVED":
+		return chip.Background(lipgloss.Color("10")).Foreground(lipgloss.Color("231")).
+			Render(" YOU APPROVED ")
+	case "NEEDS_WORK":
+		return chip.Background(lipgloss.Color("9")).Foreground(lipgloss.Color("231")).
+			Render(" YOU FLAGGED NEEDS WORK ")
+	case "UNAPPROVED":
+		return chip.Background(lipgloss.Color("11")).Foreground(lipgloss.Color("0")).
+			Render(" PENDING YOUR REVIEW ")
+	}
+	return ""
+}
+
+
 

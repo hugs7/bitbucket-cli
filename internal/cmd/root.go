@@ -53,6 +53,15 @@ func NewRootCmd(info BuildInfo) *cobra.Command {
 					if err := pr.Run(svc, action.Project, action.Slug); err != nil {
 						return err
 					}
+				case "repo":
+					// Dashboard Enter on a recent-repo row drops us
+					// onto the repo overview TUI (README + recent
+					// PRs + builds). Re-using runRepoTUI keeps the
+					// "p → PR TUI" follow-up loop identical to what
+					// `bb repo` / `bb .` give the user.
+					if err := runRepoTUI(svc, action.Project, action.Slug); err != nil {
+						return err
+					}
 				}
 			}
 		},

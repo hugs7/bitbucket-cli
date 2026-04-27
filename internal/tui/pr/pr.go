@@ -49,10 +49,12 @@ const (
 	viewComments
 	viewConfirmDelete
 	viewConfirmDecline
+	viewConfirmDeletePR
 	viewConfirmMerge
 	viewPalette
 	viewEditor
 	viewSettings
+	viewReviewerSearch
 )
 
 // buildDot is a thin alias for theme.BuildDot so the dozens of
@@ -88,12 +90,35 @@ type model struct {
 	// when set, we're in a decline-PR confirm sub-mode
 	pendingDeclinePRID int
 
+	// when set, we're in a delete-PR confirm sub-mode
+	pendingDeletePRID int
+
 	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
 	// whether to remove the source branch after a successful merge;
 	// the user flips it with 'd' on the confirm screen.
+	// pendingMergeStrategies is the list of strategies the repo
+	// allows (fetched lazily before the dialog opens); the user
+	// cycles through them with ←/→ and the chosen one is sent
+	// to MergePR.
 	pendingMergePRID         int
 	pendingMergeSourceRef    string
 	pendingMergeDeleteBranch bool
+	pendingMergeStrategies   []api.MergeStrategy
+	pendingMergeStrategyIdx  int
+
+	// pendingMergeTasks is the open-tasks list fetched in the
+	// background after the dialog opens — used to show "Open
+	// tasks: N" and to drive the "resolve all tasks before merge"
+	// toggle. pendingMergeTasksLoading is true while the fetch is
+	// in flight so the dialog can render a spinner instead of
+	// showing a stale "0 open" before the response lands.
+	// pendingMergeResolveTasks, when true, makes the y-key handler
+	// resolve every open task before firing the merge so the user
+	// doesn't get vetoed by leftover blocker comments.
+	pendingMergeTasks        []api.Task
+	pendingMergeTasksLoading bool
+	pendingMergeTasksErr     error
+	pendingMergeResolveTasks bool
 
 	// prBuilds caches the latest build state per PR id so the list
 	// can render a status dot without re-fetching on every keystroke.
@@ -114,11 +139,19 @@ type model struct {
 	// we can anchor inline comments to the correct (path, side, line).
 	// The viewport itself only knows how to scroll a string, so we
 	// re-render with a row marker each time the cursor moves.
-	diffLines        []diffLine
-	diffRows         []diffRow
-	diffCursor       int
-	diffCursorSide   int  // 0=old (LHS), 1=new (RHS); split mode only
-	diffSplit        bool // false=unified, true=side-by-side
+	diffLines      []diffLine
+	diffRows       []diffRow
+	diffCursor     int
+	diffCursorSide int  // 0=old (LHS), 1=new (RHS); split mode only
+	diffSplit      bool // false=unified, true=side-by-side
+
+	// diffRowYs maps a diffRow index to the visual line offset it
+	// occupies in the rendered viewport content. With split-mode
+	// line wrapping a single logical row can span multiple visual
+	// lines, so we track the offset per row to keep cursor scroll
+	// math honest. Length = len(diffRows)+1 (last entry is the
+	// total visual line count, useful for "go to bottom" maths).
+	diffRowYs []int
 	diffShowInline   bool // overlay inline review comments
 	diffComments     []api.Comment
 	diffCommentsPRID int
@@ -183,6 +216,13 @@ type model struct {
 	// esc drops back to where the user opened it.
 	settings         list.Model
 	settingsReturnTo viewMode
+
+	// reviewerSearch holds the in-process manage-reviewers overlay
+	// state when m.mode == viewReviewerSearch. nil otherwise.
+	// reviewerSearchReturnTo is the mode we came from so the
+	// underlying view can be re-rendered as the modal's backdrop.
+	reviewerSearch         *reviewerSearchState
+	reviewerSearchReturnTo viewMode
 }
 
 // diffFile is one entry in the file-tree side panel.
@@ -281,6 +321,11 @@ func newPRModel(svc api.Service, project, slug string) model {
 	sl.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
 	cfg := config.Get()
+	// ShowAll renders FullHelp (multi-row, wraps as needed) instead
+	// of the cramped single-line ShortHelp. Users can still toggle
+	// it via '?' if they want the compact view back.
+	h := help.New()
+	h.ShowAll = true
 	return model{
 		svc: svc, project: project, slug: slug,
 		state:          "OPEN",
@@ -291,7 +336,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		palette:        newPaletteWidget(),
 		settings:       sl,
 		spinner:        sp,
-		help:           help.New(),
+		help:           h,
 		keys:           defaultKeys(),
 		loading:        true,
 		diffSplit:      cfg.DiffSplit,
@@ -468,6 +513,31 @@ func (m *model) applyDiffJump(t diffJumpTarget) bool {
 		}
 	}
 	return false
+}
+
+// fetchMergeStrategies asynchronously loads the repo's allowed merge
+// strategies. The result lands as mergeStrategiesLoadedMsg, which
+// opens the merge-confirm dialog with the strategies prepared.
+func (m *model) fetchMergeStrategies(prID int, sourceRef string) tea.Cmd {
+	svc := m.svc
+	project, slug := m.project, m.slug
+	return func() tea.Msg {
+		ss, err := svc.MergeStrategies(project, slug)
+		return mergeStrategiesLoadedMsg{prID: prID, sourceRef: sourceRef, strategies: ss, err: err}
+	}
+}
+
+// fetchMergeTasks asynchronously loads the PR's open tasks (blocker
+// comments) so the merge confirm dialog can display the count and
+// drive the "resolve before merge" toggle. The result lands as
+// mergeTasksLoadedMsg.
+func (m *model) fetchMergeTasks(prID int) tea.Cmd {
+	svc := m.svc
+	project, slug := m.project, m.slug
+	return func() tea.Msg {
+		ts, err := svc.ListTasks(project, slug, prID)
+		return mergeTasksLoadedMsg{prID: prID, tasks: ts, err: err}
+	}
 }
 
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
@@ -798,39 +868,136 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, runFullscreenEditor(msg.req)
 
+	case createPRMsg:
+		// huh form completed (or aborted). Empty source/target/title
+		// after a non-cancelled run is still treated as cancellation
+		// — the validators block submission so this is unreachable in
+		// practice, but the guard keeps the code defensive.
+		if msg.cancelled {
+			m.status = "create PR cancelled"
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "create PR: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.title == "" || msg.source == "" || msg.target == "" {
+			m.status = "create PR cancelled"
+			return m, nil
+		}
+		in := api.CreatePRInput{
+			Title:       msg.title,
+			Description: msg.body,
+			SourceRef:   msg.source,
+			TargetRef:   msg.target,
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+			p, err := m.svc.CreatePR(m.project, m.slug, in)
+			if err != nil {
+				return actionDoneMsg{text: "create PR", err: err}
+			}
+			return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
+		})
+
+	case mergeStrategiesLoadedMsg:
+		// Strategies fetched — populate the dialog state and switch
+		// into the confirm view. On error we still show the dialog
+		// (with whatever fallback list the API layer provided) so
+		// the merge action stays usable. Kick off the task fetch in
+		// parallel so "open tasks: N" lights up moments later.
+		m.loading = false
+		m.pendingMergePRID = msg.prID
+		m.pendingMergeSourceRef = msg.sourceRef
+		m.pendingMergeDeleteBranch = false
+		m.pendingMergeStrategies = msg.strategies
+		m.pendingMergeStrategyIdx = 0
+		for i, st := range msg.strategies {
+			if st.Default {
+				m.pendingMergeStrategyIdx = i
+				break
+			}
+		}
+		m.pendingMergeTasks = nil
+		m.pendingMergeTasksErr = nil
+		m.pendingMergeTasksLoading = true
+		m.pendingMergeResolveTasks = false
+		m.mode = viewConfirmMerge
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "merge strategies: " + msg.err.Error()
+		}
+		return m, tea.Batch(m.spinner.Tick, m.fetchMergeTasks(msg.prID))
+
+	case mergeTasksLoadedMsg:
+		// Stale response (user already cancelled or merged) — drop.
+		if m.mode != viewConfirmMerge || msg.prID != m.pendingMergePRID {
+			return m, nil
+		}
+		m.pendingMergeTasksLoading = false
+		m.pendingMergeTasks = msg.tasks
+		m.pendingMergeTasksErr = msg.err
+		// Default the "resolve all tasks before merge" toggle ON
+		// when there's something to resolve — that's the whole
+		// point of surfacing the count, and the user can flip it
+		// off with `t` if they really want the merge to be vetoed.
+		if msg.err == nil && len(msg.tasks) > 0 {
+			m.pendingMergeResolveTasks = true
+		}
+		return m, nil
+
+	case reviewerSearchTickMsg:
+		// Stale tick (a newer keystroke superseded this one) — drop.
+		if m.reviewerSearch == nil || msg.version != m.reviewerSearch.searchVersion {
+			return m, nil
+		}
+		return m, m.runReviewerSearchNow(msg.version, msg.query)
+
+	case reviewerSearchResultsMsg:
+		// Stale response (newer keystroke superseded this one) — drop.
+		if m.reviewerSearch == nil || msg.version != m.reviewerSearch.searchVersion {
+			return m, nil
+		}
+		m.reviewerSearch.loading = false
+		if msg.err != nil {
+			m.reviewerSearch.err = msg.err
+			return m, nil
+		}
+		m.reviewerSearch.err = nil
+		// Always pin existing reviewers at the top of the list so
+		// the user can still pick them for removal while searching.
+		// Empty queries also surface the per-host recents (★ row)
+		// as quick picks; non-empty queries hide recents because
+		// they're an empty-state suggestion, not a search refinement.
+		if strings.TrimSpace(msg.query) == "" {
+			m.reviewerSearch.results = buildManageResults(
+				m.reviewerSearch.existingDisplay,
+				m.reviewerSearch.recents,
+				msg.users,
+			)
+		} else {
+			m.reviewerSearch.results = buildManageResults(
+				m.reviewerSearch.existingDisplay,
+				nil,
+				msg.users,
+			)
+			// Existing reviewers sit at the top of the list as
+			// "[on PR]" rows so the user can still queue them for
+			// removal while searching — but the typing flow expects
+			// Enter to land on the first new match, not on a row
+			// that's already on the PR. Skip past the pinned
+			// existing block to the first directory hit so the
+			// "type → Enter → add" muscle memory still works.
+			m.reviewerSearch.cursor = firstNonExistingIdx(
+				m.reviewerSearch.results, m.reviewerSearch.existing)
+		}
+		m.reviewerSearch.clampCursor()
+		return m, nil
+
 	case editorResultMsg:
 		text := strings.TrimSpace(msg.text)
 		if msg.err != nil {
 			m.status = "✗ editor: " + msg.err.Error()
 			return m, nil
-		}
-		// "create-pr" needs to peek at structured fields before the
-		// generic "empty buffer" check, since the template itself is
-		// non-empty even when the user hasn't filled anything in.
-		if msg.purpose == "create-pr" {
-			title, source, target, body := parseCreatePRTemplate(msg.text)
-			if title == "" {
-				m.status = "aborted (no title)"
-				return m, nil
-			}
-			if source == "" || target == "" {
-				m.status = "✗ source and target branches are required"
-				return m, nil
-			}
-			in := api.CreatePRInput{
-				Title:       title,
-				Description: body,
-				SourceRef:   source,
-				TargetRef:   target,
-			}
-			m.loading = true
-			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
-				p, err := m.svc.CreatePR(m.project, m.slug, in)
-				if err != nil {
-					return actionDoneMsg{text: "create PR", err: err}
-				}
-				return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
-			})
 		}
 		if text == "" {
 			m.status = "aborted (empty)"
@@ -1003,6 +1170,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleEditorKey(msg)
 		}
 
+		// Reviewer-search overlay owns the keymap while open: arrows
+		// navigate, space toggles, enter submits, esc cancels.
+		// Anything else flows into the textinput and triggers a
+		// debounced search.
+		if m.mode == viewReviewerSearch {
+			return m.handleReviewerSearchKey(msg)
+		}
+
 		// Settings overlay owns the keymap while open.
 		if m.mode == viewSettings {
 			switch {
@@ -1086,20 +1261,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			n := len(m.diffRows)
 
 			// Complete a pending vim z-motion (zz / zt / zb).
+			// Translate the cursor's logical row into a visual line
+			// offset first — wrapping in split mode means a single
+			// row can span multiple lines, so naive math would put
+			// the cursor a few lines off-screen.
 			if m.zPending {
 				m.zPending = false
 				m.status = ""
+				cursorTop, cursorBot := m.diffCursorVisualRange()
 				switch s {
 				case "z":
-					off := m.diffCursor - m.diff.Height/2
+					off := cursorTop - m.diff.Height/2
 					if off < 0 {
 						off = 0
 					}
 					m.diff.SetYOffset(off)
 				case "t":
-					m.diff.SetYOffset(m.diffCursor)
+					m.diff.SetYOffset(cursorTop)
 				case "b":
-					off := m.diffCursor - m.diff.Height + 1
+					off := cursorBot - m.diff.Height + 1
 					if off < 0 {
 						off = 0
 					}
@@ -1577,11 +1757,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.svc.NeedsWorkPR(m.project, m.slug, id)
 					}))
 				case key.Matches(msg, m.keys.Merge):
-					m.pendingMergePRID = id
-					m.pendingMergeSourceRef = it.pr.SourceRef
-					m.pendingMergeDeleteBranch = false
-					m.mode = viewConfirmMerge
-					return m, nil
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick,
+						m.fetchMergeStrategies(id, it.pr.SourceRef))
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
@@ -1591,16 +1769,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingDeclinePRID = id
 					m.mode = viewConfirmDecline
 					return m, nil
-				case key.Matches(msg, m.keys.AddReviewer):
-					return m, editInTUI("add-reviewer",
-						fmt.Sprintf("pr-%d-add-reviewer", id), id, 0,
-						"# Enter one or more usernames (Server) or UUIDs/emails\n"+
-							"# (Cloud), separated by space or comma. First non-comment\n"+
-							"# line is used. Save & exit to submit; empty cancels.\n")
-				case key.Matches(msg, m.keys.RemoveReviewer):
-					return m, editInTUI("remove-reviewer",
-						fmt.Sprintf("pr-%d-remove-reviewer", id), id, 0,
-						reviewerListHint(it.pr.Reviewers))
+				case key.Matches(msg, m.keys.DeletePR):
+					m.pendingDeletePRID = id
+					m.mode = viewConfirmDeletePR
+					return m, nil
+				case key.Matches(msg, m.keys.ManageReviewers):
+					return m, m.startManageReviewers(id, it.pr.Reviewers, viewDetail)
 				}
 			}
 			var cmd tea.Cmd
@@ -1653,6 +1827,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil
+		case viewConfirmDeletePR:
+			switch {
+			case key.Matches(msg, m.keys.ConfirmYes):
+				prID := m.pendingDeletePRID
+				m.pendingDeletePRID = 0
+				m.mode = viewList
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("deleted #%d", prID), true, func() error {
+					return m.svc.DeletePR(m.project, m.slug, prID)
+				}))
+			case key.Matches(msg, m.keys.ConfirmNo):
+				m.pendingDeletePRID = 0
+				m.mode = viewList
+				m.status = "delete cancelled"
+				return m, nil
+			}
+			return m, nil
 		case viewConfirmMerge:
 			switch msg.String() {
 			case "d":
@@ -1661,21 +1852,77 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// their mind before pressing y.
 				m.pendingMergeDeleteBranch = !m.pendingMergeDeleteBranch
 				return m, nil
+			case "t":
+				// Toggle "resolve all open tasks before merging".
+				// Only meaningful when there are tasks to resolve;
+				// keep the toggle inert otherwise so a stray press
+				// doesn't enable a no-op flag.
+				if len(m.pendingMergeTasks) > 0 {
+					m.pendingMergeResolveTasks = !m.pendingMergeResolveTasks
+				}
+				return m, nil
+			case "up", "k", "left", "h":
+				// Cycle strategies backwards. Wraps around so users
+				// can step in either direction without lifting off
+				// the navigation keys; up/down are the primary
+				// keys now that the dialog renders as a vertical
+				// list, with h/l/←/→ kept as aliases.
+				if n := len(m.pendingMergeStrategies); n > 0 {
+					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx - 1 + n) % n
+				}
+				return m, nil
+			case "down", "j", "right", "l":
+				if n := len(m.pendingMergeStrategies); n > 0 {
+					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx + 1) % n
+				}
+				return m, nil
 			case "y", "Y", "enter":
 				prID := m.pendingMergePRID
 				src := m.pendingMergeSourceRef
 				del := m.pendingMergeDeleteBranch
+				resolveTasks := m.pendingMergeResolveTasks
+				tasks := append([]api.Task(nil), m.pendingMergeTasks...)
+				strategyID := ""
+				strategyName := ""
+				if idx := m.pendingMergeStrategyIdx; idx >= 0 && idx < len(m.pendingMergeStrategies) {
+					strategyID = m.pendingMergeStrategies[idx].ID
+					strategyName = m.pendingMergeStrategies[idx].Name
+				}
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
 				m.pendingMergeDeleteBranch = false
+				m.pendingMergeStrategies = nil
+				m.pendingMergeStrategyIdx = 0
+				m.pendingMergeTasks = nil
+				m.pendingMergeTasksErr = nil
+				m.pendingMergeTasksLoading = false
+				m.pendingMergeResolveTasks = false
 				m.mode = viewList
 				m.loading = true
 				label := fmt.Sprintf("merged #%d", prID)
+				if strategyName != "" {
+					label = fmt.Sprintf("merged #%d (%s)", prID, strategyName)
+				}
+				if resolveTasks && len(tasks) > 0 {
+					label = fmt.Sprintf("resolved %d task(s) + ", len(tasks)) + label
+				}
 				if del {
-					label = fmt.Sprintf("merged #%d + deleted %s", prID, src)
+					label += fmt.Sprintf(" + deleted %s", src)
 				}
 				return m, tea.Batch(m.spinner.Tick, m.doAction(label, true, func() error {
-					if err := m.svc.MergePR(m.project, m.slug, prID); err != nil {
+					// Resolve every open task first so blocker
+					// comments don't veto the merge. Surface the
+					// first failure verbatim — partial-resolve
+					// state is fine; the next merge attempt sees
+					// fewer open tasks.
+					if resolveTasks {
+						for _, t := range tasks {
+							if err := m.svc.ResolveTask(m.project, m.slug, prID, t.ID); err != nil {
+								return fmt.Errorf("resolve task #%d: %w", t.ID, err)
+							}
+						}
+					}
+					if err := m.svc.MergePR(m.project, m.slug, prID, strategyID); err != nil {
 						return err
 					}
 					if del && src != "" {
@@ -1692,6 +1939,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
 				m.pendingMergeDeleteBranch = false
+				m.pendingMergeStrategies = nil
+				m.pendingMergeStrategyIdx = 0
+				m.pendingMergeTasks = nil
+				m.pendingMergeTasksErr = nil
+				m.pendingMergeTasksLoading = false
+				m.pendingMergeResolveTasks = false
 				m.mode = viewList
 				m.status = "merge cancelled"
 				return m, nil
@@ -1842,11 +2095,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.Merge):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				m.pendingMergePRID = it.pr.ID
-				m.pendingMergeSourceRef = it.pr.SourceRef
-				m.pendingMergeDeleteBranch = false
-				m.mode = viewConfirmMerge
-				return m, nil
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick,
+					m.fetchMergeStrategies(it.pr.ID, it.pr.SourceRef))
 			}
 		case key.Matches(msg, m.keys.EditDesc):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
@@ -1861,19 +2112,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = viewConfirmDecline
 				return m, nil
 			}
-		case key.Matches(msg, m.keys.AddReviewer):
+		case key.Matches(msg, m.keys.DeletePR):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				return m, editInTUI("add-reviewer",
-					fmt.Sprintf("pr-%d-add-reviewer", it.pr.ID), it.pr.ID, 0,
-					"# Enter one or more usernames (Server) or UUIDs/emails\n"+
-						"# (Cloud), separated by space or comma. First non-comment\n"+
-						"# line is used. Save & exit to submit; empty cancels.\n")
+				m.pendingDeletePRID = it.pr.ID
+				m.mode = viewConfirmDeletePR
+				return m, nil
 			}
-		case key.Matches(msg, m.keys.RemoveReviewer):
+		case key.Matches(msg, m.keys.ManageReviewers):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				return m, editInTUI("remove-reviewer",
-					fmt.Sprintf("pr-%d-remove-reviewer", it.pr.ID), it.pr.ID, 0,
-					reviewerListHint(it.pr.Reviewers))
+				return m, m.startManageReviewers(it.pr.ID, it.pr.Reviewers, viewList)
 			}
 		}
 	}
@@ -1882,27 +2129,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.list, cmd = m.list.Update(msg)
 	m.updateDetail()
 	return m, cmd
-}
-
-// reviewerListHint builds the seeded text shown in the remove-reviewer
-// editor: a header explaining what to do plus one commented line per
-// current reviewer so users can copy/paste a username instead of
-// remembering it.
-func reviewerListHint(rs []api.Reviewer) string {
-	hint := ""
-	for _, r := range rs {
-		hint += "# " + r.Username
-		if r.DisplayName != "" && r.DisplayName != r.Username {
-			hint += "  (" + r.DisplayName + ")"
-		}
-		hint += "\n"
-	}
-	if hint == "" {
-		hint = "# (no reviewers on this PR)\n"
-	}
-	return "# Enter one or more usernames/UUIDs to remove,\n" +
-		"# separated by space or comma. Current reviewers:\n" +
-		hint
 }
 
 func (m *model) layout() {

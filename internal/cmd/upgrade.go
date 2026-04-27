@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,6 +19,32 @@ import (
 	"github.com/minio/selfupdate"
 	"github.com/spf13/cobra"
 )
+
+// upgradeOpts captures network knobs the user can override on the
+// command line. Plumbed through latestRelease / downloadFile so both
+// hops (the GitHub API call AND the asset download) share the same
+// HTTP transport.
+type upgradeOpts struct {
+	insecure bool // skip TLS verification (corp MITM proxies)
+	noProxy  bool // bypass HTTP_PROXY / HTTPS_PROXY env vars
+}
+
+// httpClient builds an http.Client honouring the upgrade-time flags.
+// The default transport is cloned so we don't mutate the global one.
+func (o upgradeOpts) httpClient(timeout time.Duration) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if o.noProxy {
+		// Explicitly nil out the proxy func so HTTP_PROXY / HTTPS_PROXY
+		// env vars are ignored — matches `curl --noproxy '*'`.
+		tr.Proxy = nil
+	}
+	if o.insecure {
+		// Disable cert verification for corporate MITM proxies that
+		// re-sign GitHub's certs with their own CA.
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return &http.Client{Timeout: timeout, Transport: tr}
+}
 
 // GitHub repo to query for releases. Kept here (not configurable) so
 // users can't be tricked into upgrading from an attacker-controlled
@@ -36,6 +64,7 @@ func newUpgradeCmd(info BuildInfo) *cobra.Command {
 	var (
 		check bool
 		force bool
+		opts  upgradeOpts
 	)
 	c := &cobra.Command{
 		Use:   "upgrade",
@@ -48,14 +77,20 @@ package manager's update command instead:
   brew upgrade bitbucket-cli
   scoop update bb
   sudo apt update && sudo apt upgrade bitbucket-cli
-  sudo dnf upgrade bitbucket-cli`,
+  sudo dnf upgrade bitbucket-cli
+
+Behind a corporate proxy that intercepts TLS, pass --insecure to skip
+cert verification. To bypass an HTTP(S)_PROXY env var entirely, pass
+--no-proxy (mirrors curl --noproxy '*').`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpgrade(info, check, force)
+			return runUpgrade(info, check, force, opts)
 		},
 	}
 	c.Flags().BoolVar(&check, "check", false, "only check for a new version, don't install")
 	c.Flags().BoolVar(&force, "force", false, "reinstall even if already on the latest version")
+	c.Flags().BoolVarP(&opts.insecure, "insecure", "k", false, "skip TLS verification (corp MITM proxies)")
+	c.Flags().BoolVar(&opts.noProxy, "no-proxy", false, "ignore HTTP_PROXY / HTTPS_PROXY env vars")
 	return c
 }
 
@@ -69,8 +104,8 @@ type ghRelease struct {
 	} `json:"assets"`
 }
 
-func runUpgrade(info BuildInfo, checkOnly, force bool) error {
-	rel, err := latestRelease()
+func runUpgrade(info BuildInfo, checkOnly, force bool, opts upgradeOpts) error {
+	rel, err := latestRelease(opts)
 	if err != nil {
 		return fmt.Errorf("check latest release: %w", err)
 	}
@@ -88,13 +123,31 @@ func runUpgrade(info BuildInfo, checkOnly, force bool) error {
 		return nil
 	}
 
+	// Refuse to clobber a binary that a package manager owns:
+	// self-replacing /opt/homebrew/Cellar/.../bb or a dpkg-tracked
+	// file would put the install into a state where the next
+	// `brew upgrade` / `apt upgrade` silently reverts the binary,
+	// and worse, leaves the package manager's checksum / inventory
+	// out of sync. Manual copies (e.g. `cp bb /opt/homebrew/bin/bb`
+	// without going through brew) aren't symlinks into Cellar and
+	// aren't tracked by dpkg, so they fall through and self-update
+	// normally — covering the user's manual-install path.
+	exe, _ := os.Executable()
+	if pm := detectPackageManager(exe); pm != nil && !force {
+		fmt.Printf("\nbb appears to be managed by %s — use the package manager to upgrade:\n",
+			pm.name)
+		fmt.Printf("  %s\n\n", pm.cmd)
+		fmt.Println("(re-run with --force to ignore this check and replace the binary in place)")
+		return nil
+	}
+
 	asset, err := pickAsset(rel)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("downloading %s (%s)…\n", asset.Name, humanSize(asset.Size))
 
-	bin, cleanup, err := downloadAndExtract(asset.BrowserDownloadURL, asset.Name)
+	bin, cleanup, err := downloadAndExtract(asset.BrowserDownloadURL, asset.Name, opts)
 	if err != nil {
 		return err
 	}
@@ -111,7 +164,7 @@ func runUpgrade(info BuildInfo, checkOnly, force bool) error {
 	return nil
 }
 
-func latestRelease() (*ghRelease, error) {
+func latestRelease(opts upgradeOpts) (*ghRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", upgradeRepo)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -120,7 +173,7 @@ func latestRelease() (*ghRelease, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "bb-upgrade")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := opts.httpClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -179,7 +232,7 @@ func pickAsset(rel *ghRelease) (*struct {
 // downloadAndExtract fetches the archive and returns an open reader
 // over the `bb` binary inside it, plus a cleanup func to remove the
 // temp dir after Apply() finishes.
-func downloadAndExtract(url, name string) (io.Reader, func(), error) {
+func downloadAndExtract(url, name string, opts upgradeOpts) (io.Reader, func(), error) {
 	tmp, err := os.MkdirTemp("", "bb-upgrade-*")
 	if err != nil {
 		return nil, nil, err
@@ -187,7 +240,7 @@ func downloadAndExtract(url, name string) (io.Reader, func(), error) {
 	cleanup := func() { _ = os.RemoveAll(tmp) }
 
 	archivePath := filepath.Join(tmp, name)
-	if err := downloadFile(url, archivePath); err != nil {
+	if err := downloadFile(url, archivePath, opts); err != nil {
 		cleanup()
 		return nil, nil, err
 	}
@@ -224,13 +277,13 @@ func downloadAndExtract(url, name string) (io.Reader, func(), error) {
 	return f, wrapped, nil
 }
 
-func downloadFile(url, dst string) error {
+func downloadFile(url, dst string, opts upgradeOpts) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "bb-upgrade")
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := opts.httpClient(5 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -306,6 +359,66 @@ func extractTarGz(src, want, dst string) error {
 		return err
 	}
 	return fmt.Errorf("%s not found in %s", want, src)
+}
+
+// pkgManager is one detected install source — what to call it in
+// user-facing messages, plus the command the user should run to
+// upgrade through that channel.
+type pkgManager struct {
+	name string
+	cmd  string
+}
+
+// detectPackageManager returns a non-empty pkgManager when the given
+// executable path looks like it was installed (and is therefore
+// owned) by a system package manager. Detection is best-effort and
+// deliberately conservative: an unknown / ambiguous path returns the
+// zero value so we still self-update for plain manual installs.
+//
+// We resolve symlinks first so that a /opt/homebrew/bin/bb pointing
+// into /opt/homebrew/Cellar/bitbucket-cli/<v>/bin/bb is identified
+// as a brew install, while a regular file copied into the same
+// directory by hand is not.
+func detectPackageManager(execPath string) *pkgManager {
+	if execPath == "" {
+		return nil
+	}
+	real, err := filepath.EvalSymlinks(execPath)
+	if err != nil {
+		real = execPath
+	}
+
+	// Homebrew stores every artefact under <prefix>/Cellar/<formula>/
+	// and exposes them via symlinks in <prefix>/bin. The Cellar
+	// substring is unique to brew so we can match either Apple
+	// Silicon (/opt/homebrew/Cellar) or Intel (/usr/local/Cellar /
+	// /home/linuxbrew/.linuxbrew/Cellar) installs in one check.
+	if strings.Contains(real, "/Cellar/") {
+		return &pkgManager{name: "Homebrew", cmd: "brew upgrade bitbucket-cli"}
+	}
+
+	// dpkg / rpm only matter on Linux. We avoid spawning these on
+	// macOS where they may exist as Homebrew formulae (`dpkg` is on
+	// brew) but never own /usr/local files in the system sense.
+	if runtime.GOOS == "linux" {
+		// dpkg -S <path> exits 0 + prints "<pkg>: <path>" when the
+		// file is tracked, non-zero on miss. We discard stderr by
+		// using Output() so the "no path found" diagnostic doesn't
+		// leak into our own output on a clean miss.
+		if _, err := exec.LookPath("dpkg"); err == nil {
+			if out, err := exec.Command("dpkg", "-S", real).Output(); err == nil && len(out) > 0 {
+				return &pkgManager{name: "apt/dpkg", cmd: "sudo apt update && sudo apt upgrade bitbucket-cli"}
+			}
+		}
+		if _, err := exec.LookPath("rpm"); err == nil {
+			if out, err := exec.Command("rpm", "-qf", real).Output(); err == nil &&
+				len(out) > 0 && !strings.Contains(string(out), "not owned by any package") {
+				return &pkgManager{name: "rpm/dnf", cmd: "sudo dnf upgrade bitbucket-cli"}
+			}
+		}
+	}
+
+	return nil
 }
 
 func humanSize(n int64) string {

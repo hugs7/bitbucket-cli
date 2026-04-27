@@ -10,6 +10,7 @@ package pr
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -705,7 +706,10 @@ func wrapText(s string, w int) []string {
 
 // renderDiffRows produces the final string fed to the viewport.
 // For split rows it formats two columns; for unified one. The cursor
-// row gets a "▶" marker at the start.
+// row gets a "▶" marker at the start. Long lines wrap to additional
+// visual lines in split mode so code never overflows a column —
+// diffRowYs records the visual offset of each logical row so cursor
+// scroll math stays honest with multi-line wraps.
 func (m *model) renderDiffRows() string {
 	var b strings.Builder
 	pointer := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("▶ ")
@@ -720,7 +724,11 @@ func (m *model) renderDiffRows() string {
 		colW = 10
 	}
 
+	m.diffRowYs = make([]int, 0, len(m.diffRows)+1)
+	visual := 0
+
 	for i, row := range m.diffRows {
+		m.diffRowYs = append(m.diffRowYs, visual)
 		marker := leftPad
 		if i == m.diffCursor {
 			marker = pointer
@@ -770,6 +778,8 @@ func (m *model) renderDiffRows() string {
 				b.WriteString(glyph)
 				b.WriteString(row.annoStyle.Width(body).MaxWidth(body).Render(text))
 			}
+			b.WriteByte('\n')
+			visual++
 		case row.fullWidth:
 			b.WriteString(marker)
 			body := width - 2
@@ -777,11 +787,43 @@ func (m *model) renderDiffRows() string {
 				body = 1
 			}
 			b.WriteString(row.cells[0].style.Width(body).MaxWidth(body).Render(row.cells[0].raw))
+			b.WriteByte('\n')
+			visual++
 		case m.diffSplit:
-			b.WriteString(marker)
-			b.WriteString(renderSplitCell(row.cells[0], colW, i == m.diffCursor && m.diffCursorSide == 0))
-			b.WriteString(" │ ")
-			b.WriteString(renderSplitCell(row.cells[1], colW, i == m.diffCursor && m.diffCursorSide == 1))
+			// Wrap each side independently and stack visual lines so
+			// long code never spills past its column. The first
+			// visual line gets the cursor marker; continuation lines
+			// indent with the leftPad to keep the column lined up.
+			leftChunks := wrapDiffCellChunks(row.cells[0], colW, i == m.diffCursor && m.diffCursorSide == 0)
+			rightChunks := wrapDiffCellChunks(row.cells[1], colW, i == m.diffCursor && m.diffCursorSide == 1)
+			n := len(leftChunks)
+			if len(rightChunks) > n {
+				n = len(rightChunks)
+			}
+			if n == 0 {
+				n = 1
+			}
+			blank := strings.Repeat(" ", colW)
+			for j := 0; j < n; j++ {
+				if j == 0 {
+					b.WriteString(marker)
+				} else {
+					b.WriteString(leftPad)
+				}
+				if j < len(leftChunks) {
+					b.WriteString(leftChunks[j])
+				} else {
+					b.WriteString(blank)
+				}
+				b.WriteString(" │ ")
+				if j < len(rightChunks) {
+					b.WriteString(rightChunks[j])
+				} else {
+					b.WriteString(blank)
+				}
+				b.WriteByte('\n')
+			}
+			visual += n
 		default:
 			b.WriteString(marker)
 			body := width - 2
@@ -789,18 +831,23 @@ func (m *model) renderDiffRows() string {
 				body = 1
 			}
 			b.WriteString(renderCellWithHL(row.cells[0], body))
+			b.WriteByte('\n')
+			visual++
 		}
-		b.WriteByte('\n')
 	}
+	m.diffRowYs = append(m.diffRowYs, visual)
 	return b.String()
 }
 
-// renderSplitCell renders one cell of a split row, padding/truncating
-// to width. The active-side flag draws an underline so the user can
-// see which column 'c' will target.
-func renderSplitCell(c diffCell, w int, active bool) string {
+// wrapDiffCellChunks returns one or more rendered strings for a split
+// cell. When the cell's visible width fits in colW it returns a
+// single chunk (matching the old behaviour); when the line is longer
+// it splits the raw text into successive runs of at most colW cells
+// and renders each with the cell's style + filtered highlights so
+// the wrap reads as one continuous coloured block.
+func wrapDiffCellChunks(c diffCell, w int, active bool) []string {
 	if c.raw == "" {
-		return strings.Repeat(" ", w)
+		return []string{strings.Repeat(" ", w)}
 	}
 	if active {
 		c.style = c.style.Underline(true)
@@ -808,7 +855,76 @@ func renderSplitCell(c diffCell, w int, active bool) string {
 			c.hlStyle = c.hlStyle.Underline(true)
 		}
 	}
-	return renderCellWithHL(c, w)
+	if lipgloss.Width(c.raw) <= w {
+		return []string{renderCellWithHL(c, w)}
+	}
+	pieces := splitByCells(c.raw, w)
+	out := make([]string, 0, len(pieces))
+	for _, p := range pieces {
+		sub := diffCell{
+			raw:     c.raw[p.start:p.end],
+			style:   c.style,
+			hlStyle: c.hlStyle,
+		}
+		// Restrict highlights to the slice and shift indices so the
+		// renderer can apply them inside the chunk's local range.
+		for _, h := range c.highlights {
+			if h.end <= p.start || h.start >= p.end {
+				continue
+			}
+			s, e := h.start, h.end
+			if s < p.start {
+				s = p.start
+			}
+			if e > p.end {
+				e = p.end
+			}
+			sub.highlights = append(sub.highlights, hlRange{start: s - p.start, end: e - p.start})
+		}
+		out = append(out, renderCellWithHL(sub, w))
+	}
+	return out
+}
+
+// splitSpan describes one wrap chunk: byte offsets [start, end) into
+// the source string. byteEnd is exclusive.
+type splitSpan struct{ start, end int }
+
+// splitByCells walks raw rune-by-rune, accumulating visible cells
+// (using lipgloss.Width to handle wide / zero-width runes) and emits
+// a splitSpan whenever adding the next rune would exceed w. The
+// caller can slice raw[start:end] to recover each chunk's text
+// without copying.
+func splitByCells(raw string, w int) []splitSpan {
+	if w <= 0 {
+		return []splitSpan{{0, len(raw)}}
+	}
+	var out []splitSpan
+	cur := 0
+	chunkStart := 0
+	for i := 0; i < len(raw); {
+		// Decode one rune. Skip past combining marks etc by stepping
+		// by their UTF-8 size (lipgloss.Width handles zero-width).
+		r, size := utf8.DecodeRuneInString(raw[i:])
+		rw := lipgloss.Width(string(r))
+		if rw < 0 {
+			rw = 0
+		}
+		if cur+rw > w && i > chunkStart {
+			out = append(out, splitSpan{chunkStart, i})
+			chunkStart = i
+			cur = 0
+		}
+		cur += rw
+		i += size
+	}
+	if chunkStart < len(raw) {
+		out = append(out, splitSpan{chunkStart, len(raw)})
+	}
+	if len(out) == 0 {
+		out = []splitSpan{{0, len(raw)}}
+	}
+	return out
 }
 
 // renderCellWithHL renders a diff cell honouring its word-diff
@@ -912,20 +1028,43 @@ func (m *model) activeDiffCell() (diffCell, bool) {
 }
 
 // ensureDiffCursorVisible scrolls the viewport if the cursor would
-// otherwise be off-screen.
+// otherwise be off-screen. With split-mode line wrapping a single
+// logical row can span multiple visual lines, so we translate the
+// cursor's row index into a visual offset using diffRowYs before
+// comparing against the viewport's YOffset window.
 func (m *model) ensureDiffCursorVisible() {
 	h := m.diff.Height
 	if h <= 0 {
 		return
 	}
+	cursorTop, cursorBot := m.diffCursorVisualRange()
 	top := m.diff.YOffset
 	bot := top + h - 1
 	switch {
-	case m.diffCursor < top:
-		m.diff.SetYOffset(m.diffCursor)
-	case m.diffCursor > bot:
-		m.diff.SetYOffset(m.diffCursor - h + 1)
+	case cursorTop < top:
+		m.diff.SetYOffset(cursorTop)
+	case cursorBot > bot:
+		m.diff.SetYOffset(cursorBot - h + 1)
 	}
+}
+
+// diffCursorVisualRange returns the [top, bottom] visual line range
+// (inclusive) the cursor's logical row currently occupies in the
+// rendered viewport. Falls back to the cursor index itself when
+// diffRowYs hasn't been populated yet (e.g. very first render).
+func (m *model) diffCursorVisualRange() (int, int) {
+	if len(m.diffRowYs) == 0 || m.diffCursor < 0 || m.diffCursor >= len(m.diffRowYs) {
+		return m.diffCursor, m.diffCursor
+	}
+	top := m.diffRowYs[m.diffCursor]
+	bot := top
+	if m.diffCursor+1 < len(m.diffRowYs) {
+		bot = m.diffRowYs[m.diffCursor+1] - 1
+	}
+	if bot < top {
+		bot = top
+	}
+	return top, bot
 }
 
 // inlineSide normalises a row's side into the API value. "both" rows

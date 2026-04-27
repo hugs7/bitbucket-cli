@@ -1,18 +1,20 @@
-// Package pr — Create-PR template flow.
+// Package pr — Create-PR flow.
 //
-// Building and parsing the editor template that backs the C key
-// ("create new PR"). The template uses Title/Source/Target headers
-// followed by a `# ---` marker and a free-form body so users can
-// fill it in inside vim or the inline editor without learning a
-// new format.
+// 'C' opens an autocomplete-driven huh form (source / target /
+// title / description) instead of a vim-style template. The form
+// runs synchronously via tea.Exec so it can take over the terminal
+// while the user fills it in, then returns control to the PR list.
 package pr
 
 import (
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 )
 
 // currentGitBranch returns the current local git branch name (or "" on
@@ -25,86 +27,156 @@ func currentGitBranch() string {
 	return strings.TrimSpace(string(out))
 }
 
-// createPRTemplate returns the editor template shown for "create PR".
-// The user fills in the bare values on the Title/Source/Target lines and
-// writes the description below the marker; everything else is parsed
-// from the file by parseCreatePRTemplate.
-func createPRTemplate(source, target string) string {
-	return fmt.Sprintf(`Title: 
-Source: %s
-Target: %s
-
-# Edit the values above (Title is required) and write the PR
-# description below this marker. Save & exit to submit; leaving
-# Title empty cancels.
-# ----------------------------------------------------------------
-
-`, source, target)
-}
-
-// parseCreatePRTemplate extracts Title / Source / Target / Description
-// from the editor buffer produced by createPRTemplate. The description
-// is everything after the "# ---" marker line (or after the last header
-// line if the marker was removed); leading/trailing whitespace is
-// trimmed and standalone "#" comment lines are dropped.
-func parseCreatePRTemplate(s string) (title, source, target, description string) {
-	lines := strings.Split(s, "\n")
-	bodyStart := -1
-	for i, line := range lines {
-		l := strings.TrimSpace(line)
-		if strings.HasPrefix(l, "# ---") {
-			bodyStart = i + 1
-			break
-		}
-		if strings.HasPrefix(l, "#") || l == "" {
-			continue
-		}
-		if k, v, ok := splitHeader(l); ok {
-			switch strings.ToLower(k) {
-			case "title":
-				title = v
-			case "source":
-				source = v
-			case "target":
-				target = v
+// remoteBranches returns the names of branches known to the local git
+// repo: local heads plus remote-tracking branches with the remote
+// prefix stripped. Used as huh's input autocomplete when creating a
+// PR. Returns nil silently if git isn't available — the input then
+// degrades to plain text entry.
+func remoteBranches() []string {
+	out, err := exec.Command("git", "for-each-ref",
+		"--format=%(refname)",
+		"refs/heads", "refs/remotes").Output()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var branches []string
+	for _, line := range strings.Split(string(out), "\n") {
+		ref := strings.TrimSpace(line)
+		var name string
+		switch {
+		case strings.HasPrefix(ref, "refs/heads/"):
+			name = strings.TrimPrefix(ref, "refs/heads/")
+		case strings.HasPrefix(ref, "refs/remotes/"):
+			rest := strings.TrimPrefix(ref, "refs/remotes/")
+			if i := strings.Index(rest, "/"); i > 0 {
+				rest = rest[i+1:]
+			} else {
+				continue
 			}
-		}
-	}
-	if bodyStart < 0 {
-		return title, source, target, ""
-	}
-	var body []string
-	for _, line := range lines[bodyStart:] {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			if rest == "HEAD" {
+				continue
+			}
+			name = rest
+		default:
 			continue
 		}
-		body = append(body, line)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		branches = append(branches, name)
 	}
-	description = strings.TrimSpace(strings.Join(body, "\n"))
-	return title, source, target, description
+	return branches
 }
 
-func splitHeader(s string) (key, value string, ok bool) {
-	idx := strings.Index(s, ":")
-	if idx <= 0 {
-		return "", "", false
-	}
-	return strings.TrimSpace(s[:idx]), strings.TrimSpace(s[idx+1:]), true
+// createPRMsg is posted after the huh form completes (success or
+// cancel). The Update handler decides whether to fire CreatePR or
+// just return the user to the list.
+type createPRMsg struct {
+	source, target, title, body string
+	cancelled                   bool
+	err                         error
 }
 
-// startCreatePR pre-fills the create-PR template with the user's
-// current git branch (as source) and the repo's default branch (as
-// target), then opens the editor. Pre-fill failures are non-fatal —
-// the user can always type the branches in.
+// createPRForm implements tea.ExecCommand so we can pause the parent
+// program, run a huh form on the same terminal, and post results back
+// via the standard message loop.
+type createPRForm struct {
+	source, target, title, body string
+	branches                    []string
+
+	stdin          io.Reader
+	stdout, stderr io.Writer
+
+	cancelled bool
+	err       error
+}
+
+func (f *createPRForm) SetStdin(r io.Reader)  { f.stdin = r }
+func (f *createPRForm) SetStdout(w io.Writer) { f.stdout = w }
+func (f *createPRForm) SetStderr(w io.Writer) { f.stderr = w }
+
+func (f *createPRForm) Run() error {
+	// Default huh keymap binds tab to "next field" and ctrl+e to
+	// "accept suggestion". For a branch-name autocomplete that's
+	// backwards from every shell anyone has ever used: tab should
+	// commit the highlighted suggestion. We swap so:
+	//   tab          → accept the autocomplete suggestion
+	//   enter        → next field / submit
+	//   shift+tab    → previous field
+	keymap := huh.NewDefaultKeyMap()
+	keymap.Input.AcceptSuggestion = key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "complete"),
+	)
+	keymap.Input.Next = key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "next"),
+	)
+
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Source branch").Value(&f.source).
+			Suggestions(f.branches).Validate(formNonEmpty),
+		huh.NewInput().Title("Target branch").Value(&f.target).
+			Suggestions(f.branches).Validate(formNonEmpty),
+		huh.NewInput().Title("Title").Value(&f.title).Validate(formNonEmpty),
+		huh.NewText().Title("Description (optional)").Value(&f.body),
+	)).WithInput(f.stdin).WithOutput(f.stdout).WithKeyMap(keymap)
+
+	if err := form.Run(); err != nil {
+		// huh returns ErrUserAborted when the user hits ctrl+c / esc;
+		// treat that as "cancelled" rather than a hard error so the
+		// parent TUI can resume cleanly without a toast.
+		if err == huh.ErrUserAborted {
+			f.cancelled = true
+			return nil
+		}
+		f.err = err
+	}
+	return nil
+}
+
+func formNonEmpty(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return fmt.Errorf("required")
+	}
+	return nil
+}
+
+// startCreatePR launches the huh form via tea.Exec. The parent
+// program is suspended for the duration so huh has the terminal to
+// itself; once the user submits or aborts we post a createPRMsg
+// back into the bubbletea event loop and the model handles the API
+// call (or the cancel) like any other message.
 func (m *model) startCreatePR() tea.Cmd {
 	source := currentGitBranch()
 	target := ""
 	if r, err := m.svc.GetRepo(m.project, m.slug); err == nil {
 		target = r.DefaultRef
 	}
-	tmpl := createPRTemplate(source, target)
-	return editInTUI("create-pr",
-		fmt.Sprintf("create-pr-%s-%s", sanitizeForFilename(m.project), sanitizeForFilename(m.slug)),
-		0, 0, tmpl)
+	form := &createPRForm{
+		source:   source,
+		target:   target,
+		branches: remoteBranches(),
+	}
+	return tea.Exec(form, func(err error) tea.Msg {
+		// Propagate any unexpected error from the harness itself
+		// (terminal acquisition, etc.) — huh-internal errors are
+		// captured in form.err.
+		if err != nil {
+			return createPRMsg{err: err}
+		}
+		return createPRMsg{
+			source:    form.source,
+			target:    form.target,
+			title:     form.title,
+			body:      form.body,
+			cancelled: form.cancelled,
+			err:       form.err,
+		}
+	})
 }
-

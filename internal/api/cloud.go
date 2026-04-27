@@ -223,12 +223,38 @@ func (c *cloudService) CreatePR(workspace, slug string, in CreatePRInput) (*Pull
 	return &out, nil
 }
 
-func (c *cloudService) MergePR(workspace, slug string, id int) error {
-	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/merge", workspace, slug, id), map[string]any{}, nil)
+func (c *cloudService) MergePR(workspace, slug string, id int, strategyID string) error {
+	body := map[string]any{}
+	if strategyID != "" {
+		body["merge_strategy"] = strategyID
+	}
+	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/merge", workspace, slug, id), body, nil)
+}
+
+// MergeStrategies returns the three documented Bitbucket Cloud merge
+// strategies. Cloud doesn't expose a per-repo allowed-list endpoint
+// (branch restrictions of kind "allow_merge_strategies" can hide
+// some at the branch level but aren't queryable cheaply); we list
+// all three and let the merge endpoint surface a clear error if the
+// repo restricts the chosen one.
+func (c *cloudService) MergeStrategies(workspace, slug string) ([]MergeStrategy, error) {
+	return []MergeStrategy{
+		{ID: "merge_commit", Name: "Merge commit", Default: true},
+		{ID: "squash", Name: "Squash"},
+		{ID: "fast_forward", Name: "Fast-forward"},
+	}, nil
 }
 
 func (c *cloudService) DeclinePR(workspace, slug string, id int) error {
 	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/decline", workspace, slug, id), nil, nil)
+}
+
+// DeletePR is not supported by Bitbucket Cloud — the REST 2.0 API
+// has no DELETE on /pullrequests/{id}. Decline + close is as far as
+// the platform goes. Surface a clear error so the TUI can show a
+// useful toast instead of an HTTP 405.
+func (c *cloudService) DeletePR(workspace, slug string, id int) error {
+	return fmt.Errorf("deleting PRs is not supported on Bitbucket Cloud (decline closes the PR)")
 }
 
 // DeleteBranch removes a branch from the remote repo via Cloud's
@@ -842,4 +868,26 @@ func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) 
 		})
 	}
 	return out, nil
+}
+
+// SearchUsers is not yet implemented for Bitbucket Cloud — there's no
+// directory-search endpoint that works without a workspace context,
+// and the workspace is encoded into the project param of every other
+// call rather than being available on the service. Callers should
+// fall back to free-text reviewer entry on Cloud.
+func (c *cloudService) SearchUsers(query string, limit int) ([]User, error) {
+	return nil, nil
+}
+
+// ListTasks is a no-op on Bitbucket Cloud — the platform deprecated
+// PR tasks in 2022 in favour of GFM checklists in the description.
+// Returning an empty slice (rather than an error) lets the merge
+// confirm view simply hide the "open tasks" section on Cloud.
+func (c *cloudService) ListTasks(workspace, slug string, prID int) ([]Task, error) {
+	return nil, nil
+}
+
+// ResolveTask is not supported on Bitbucket Cloud (see ListTasks).
+func (c *cloudService) ResolveTask(workspace, slug string, prID, taskID int) error {
+	return fmt.Errorf("resolving PR tasks is not supported on Bitbucket Cloud")
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -29,12 +30,21 @@ func (m model) helpView() string {
 		km = m.keys.confirmHelp()
 	case viewConfirmDecline:
 		km = m.keys.confirmHelp()
-	case viewConfirmMerge:
+	case viewConfirmDeletePR:
 		km = m.keys.confirmHelp()
+	case viewConfirmMerge:
+		// The merge confirm card already shows its own footer
+		// hints (↑/↓ pick · d/t toggle · y merge · n/esc cancel)
+		// so suppress the global help bar to avoid duplication.
+		return ""
 	case viewPalette:
 		km = m.keys.paletteHelp()
 	case viewSettings:
 		km = m.keys.settingsHelp()
+	case viewReviewerSearch:
+		// Header inside the overlay already documents space/enter/
+		// esc, so suppress the global help bar to avoid duplication.
+		return ""
 	default:
 		km = m.contextualListHelp()
 	}
@@ -49,7 +59,11 @@ func (m model) helpView() string {
 func (m model) contextualListHelp() help.KeyMap {
 	base := m.keys.listHelp()
 	if it, ok := m.list.SelectedItem().(prItem); ok {
-		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr))
+		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr), true)
+	} else {
+		// Empty list: nothing to act on — strip every PR-action key
+		// so the help bar doesn't dangle keys that produce a no-op.
+		base = applyReviewContext(base, m.keys, "", false, false)
 	}
 	return base
 }
@@ -57,18 +71,40 @@ func (m model) contextualListHelp() help.KeyMap {
 func (m model) contextualDetailHelp() help.KeyMap {
 	base := m.keys.detailHelp()
 	if it, ok := m.list.SelectedItem().(prItem); ok {
-		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr))
+		base = applyReviewContext(base, m.keys, m.myReviewerStatus(it.pr), m.isOwnPR(it.pr), true)
+	} else {
+		base = applyReviewContext(base, m.keys, "", false, false)
 	}
 	return base
 }
 
 // applyReviewContext rewrites a modeKeyMap so the visible review
-// actions match what the current user can usefully do. Own PRs hide
-// every review action (Bitbucket rejects self-review). Already-
-// approved PRs hide Approve and surface Unapprove. PRs already
-// flagged needs-work hide NeedsWork.
-func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR bool) modeKeyMap {
+// actions match what the current user can usefully do.
+//   - hasSelection=false → strip every PR-action key (empty list).
+//   - own PR → hide every review action (Bitbucket rejects self-review).
+//   - already-approved → hide Approve, surface Unapprove.
+//   - already-needs-work → hide NeedsWork, surface Unapprove.
+//   - otherwise → show Approve + NeedsWork, hide Unapprove.
+func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR, hasSelection bool) modeKeyMap {
+	// Keys that only make sense when there's a PR selected. Stripped
+	// wholesale when hasSelection is false.
+	prActionKeys := map[string]bool{
+		k.Approve.Help().Key:         true,
+		k.Unapprove.Help().Key:       true,
+		k.NeedsWork.Help().Key:       true,
+		k.Merge.Help().Key:           true,
+		k.EditDesc.Help().Key:        true,
+		k.Comments.Help().Key:        true,
+		k.Diff.Help().Key:            true,
+		k.Open.Help().Key:            true,
+		k.DeclinePR.Help().Key:       true,
+		k.ManageReviewers.Help().Key: true,
+	}
+
 	allow := func(b key.Binding) bool {
+		if !hasSelection && prActionKeys[b.Help().Key] {
+			return false
+		}
 		if ownPR && (b.Help().Key == k.Approve.Help().Key ||
 			b.Help().Key == k.Unapprove.Help().Key ||
 			b.Help().Key == k.NeedsWork.Help().Key) {
@@ -194,20 +230,18 @@ func (m model) renderForMode(mode viewMode) string {
 			BorderForeground(lipgloss.Color("9")).
 			Padding(0, 2)
 		body = "\n  " + warn.Render(fmt.Sprintf("Decline PR #%d?  [y/n]", m.pendingDeclinePRID))
-	case viewConfirmMerge:
-		box := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("10")).
+	case viewConfirmDeletePR:
+		warn := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("9")).
 			Bold(true).
 			BorderStyle(theme.Border()).
-			BorderForeground(lipgloss.Color("10")).
+			BorderForeground(lipgloss.Color("9")).
 			Padding(0, 2)
-		check := "[ ]"
-		if m.pendingMergeDeleteBranch {
-			check = "[x]"
-		}
-		text := fmt.Sprintf("Merge PR #%d?  [y/n]\n  %s d  delete source branch %q after merge",
-			m.pendingMergePRID, check, m.pendingMergeSourceRef)
-		body = "\n  " + box.Render(text)
+		body = "\n  " + warn.Render(fmt.Sprintf(
+			"Delete PR #%d?  [y/n]\n  irreversible · Bitbucket Server only · usually requires admin",
+			m.pendingDeletePRID))
+	case viewConfirmMerge:
+		body = "\n" + m.renderMergeConfirm()
 	case viewPalette:
 		// Render whatever view we came from as the background, then
 		// overlay the palette card on top — gives an "Amp-style"
@@ -225,6 +259,13 @@ func (m model) renderForMode(mode viewMode) string {
 		// the overlay own the whole frame so the textarea has room
 		// to breathe. The status line still rides along below.
 		body = m.editor.view(m.width, m.height-2, m.editor.label())
+	case viewReviewerSearch:
+		// Manage-reviewers overlay: a centred bordered card layered
+		// on top of the underlying view (PR list / detail) so the
+		// modal feels stacked rather than replacing the screen.
+		bg := m.renderForMode(m.reviewerSearchReturnTo)
+		card := m.renderReviewerSearch()
+		body = placeOverlay(bg, card, -1)
 	default:
 		header := titleBar(fmt.Sprintf("PULL REQUESTS · %s/%s", m.project, m.slug),
 			theme.TitleChip.Render(strings.ToUpper(m.state)),
@@ -234,6 +275,172 @@ func (m model) renderForMode(mode viewMode) string {
 		body = header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 	return body
+}
+
+// renderMergeConfirm draws the merge-confirmation card. Lays the
+// strategy picker out as a vertical list (one row per allowed mode)
+// rather than the older ←/→ cycle, summarises the post-merge options
+// (delete branch, resolve tasks) and lists every open task so the
+// user knows exactly what will happen when they press y.
+func (m model) renderMergeConfirm() string {
+	width := mergeConfirmWidth(m.width)
+
+	header := theme.TitleBadge.Render(fmt.Sprintf(" MERGE PR #%d ", m.pendingMergePRID))
+	target := ""
+	if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.ID == m.pendingMergePRID {
+		target = it.pr.TargetRef
+	}
+	switch {
+	case m.pendingMergeSourceRef != "" && target != "":
+		header += "  " + theme.TitleChipDim.Render(m.pendingMergeSourceRef+" → "+target)
+	case m.pendingMergeSourceRef != "":
+		header += "  " + theme.TitleChipDim.Render(m.pendingMergeSourceRef)
+	}
+
+	parts := []string{header, ""}
+
+	// Strategy picker.
+	parts = append(parts, theme.TitleChip.Render("Strategy"))
+	if n := len(m.pendingMergeStrategies); n == 0 {
+		parts = append(parts, "  "+theme.TitleChipDim.Render("(no strategies available — using default)"))
+	} else {
+		idx := m.pendingMergeStrategyIdx
+		if idx < 0 || idx >= n {
+			idx = 0
+		}
+		// Two passes: compute the widest name so the descriptions
+		// line up in a column rather than being ragged-right.
+		nameW := 0
+		for _, st := range m.pendingMergeStrategies {
+			if w := lipgloss.Width(st.Name); w > nameW {
+				nameW = w
+			}
+		}
+		for i, st := range m.pendingMergeStrategies {
+			parts = append(parts, renderStrategyRow(i == idx, st, nameW))
+		}
+	}
+
+	// Options pane: delete branch + resolve tasks toggles.
+	parts = append(parts, "", theme.TitleChip.Render("Options"))
+	parts = append(parts, "  "+renderToggle(m.pendingMergeDeleteBranch, "d",
+		fmt.Sprintf("delete source branch %q after merge", m.pendingMergeSourceRef)))
+
+	hasTasks := len(m.pendingMergeTasks) > 0
+	taskLabel := "resolve all open tasks before merging"
+	if !hasTasks && !m.pendingMergeTasksLoading && m.pendingMergeTasksErr == nil {
+		taskLabel += "  " + theme.TitleChipDim.Render("(none open)")
+	}
+	parts = append(parts, "  "+renderToggle(m.pendingMergeResolveTasks, "t", taskLabel))
+
+	// Tasks pane (only when relevant).
+	switch {
+	case m.pendingMergeTasksLoading:
+		parts = append(parts, "", theme.TitleChipDim.Render("  "+m.spinner.View()+" loading tasks…"))
+	case m.pendingMergeTasksErr != nil:
+		parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
+			Render("  ✗ tasks: "+m.pendingMergeTasksErr.Error()))
+	case hasTasks:
+		parts = append(parts, "", theme.TitleChipWarn.Render(
+			fmt.Sprintf("Open tasks: %d", len(m.pendingMergeTasks))))
+		for _, t := range m.pendingMergeTasks {
+			text := strings.TrimSpace(strings.SplitN(t.Text, "\n", 2)[0])
+			if text == "" {
+				text = "(no description)"
+			}
+			// Trim long task lines so they don't wrap in the box.
+			max := width - 12
+			if max > 0 && lipgloss.Width(text) > max {
+				text = text[:max-1] + "…"
+			}
+			parts = append(parts, "  "+theme.TitleChipDim.Render("•")+
+				" "+theme.TitleChipDim.Render(fmt.Sprintf("#%d", t.ID))+
+				"  "+text)
+		}
+	}
+
+	// Footer hints.
+	parts = append(parts, "",
+		theme.TitleChipDim.Render(
+			"↑/↓ pick strategy   d toggle delete   t toggle tasks   y merge   n/esc cancel"))
+
+	box := lipgloss.NewStyle().
+		Border(theme.Border()).
+		BorderForeground(lipgloss.Color("10")).
+		Padding(1, 2).
+		Width(width)
+	return box.Render(strings.Join(parts, "\n"))
+}
+
+// renderStrategyRow draws one row in the strategy picker. The
+// selected row is highlighted as a solid bar; others use a muted
+// glyph + name + git command hint.
+func renderStrategyRow(selected bool, st api.MergeStrategy, nameW int) string {
+	hint := strategyHint(st.ID)
+	tag := ""
+	if st.Default {
+		tag = "  " + theme.TitleChipDim.Render("(repo default)")
+	}
+	name := st.Name
+	if pad := nameW - lipgloss.Width(name); pad > 0 {
+		name += strings.Repeat(" ", pad)
+	}
+
+	if selected {
+		line := "▸ ● " + name + "  " + hint + tag
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("231")).
+			Background(lipgloss.Color("22")).
+			Bold(true).
+			Render(line)
+	}
+	return "  ○ " + name + "  " + theme.TitleChipDim.Render(hint) + tag
+}
+
+// renderToggle formats a "[x] k  label" line for the options pane.
+func renderToggle(on bool, key, label string) string {
+	check := "[ ]"
+	if on {
+		check = "[x]"
+	}
+	return check + " " + theme.TitleChipWarn.Render(key) + "  " + label
+}
+
+// strategyHint returns the git-command sketch for a known strategy
+// ID. Empty string if unknown — the row still renders, just without
+// a hint column.
+func strategyHint(id string) string {
+	switch id {
+	case "no-ff", "merge_commit":
+		return "--no-ff"
+	case "ff", "fast_forward":
+		return "--ff"
+	case "ff-only":
+		return "--ff-only"
+	case "rebase-no-ff":
+		return "rebase + merge --no-ff"
+	case "rebase-ff-only":
+		return "rebase + merge --ff-only"
+	case "squash":
+		return "--squash"
+	case "squash-ff-only":
+		return "--squash --ff-only"
+	}
+	return ""
+}
+
+// mergeConfirmWidth picks a roomy width for the merge confirm card
+// (capped so it doesn't span ultrawide terminals).
+func mergeConfirmWidth(termW int) int {
+	const minW, maxW = 60, 90
+	w := termW - 4
+	if w < minW {
+		w = minW
+	}
+	if w > maxW {
+		w = maxW
+	}
+	return w
 }
 
 // ---------- helpers ----------

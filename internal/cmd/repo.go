@@ -47,6 +47,15 @@ func openRepoTUI(repoFlag, hostFlag string) error {
 	if err != nil {
 		return err
 	}
+	return runRepoTUI(svc, project, slug)
+}
+
+// runRepoTUI drives the repo overview TUI's "follow-up action" loop
+// for a project/slug we already know. Pulled out of openRepoTUI so
+// the home dashboard's Enter handler can re-use it: when the user
+// hits Enter on a "Recently viewed repositories" row, root.go calls
+// this directly instead of round-tripping through resolveContext.
+func runRepoTUI(svc api.Service, project, slug string) error {
 	for {
 		action, err := repo.Repo(svc, project, slug)
 		if err != nil {

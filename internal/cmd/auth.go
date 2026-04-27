@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -12,6 +13,30 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 )
+
+// validateHostname rejects URLs / paths that look like a copy-pasted
+// browser address. We want a bare hostname (or host:port) so the
+// API base templates ("https://%s/rest/api/1.0") don't end up with
+// "https://https://acme.com" or similar nonsense.
+func validateHostname(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		// Empty is allowed — caller falls back to a default.
+		return nil
+	}
+	low := strings.ToLower(s)
+	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+		return fmt.Errorf("enter the hostname only — drop the http(s):// scheme (e.g. %q not %q)",
+			strings.TrimPrefix(strings.TrimPrefix(low, "https://"), "http://"), s)
+	}
+	if strings.ContainsAny(s, "/?#") {
+		return fmt.Errorf("enter the hostname only — drop the path / query (got %q)", s)
+	}
+	if strings.ContainsAny(s, " \t") {
+		return fmt.Errorf("hostname must not contain whitespace")
+	}
+	return nil
+}
 
 func newAuthCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -32,6 +57,13 @@ func newAuthLoginCmd() *cobra.Command {
 		Use:   "login",
 		Short: "Log in to a Bitbucket host",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Guard the --host flag too so flag-driven invocations can't
+			// sneak a scheme/path past the prompt validator.
+			if host != "" {
+				if err := validateHostname(host); err != nil {
+					return err
+				}
+			}
 			// Step 1: ask for the host on its own so we can pick a smart
 			// default for the host type (cloud for bitbucket.org, server for
 			// anything else).
@@ -41,7 +73,8 @@ func newAuthLoginCmd() *cobra.Command {
 						Title("Bitbucket host").
 						Description("Hostname only, e.g. bitbucket.org or bitbucket.mycorp.example").
 						Placeholder("bitbucket.org").
-						Value(&host),
+						Value(&host).
+						Validate(validateHostname),
 				),
 			).Run(); err != nil {
 				return err

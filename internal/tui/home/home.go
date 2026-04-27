@@ -22,6 +22,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/preview"
 	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
@@ -132,6 +133,13 @@ type homeModel struct {
 	dashCursor  int
 	dashVP      viewport.Model // scrolls when content exceeds the left pane height
 	prevDashRow string         // previous selected row identity, for preview-refresh detection
+
+	// dashFocus picks which pane on the dashboard tab consumes
+	// scroll / arrow-key input: "left" routes to the row list (the
+	// classic flow — j/k moves the cursor and snaps the dashVP),
+	// "right" routes to the README/PR-detail preview viewport so
+	// long markdown can be scrolled. Toggled with the "T" key.
+	dashFocus string
 
 	loading   bool
 	searching bool // true while a SearchRepos call is in flight
@@ -429,11 +437,11 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case readmeLoadedMsg:
 		m.loading = false
-		body := strings.TrimSpace(msg.body)
-		if body == "" {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
-				Render("(no README found — press p to open this repo's PRs, o to open in browser)")
-		}
+		// Description is empty here because home already surfaces it
+		// in the readmeHeader chip strip — adding it again would
+		// just duplicate the metadata above the README body.
+		body := preview.Body(msg.body, "", m.preview.Width,
+			"(no README found — press p to open this repo's PRs, o to open in browser)")
 		m.preview.SetContent(m.readmeHeader(msg.project, msg.slug) + "\n\n" + body)
 		m.preview.GotoTop()
 		return m, nil
@@ -468,6 +476,51 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.searching = false
 		m.status = theme.ErrPrefix() + msg.err.Error()
+		return m, nil
+
+	case tea.MouseMsg:
+		// Wheel events (and any future click handling) flow to the
+		// component that owns the active tab's body. The viewport
+		// and list components handle MouseWheelUp/Down natively, so
+		// scroll just works once the message reaches them. Without
+		// this dispatcher mouse-wheel input was silently dropped on
+		// the dashboard tab — only j/k keyboard navigation moved
+		// the view.
+		switch m.tab {
+		case tabDashboard:
+			// When the user has focused the right (preview) pane
+			// with T, route wheel events to the README viewport so
+			// long markdown can be scrolled without leaving the
+			// dashboard tab.
+			if m.dashFocus == "right" {
+				var cmd tea.Cmd
+				m.preview, cmd = m.preview.Update(msg)
+				return m, cmd
+			}
+			// dashVP's line buffer is populated by renderDashboard
+			// during View(), but View runs on a throwaway copy of
+			// the model — so the stored model's dashVP.lines is
+			// empty when this MouseMsg arrives, and viewport's
+			// ScrollDown returns immediately ("len(lines)==0"
+			// guard). Refresh content here so the wheel actually
+			// scrolls.
+			innerW := m.dashVP.Width
+			if innerW == 0 {
+				innerW = m.width
+			}
+			m.refreshDashContent(innerW)
+			var cmd tea.Cmd
+			m.dashVP, cmd = m.dashVP.Update(msg)
+			return m, cmd
+		case tabFavourites:
+			var cmd tea.Cmd
+			m.favs, cmd = m.favs.Update(msg)
+			return m, cmd
+		case tabBrowse:
+			var cmd tea.Cmd
+			m.browse, cmd = m.browse.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -506,7 +559,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if q == m.browseQ && len(m.browse.Items()) > 0 {
 					m.search.Blur()
 					if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
-						m.next = &Action{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+						// Same destination as "Enter on a Browse row
+						// outside the search box": land on the repo
+						// overview TUI, not straight on the PRs.
+						m.next = &Action{Kind: "repo", Project: it.r.Project, Slug: it.r.Slug}
 						return m, tea.Quit
 					}
 					return m, nil
@@ -566,7 +622,24 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.Tab):
 			m.tab = (m.tab + 1) % homeTab(len(allTabs))
+			// Reset pane focus to the row list when leaving the
+			// dashboard so re-entering from another tab doesn't
+			// strand the user in the preview pane.
+			m.dashFocus = ""
 			return m, m.refreshPreviewForTab()
+		case key.Matches(msg, m.keys.FocusPane):
+			// Only the dashboard tab has two scroll surfaces worth
+			// toggling between (row list ↔ markdown preview). The
+			// favourites / browse tabs only have a single list, so
+			// the toggle is a no-op there.
+			if m.tab == tabDashboard {
+				if m.dashFocus == "right" {
+					m.dashFocus = ""
+				} else {
+					m.dashFocus = "right"
+				}
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.ShiftTab):
 			m.tab = (m.tab + homeTab(len(allTabs)-1)) % homeTab(len(allTabs))
 			return m, m.refreshPreviewForTab()
@@ -600,24 +673,41 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.next = &Action{Kind: "prs", Project: project, Slug: slug}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Enter):
-			// Enter is the consistent "open this repo" action across
-			// every tab — drills into the PR TUI for the selected
-			// repo. README loading happens automatically on j/k
-			// navigation, so Enter doesn't need to (re)trigger it.
+			// Enter is the consistent "open this row" action across
+			// every tab — repo rows land on the repo overview TUI
+			// (README + recent PRs + builds) so the user gets the
+			// same view they'd get from `bb repo` / `bb .`. PR rows
+			// (only present on the dashboard) drill straight into
+			// the PR TUI because the row already represents a PR.
+			// The "p" shortcut is one keystroke away on the repo
+			// overview if the user wants the bare PR list.
 			switch m.tab {
 			case tabDashboard:
+				// Dashboard mixes PR rows and repo rows in one
+				// flat cursor — branch on row kind so each lands
+				// on the surface that actually matches what the
+				// row represents.
 				if r := m.selectedDashRow(); r != nil {
-					m.next = &Action{Kind: "prs", Project: r.project(), Slug: r.slug()}
+					kind := "prs"
+					if r.kind == "repo" {
+						kind = "repo"
+					}
+					m.next = &Action{Kind: kind, Project: r.project(), Slug: r.slug()}
 					return m, tea.Quit
 				}
 			case tabFavourites:
+				// Favourites and Browse rows are always repos, so
+				// Enter routes to the repo overview TUI for
+				// parity with the dashboard's repo rows. The
+				// "p → PR TUI" shortcut is still one keystroke
+				// away once the user has landed on the overview.
 				if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
-					m.next = &Action{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+					m.next = &Action{Kind: "repo", Project: it.r.Project, Slug: it.r.Slug}
 					return m, tea.Quit
 				}
 			case tabBrowse:
 				if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
-					m.next = &Action{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+					m.next = &Action{Kind: "repo", Project: it.r.Project, Slug: it.r.Slug}
 					return m, tea.Quit
 				}
 			}
@@ -653,6 +743,15 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Forward unhandled keys to the focused list / preview.
 		switch m.tab {
 		case tabDashboard:
+			// Right pane focused: send navigation / paging keys to
+			// the README viewport so the user can scroll through a
+			// long markdown body. The viewport handles up/down/k/j,
+			// pgup/pgdn, and home/end natively.
+			if m.dashFocus == "right" {
+				var cmd tea.Cmd
+				m.preview, cmd = m.preview.Update(msg)
+				return m, cmd
+			}
 			return m, m.dashboardKey(msg)
 		case tabFavourites:
 			var cmd tea.Cmd
@@ -819,8 +918,12 @@ func (m homeModel) View() string {
 		leftInner = m.searchBox(listInnerW) + "\n" + listView
 	}
 
-	leftPane := paneBorder(true, leftW, contentH).Render(leftInner)
-	rightPane := paneBorder(false, rightW, contentH).Render(m.preview.View())
+	// Border colour follows pane focus on the dashboard tab so the
+	// user can see which pane consumes scroll input. Other tabs only
+	// have a left list, so the right preview stays muted.
+	leftFocused := !(m.tab == tabDashboard && m.dashFocus == "right")
+	leftPane := paneBorder(leftFocused, leftW, contentH).Render(leftInner)
+	rightPane := paneBorder(!leftFocused, rightW, contentH).Render(m.preview.View())
 
 	// Subtle vertical separator between panes.
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
