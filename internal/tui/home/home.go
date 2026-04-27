@@ -559,7 +559,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if q == m.browseQ && len(m.browse.Items()) > 0 {
 					m.search.Blur()
 					if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
-						m.next = &Action{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+						// Same destination as "Enter on a Browse row
+						// outside the search box": land on the repo
+						// overview TUI, not straight on the PRs.
+						m.next = &Action{Kind: "repo", Project: it.r.Project, Slug: it.r.Slug}
 						return m, tea.Quit
 					}
 					return m, nil
@@ -670,20 +673,20 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.next = &Action{Kind: "prs", Project: project, Slug: slug}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Enter):
-			// Enter is the consistent "open this repo" action across
-			// every tab — drills into the PR TUI for the selected
-			// repo. README loading happens automatically on j/k
-			// navigation, so Enter doesn't need to (re)trigger it.
+			// Enter is the consistent "open this row" action across
+			// every tab — repo rows land on the repo overview TUI
+			// (README + recent PRs + builds) so the user gets the
+			// same view they'd get from `bb repo` / `bb .`. PR rows
+			// (only present on the dashboard) drill straight into
+			// the PR TUI because the row already represents a PR.
+			// The "p" shortcut is one keystroke away on the repo
+			// overview if the user wants the bare PR list.
 			switch m.tab {
 			case tabDashboard:
 				// Dashboard mixes PR rows and repo rows in one
-				// flat cursor. PR rows go straight into the PR
-				// TUI for that repo (the user's intent there is
-				// "look at this PR's repo"), while repo rows from
-				// "Recently viewed repositories" should land on
-				// the single-repo overview screen so the user
-				// gets the README + builds dashboard rather than
-				// the bare PR list.
+				// flat cursor — branch on row kind so each lands
+				// on the surface that actually matches what the
+				// row represents.
 				if r := m.selectedDashRow(); r != nil {
 					kind := "prs"
 					if r.kind == "repo" {
@@ -693,13 +696,18 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Quit
 				}
 			case tabFavourites:
+				// Favourites and Browse rows are always repos, so
+				// Enter routes to the repo overview TUI for
+				// parity with the dashboard's repo rows. The
+				// "p → PR TUI" shortcut is still one keystroke
+				// away once the user has landed on the overview.
 				if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
-					m.next = &Action{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+					m.next = &Action{Kind: "repo", Project: it.r.Project, Slug: it.r.Slug}
 					return m, tea.Quit
 				}
 			case tabBrowse:
 				if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
-					m.next = &Action{Kind: "prs", Project: it.r.Project, Slug: it.r.Slug}
+					m.next = &Action{Kind: "repo", Project: it.r.Project, Slug: it.r.Slug}
 					return m, tea.Quit
 				}
 			}
