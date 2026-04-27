@@ -470,6 +470,30 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = theme.ErrPrefix() + msg.err.Error()
 		return m, nil
 
+	case tea.MouseMsg:
+		// Wheel events (and any future click handling) flow to the
+		// component that owns the active tab's body. The viewport
+		// and list components handle MouseWheelUp/Down natively, so
+		// scroll just works once the message reaches them. Without
+		// this dispatcher mouse-wheel input was silently dropped on
+		// the dashboard tab — only j/k keyboard navigation moved
+		// the view, which is what users were complaining about.
+		switch m.tab {
+		case tabDashboard:
+			var cmd tea.Cmd
+			m.dashVP, cmd = m.dashVP.Update(msg)
+			return m, cmd
+		case tabFavourites:
+			var cmd tea.Cmd
+			m.favs, cmd = m.favs.Update(msg)
+			return m, cmd
+		case tabBrowse:
+			var cmd tea.Cmd
+			m.browse, cmd = m.browse.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Settings overlay owns all keys while open: esc closes,
 		// q / ctrl+c still quit, everything else flows into the
