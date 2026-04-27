@@ -134,6 +134,13 @@ type homeModel struct {
 	dashVP      viewport.Model // scrolls when content exceeds the left pane height
 	prevDashRow string         // previous selected row identity, for preview-refresh detection
 
+	// dashFocus picks which pane on the dashboard tab consumes
+	// scroll / arrow-key input: "left" routes to the row list (the
+	// classic flow — j/k moves the cursor and snaps the dashVP),
+	// "right" routes to the README/PR-detail preview viewport so
+	// long markdown can be scrolled. Toggled with the "T" key.
+	dashFocus string
+
 	loading   bool
 	searching bool // true while a SearchRepos call is in flight
 	status    string
@@ -483,6 +490,15 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the view.
 		switch m.tab {
 		case tabDashboard:
+			// When the user has focused the right (preview) pane
+			// with T, route wheel events to the README viewport so
+			// long markdown can be scrolled without leaving the
+			// dashboard tab.
+			if m.dashFocus == "right" {
+				var cmd tea.Cmd
+				m.preview, cmd = m.preview.Update(msg)
+				return m, cmd
+			}
 			// dashVP's line buffer is populated by renderDashboard
 			// during View(), but View runs on a throwaway copy of
 			// the model — so the stored model's dashVP.lines is
@@ -605,7 +621,24 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.Tab):
 			m.tab = (m.tab + 1) % homeTab(len(allTabs))
+			// Reset pane focus to the row list when leaving the
+			// dashboard so re-entering from another tab doesn't
+			// strand the user in the preview pane.
+			m.dashFocus = ""
 			return m, m.refreshPreviewForTab()
+		case key.Matches(msg, m.keys.FocusPane):
+			// Only the dashboard tab has two scroll surfaces worth
+			// toggling between (row list ↔ markdown preview). The
+			// favourites / browse tabs only have a single list, so
+			// the toggle is a no-op there.
+			if m.tab == tabDashboard {
+				if m.dashFocus == "right" {
+					m.dashFocus = ""
+				} else {
+					m.dashFocus = "right"
+				}
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.ShiftTab):
 			m.tab = (m.tab + homeTab(len(allTabs)-1)) % homeTab(len(allTabs))
 			return m, m.refreshPreviewForTab()
@@ -692,6 +725,15 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Forward unhandled keys to the focused list / preview.
 		switch m.tab {
 		case tabDashboard:
+			// Right pane focused: send navigation / paging keys to
+			// the README viewport so the user can scroll through a
+			// long markdown body. The viewport handles up/down/k/j,
+			// pgup/pgdn, and home/end natively.
+			if m.dashFocus == "right" {
+				var cmd tea.Cmd
+				m.preview, cmd = m.preview.Update(msg)
+				return m, cmd
+			}
 			return m, m.dashboardKey(msg)
 		case tabFavourites:
 			var cmd tea.Cmd
@@ -858,8 +900,12 @@ func (m homeModel) View() string {
 		leftInner = m.searchBox(listInnerW) + "\n" + listView
 	}
 
-	leftPane := paneBorder(true, leftW, contentH).Render(leftInner)
-	rightPane := paneBorder(false, rightW, contentH).Render(m.preview.View())
+	// Border colour follows pane focus on the dashboard tab so the
+	// user can see which pane consumes scroll input. Other tabs only
+	// have a left list, so the right preview stays muted.
+	leftFocused := !(m.tab == tabDashboard && m.dashFocus == "right")
+	leftPane := paneBorder(leftFocused, leftW, contentH).Render(leftInner)
+	rightPane := paneBorder(!leftFocused, rightW, contentH).Render(m.preview.View())
 
 	// Subtle vertical separator between panes.
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
