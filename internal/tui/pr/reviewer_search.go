@@ -1,33 +1,39 @@
-// Package pr — Add/Remove reviewer flow with debounced directory search.
+// Package pr — Manage-reviewers overlay (single 'v' shortcut).
 //
-// 'v' (Add Reviewer) and 'V' (Remove Reviewer) open a centred overlay
-// with a textinput at the top and a results list below. As the user
-// types, a 200ms debounced SearchUsers call refreshes the results —
-// the same pattern Bitbucket's web UI uses ("type three letters,
-// wait, results appear").
+// 'v' opens a centred-modal overlay that lets the user both add and
+// remove reviewers from one place — pressing Enter on a row that's
+// already on the PR queues it for removal; pressing Enter on a row
+// that isn't on the PR queues it for addition. Submit (Ctrl+S /
+// Ctrl+Enter) fires the appropriate AddReviewers / RemoveReviewers
+// calls in one round-trip.
+//
+// The textinput at the top of the overlay drives a 200ms debounced
+// SearchUsers call (Server: /rest/api/1.0/users) for live directory
+// matches, mirroring the Bitbucket web UI's "type-three-letters" feel.
+//
+// The underlying view (PR list / detail) renders as the overlay's
+// backdrop via placeOverlay so the modal feels stacked rather than
+// taking over the whole frame.
 //
 // Key bindings:
-//   - enter         → add the highlighted user to the picked set,
-//                     clear the input, and stay in the modal so
-//                     the user can pick another. tab does the same.
-//   - ctrl+enter / ctrl+s → submit the picked set (call the API)
-//   - esc / ctrl+c  → cancel
-//   - ctrl+u        → clear input
-//
-// The pane shows three sections:
-//   - "On this PR"     — current reviewers (info / dedup hint in
-//                        add mode; the source list in remove mode)
-//   - "Common reviewers" — recently-used reviewers from per-host
-//                          config history (add mode, empty query only)
-//   - "Search results" — live SearchUsers results / filtered remove list
-//   - "Picked"         — what will be sent on submit
-//
-// Add mode pulls candidates from svc.SearchUsers (Bitbucket Server
-// reviewer directory). Remove mode operates entirely on the PR's
-// existing reviewer list — no API roundtrip needed.
+//   - enter / tab        → toggle the highlighted row's pick state
+//                          (add-or-remove depending on whether the
+//                          user is already on the PR), clear input,
+//                          stay in the modal so the user can pick
+//                          another.
+//   - ctrl+s / ctrl+enter → submit (call AddReviewers and/or
+//                           RemoveReviewers as appropriate).
+//                           Note: ctrl+enter only reaches the
+//                           terminal in iTerm2/Alacritty/Kitty/tmux;
+//                           macOS Terminal.app collapses it onto
+//                           plain Enter so ctrl+s is the universal
+//                           fallback.
+//   - esc / ctrl+c        → cancel.
+//   - ctrl+u              → clear input.
 //
 // On Bitbucket Cloud SearchUsers is a stub returning (nil, nil); the
-// flow falls back to the legacy free-text editor in startAddReviewer.
+// flow falls back to the legacy free-text editor in the empty-results
+// branch of startManageReviewers.
 package pr
 
 import (
@@ -49,52 +55,48 @@ import (
 // hot-search debounce so the rhythm feels consistent across screens.
 const reviewerSearchDebounce = 200 * time.Millisecond
 
-// reviewerSearchState holds everything the reviewer-search overlay
-// needs: the input, the current result set, the user's picks, and a
-// search-version counter so stale debounced ticks can be discarded
-// when newer keystrokes have superseded them.
+// reviewerSearchState holds the manage-reviewers overlay's state:
+// the input, the current candidate list (existing reviewers + recents
+// + directory matches), and the user's pending add/remove picks.
 type reviewerSearchState struct {
-	prID   int
-	remove bool
+	prID int
 
 	input   textinput.Model
 	loading bool
 	err     error
 
-	// results is the current candidate list shown below the input.
-	// In add mode it's whatever SearchUsers returned for the latest
-	// query; in remove mode it's the PR's reviewers filtered by
-	// the input substring.
+	// results is the unified candidate list shown below the input.
+	// Always includes existing reviewers (so they can be picked for
+	// removal), the per-host recents (★ marker), and the latest
+	// directory search results — deduped by username.
 	results []api.User
 	cursor  int
 
-	// picked is the ordered list of users the user has chosen so
-	// far. Slice (not map) so the pane can render them in the
-	// order they were added.
-	picked []api.User
+	// pickedAdd / pickedRemove are the operations the user has
+	// queued. Submit fires both lists in one go. Slices (not maps)
+	// so the toast can render them in pick order.
+	pickedAdd    []api.User
+	pickedRemove []api.User
 
 	// searchVersion increments on every keystroke so stale debounced
 	// ticks return early and don't overwrite fresher results.
 	searchVersion int
 
-	// existing is the lower-cased usernames already on the PR. In
-	// add mode they're filtered out of the candidate list; in
-	// remove mode it doubles as the source list.
+	// existing is the lower-cased usernames currently on the PR.
+	// Used to decide whether a pick is an "add" or a "remove" and
+	// to render the [on PR] tag on the row.
 	existing map[string]struct{}
 
-	// existingDisplay is the original PR reviewer list, kept around
-	// so the "On this PR" pane can show display names.
+	// existingDisplay is the original PR reviewer list, kept so the
+	// results pane can show the existing reviewers with their
+	// display name + status badge.
 	existingDisplay []api.Reviewer
 
-	// allReviewers (remove mode only) is the static list we filter
-	// client-side as the user types.
-	allReviewers []api.Reviewer
-
 	// recents is the per-host common-reviewers list from config,
-	// merged into the top of the results list when the input is
-	// empty so the user can pick a frequent collaborator with a
-	// single Enter. recentSet is the lower-cased username set
-	// used to render a ★ marker against those rows.
+	// merged into the top of the results list (after existing
+	// reviewers) when the input is empty so the user can pick a
+	// frequent collaborator with a single Enter. recentSet is the
+	// lower-cased username set used to render a ★ marker.
 	recents   []config.RecentReviewer
 	recentSet map[string]struct{}
 }
@@ -118,11 +120,16 @@ type reviewerSearchResultsMsg struct {
 	err     error
 }
 
-// startAddReviewer enters the reviewer-search overlay for adding new
-// reviewers. Pre-populates with whatever SearchUsers returns for an
-// empty query (Server: alphabetical first 50). Falls back to the
-// legacy free-text editor on Cloud, where SearchUsers is unimplemented.
-func (m *model) startAddReviewer(prID int) tea.Cmd {
+// startManageReviewers opens the manage-reviewers overlay for the
+// given PR. The candidate list is seeded with existing reviewers
+// (always shown) plus the SearchUsers empty-query response, with
+// per-host recents pinned at the top. Falls back to the legacy
+// free-text editor when SearchUsers is unimplemented (Cloud).
+//
+// returnTo is the view mode the user came from — the modal's
+// backdrop renders that view so the popover feels stacked rather
+// than replacing the screen.
+func (m *model) startManageReviewers(prID int, reviewers []api.Reviewer, returnTo viewMode) tea.Cmd {
 	users, err := m.svc.SearchUsers("", 50)
 	if err != nil {
 		m.status = "user search failed (" + err.Error() + ") — falling back to free text"
@@ -131,9 +138,9 @@ func (m *model) startAddReviewer(prID int) tea.Cmd {
 			"# Enter one or more usernames (Server) or UUIDs/emails\n"+
 				"# (Cloud), separated by space or comma.\n")
 	}
-	if len(users) == 0 {
-		// Cloud's SearchUsers stub returns (nil, nil); use the
-		// legacy editor flow so the action still works.
+	if len(users) == 0 && len(reviewers) == 0 {
+		// Cloud's SearchUsers stub returns (nil, nil) and there's
+		// nothing to remove — fall back to the legacy editor.
 		return editInTUI("add-reviewer",
 			fmt.Sprintf("pr-%d-add-reviewer", prID), prID, 0,
 			"# Enter one or more usernames (Server) or UUIDs/emails\n"+
@@ -141,20 +148,9 @@ func (m *model) startAddReviewer(prID int) tea.Cmd {
 	}
 
 	existing := map[string]struct{}{}
-	var existingDisplay []api.Reviewer
-	if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.ID == prID {
-		existingDisplay = it.pr.Reviewers
-		for _, r := range it.pr.Reviewers {
-			existing[strings.ToLower(r.Username)] = struct{}{}
-		}
+	for _, r := range reviewers {
+		existing[strings.ToLower(r.Username)] = struct{}{}
 	}
-	users = filterOutExisting(users, existing)
-
-	ti := textinput.New()
-	ti.Placeholder = "type a name, username or email…"
-	ti.Prompt = theme.SearchPrompt()
-	ti.CharLimit = 80
-	ti.Focus()
 
 	recents := filterRecentsAgainstExisting(config.RecentReviewers(m.svc.Host()), existing)
 	recentSet := map[string]struct{}{}
@@ -162,80 +158,64 @@ func (m *model) startAddReviewer(prID int) tea.Cmd {
 		recentSet[strings.ToLower(r.Username)] = struct{}{}
 	}
 
-	m.reviewerSearch = &reviewerSearchState{
-		prID:            prID,
-		remove:          false,
-		input:           ti,
-		cursor:          0,
-		picked:          nil,
-		existing:        existing,
-		existingDisplay: existingDisplay,
-		recents:         recents,
-		recentSet:       recentSet,
-	}
-	m.reviewerSearch.results = mergeRecentsWithUsers(recents, users)
-	m.mode = viewReviewerSearch
-	return textinput.Blink
-}
-
-// startRemoveReviewer enters the reviewer-search overlay for removing
-// existing reviewers. Operates on the PR's own reviewer list — no API
-// roundtrip needed — and filters that list client-side as the user
-// types.
-func (m *model) startRemoveReviewer(prID int, reviewers []api.Reviewer) tea.Cmd {
-	if len(reviewers) == 0 {
-		m.status = "no reviewers to remove"
-		return nil
-	}
-
 	ti := textinput.New()
-	ti.Placeholder = "filter current reviewers…"
+	ti.Placeholder = "type a name, username or email…"
 	ti.Prompt = theme.SearchPrompt()
 	ti.CharLimit = 80
 	ti.Focus()
 
 	m.reviewerSearch = &reviewerSearchState{
 		prID:            prID,
-		remove:          true,
 		input:           ti,
 		cursor:          0,
-		picked:          nil,
-		allReviewers:    reviewers,
+		existing:        existing,
 		existingDisplay: reviewers,
+		recents:         recents,
+		recentSet:       recentSet,
 	}
-	m.reviewerSearch.results = reviewersToUsers(reviewers)
+	m.reviewerSearch.results = buildManageResults(reviewers, recents, users)
+	m.reviewerSearchReturnTo = returnTo
 	m.mode = viewReviewerSearch
 	return textinput.Blink
 }
 
-// reviewersToUsers converts the unified Reviewer slice into User shape
-// so the rendering code can treat add/remove modes uniformly.
-func reviewersToUsers(rs []api.Reviewer) []api.User {
-	out := make([]api.User, 0, len(rs))
-	for _, r := range rs {
-		out = append(out, api.User{
-			Username:    r.Username,
-			DisplayName: r.DisplayName,
-		})
-	}
-	return out
-}
-
-// filterOutExisting drops users whose username matches a key in the
-// existing-reviewer set (case-insensitive). Used in add mode so the
-// user can't accidentally re-add someone already on the PR.
-func filterOutExisting(users []api.User, existing map[string]struct{}) []api.User {
-	out := make([]api.User, 0, len(users))
-	for _, u := range users {
-		if _, dup := existing[strings.ToLower(u.Username)]; dup {
+// buildManageResults assembles the unified candidate list shown in
+// the modal: existing reviewers first (so the user always sees
+// who's on the PR), then recents (deduped against existing), then
+// directory-search results (deduped against existing + recents).
+func buildManageResults(existing []api.Reviewer, recents []config.RecentReviewer, dir []api.User) []api.User {
+	out := make([]api.User, 0, len(existing)+len(recents)+len(dir))
+	seen := map[string]struct{}{}
+	for _, r := range existing {
+		key := strings.ToLower(r.Username)
+		if _, dup := seen[key]; dup {
 			continue
 		}
+		seen[key] = struct{}{}
+		out = append(out, api.User{Username: r.Username, DisplayName: r.DisplayName})
+	}
+	for _, r := range recents {
+		key := strings.ToLower(r.Username)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, api.User{Username: r.Username, DisplayName: r.DisplayName, Email: r.Email})
+	}
+	for _, u := range dir {
+		key := strings.ToLower(u.Username)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, u)
 	}
 	return out
 }
 
-// filterRecentsAgainstExisting hides recents that are already on the PR.
+// filterRecentsAgainstExisting hides recents that are already on
+// the PR — the existing reviewers are already pinned at the top of
+// the results list, so listing them twice would just be noise.
 func filterRecentsAgainstExisting(recents []config.RecentReviewer, existing map[string]struct{}) []config.RecentReviewer {
 	if len(recents) == 0 {
 		return nil
@@ -246,40 +226,6 @@ func filterRecentsAgainstExisting(recents []config.RecentReviewer, existing map[
 			continue
 		}
 		out = append(out, r)
-	}
-	return out
-}
-
-// mergeRecentsWithUsers prepends recents (as User shape) to a
-// directory-search result slice, deduping by lower-cased username so
-// a recent reviewer who also appears in the API response only shows
-// once. Used to make the "common reviewers" list pickable via the
-// same cursor that navigates search results.
-func mergeRecentsWithUsers(recents []config.RecentReviewer, users []api.User) []api.User {
-	if len(recents) == 0 {
-		return users
-	}
-	out := make([]api.User, 0, len(recents)+len(users))
-	seen := map[string]struct{}{}
-	for _, r := range recents {
-		key := strings.ToLower(r.Username)
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, api.User{
-			Username:    r.Username,
-			DisplayName: r.DisplayName,
-			Email:       r.Email,
-		})
-	}
-	for _, u := range users {
-		key := strings.ToLower(u.Username)
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, u)
 	}
 	return out
 }
@@ -310,26 +256,6 @@ func (m *model) runReviewerSearchNow(version int, query string) tea.Cmd {
 	}
 }
 
-// applyReviewerFilter is the remove-mode equivalent of a SearchUsers
-// call: it filters the static reviewer list by the current input
-// substring (case-insensitive against display name and username).
-func (s *reviewerSearchState) applyReviewerFilter() {
-	q := strings.ToLower(strings.TrimSpace(s.input.Value()))
-	if q == "" {
-		s.results = reviewersToUsers(s.allReviewers)
-	} else {
-		out := make([]api.User, 0, len(s.allReviewers))
-		for _, r := range s.allReviewers {
-			if strings.Contains(strings.ToLower(r.Username), q) ||
-				strings.Contains(strings.ToLower(r.DisplayName), q) {
-				out = append(out, api.User{Username: r.Username, DisplayName: r.DisplayName})
-			}
-		}
-		s.results = out
-	}
-	s.clampCursor()
-}
-
 // clampCursor keeps the cursor within the visible result range.
 func (s *reviewerSearchState) clampCursor() {
 	if s.cursor >= len(s.results) {
@@ -340,36 +266,44 @@ func (s *reviewerSearchState) clampCursor() {
 	}
 }
 
-// pickByUsername adds a user to the picked list, deduping on username.
-func (s *reviewerSearchState) pickByUsername(u api.User) {
-	for _, p := range s.picked {
-		if p.Username == u.Username {
-			return
-		}
-	}
-	s.picked = append(s.picked, u)
-}
-
-// pickFromCursor adds the user under the cursor to the picked list,
-// then clears the input so the user can search for another. Returns
-// true if a pick was made (false when the result list is empty).
-func (s *reviewerSearchState) pickFromCursor() bool {
+// togglePickFromCursor flips the pick state of the row under the
+// cursor. If the user is already on the PR, the pick goes into
+// pickedRemove; otherwise into pickedAdd. Toggling re-clicks the
+// same row (de-selects). Returns true if the toggle landed on a
+// real row.
+func (s *reviewerSearchState) togglePickFromCursor() bool {
 	if s.cursor < 0 || s.cursor >= len(s.results) {
 		return false
 	}
 	u := s.results[s.cursor]
-	s.pickByUsername(u)
-	s.input.SetValue("")
-	s.cursor = 0
-	// In remove mode the candidate list is the static reviewer list,
-	// so we just re-filter against the (now empty) input. Add mode's
-	// candidate list will be replaced by the next debounced tick or
-	// by the empty-query results that were preloaded; do nothing
-	// here so the user can keep scrolling the previous results.
-	if s.remove {
-		s.applyReviewerFilter()
+	key := strings.ToLower(u.Username)
+	if _, onPR := s.existing[key]; onPR {
+		// Remove operation — toggle in pickedRemove.
+		if removeUserFromSlice(&s.pickedRemove, u.Username) {
+			return true
+		}
+		s.pickedRemove = append(s.pickedRemove, u)
+		return true
 	}
+	// Add operation — toggle in pickedAdd.
+	if removeUserFromSlice(&s.pickedAdd, u.Username) {
+		return true
+	}
+	s.pickedAdd = append(s.pickedAdd, u)
 	return true
+}
+
+// removeUserFromSlice removes the entry whose Username matches the
+// given username (case-sensitive — usernames are returned exactly
+// from the API). Returns true if a removal happened.
+func removeUserFromSlice(s *[]api.User, username string) bool {
+	for i, u := range *s {
+		if u.Username == username {
+			*s = append((*s)[:i], (*s)[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // handleReviewerSearchKey owns every keystroke while the overlay is
@@ -382,7 +316,7 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.reviewerSearch = nil
-		m.mode = viewDetail
+		m.mode = m.reviewerSearchReturnTo
 		m.status = "reviewer change cancelled"
 		return m, nil
 
@@ -399,31 +333,29 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter", "tab":
-		// "Pick the highlighted user and stay open" — clears the
-		// input so the user can immediately search for another.
-		// Submitting (the API call) is on ctrl+s / ctrl+enter.
-		if !s.pickFromCursor() {
+		// Toggle the highlighted user's pick state. Whether that's
+		// an add or a remove is decided by whether the user is
+		// already on the PR (see togglePickFromCursor). After a
+		// pick we clear the input so the user can search for the
+		// next person without reaching for backspace.
+		if !s.togglePickFromCursor() {
 			m.status = "no candidates to pick"
+			return m, nil
 		}
-		// In add mode: refresh candidates for the now-empty query so
-		// the list keeps looking lively (the empty-query response
-		// was loaded at startup and may be stale after picks).
-		if !s.remove {
-			s.loading = true
-			return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
-		}
-		return m, nil
+		s.input.SetValue("")
+		s.cursor = 0
+		// Refresh the empty-query result set so the visible list
+		// looks lively after a pick.
+		s.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
 
 	case "ctrl+s", "ctrl+enter":
-		// Submit: call AddReviewers / RemoveReviewers with the
-		// picked set. ctrl+enter is what most terminals send for
-		// shift+enter / cmd+enter so we accept both — and ctrl+s
-		// is a universal fallback (the inline editor uses it too).
-		if len(s.picked) == 0 {
-			// Fall back to "submit the cursor row" for the
-			// single-pick case so users who never tapped enter
-			// can still get out in one keystroke.
-			if !s.pickFromCursor() {
+		// Submit: fire AddReviewers / RemoveReviewers as needed.
+		// If nothing has been queued, treat the cursor row as a
+		// shortcut single-pick so the user can get out in one
+		// keystroke.
+		if len(s.pickedAdd) == 0 && len(s.pickedRemove) == 0 {
+			if !s.togglePickFromCursor() {
 				m.status = "no reviewers picked"
 				return m, nil
 			}
@@ -432,6 +364,8 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+u":
 		s.input.SetValue("")
+		s.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.scheduleReviewerSearch())
 	}
 
 	// Forward everything else (printable chars, backspace, etc) to
@@ -441,54 +375,46 @@ func (m model) handleReviewerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	s.input, cmd = s.input.Update(msg)
 	if s.input.Value() != prev {
-		if s.remove {
-			s.applyReviewerFilter()
-			return m, cmd
-		}
-		// Add mode: kick off a debounced API call.
 		s.loading = true
 		return m, tea.Batch(cmd, m.spinner.Tick, m.scheduleReviewerSearch())
 	}
 	return m, cmd
 }
 
-// submitReviewerPicks fires AddReviewers / RemoveReviewers with the
-// current picked set, persists each added reviewer to the per-host
+// submitReviewerPicks fires AddReviewers and/or RemoveReviewers with
+// the queued picks, persists each added reviewer to the per-host
 // recents list, and closes the overlay.
 func (m model) submitReviewerPicks() (tea.Model, tea.Cmd) {
 	s := m.reviewerSearch
-	if s == nil || len(s.picked) == 0 {
+	if s == nil || (len(s.pickedAdd) == 0 && len(s.pickedRemove) == 0) {
 		return m, nil
 	}
-	usernames := make([]string, 0, len(s.picked))
-	labels := make([]string, 0, len(s.picked))
-	for _, u := range s.picked {
-		usernames = append(usernames, u.Username)
-		labels = append(labels, formatUserLabel(u))
-	}
+	addUsers := pluckUsernames(s.pickedAdd)
+	addLabels := pluckLabels(s.pickedAdd)
+	removeUsers := pluckUsernames(s.pickedRemove)
+	removeLabels := pluckLabels(s.pickedRemove)
 	prID := s.prID
-	remove := s.remove
 	host := m.svc.Host()
-	picked := s.picked
+	picked := append([]api.User(nil), s.pickedAdd...)
+
 	m.reviewerSearch = nil
-	m.mode = viewDetail
+	m.mode = m.reviewerSearchReturnTo
 	m.loading = true
-	if remove {
-		return m, tea.Batch(m.spinner.Tick, m.doAction(
-			fmt.Sprintf("removed reviewer(s) %s", strings.Join(labels, ", ")), true, func() error {
-				return m.svc.RemoveReviewers(m.project, m.slug, prID, usernames)
-			}))
-	}
-	return m, tea.Batch(m.spinner.Tick, m.doAction(
-		fmt.Sprintf("added reviewer(s) %s", strings.Join(labels, ", ")), true, func() error {
-			if err := m.svc.AddReviewers(m.project, m.slug, prID, usernames); err != nil {
-				return err
+
+	label := buildSubmitLabel(addLabels, removeLabels)
+	return m, tea.Batch(m.spinner.Tick, m.doAction(label, true, func() error {
+		if len(removeUsers) > 0 {
+			if err := m.svc.RemoveReviewers(m.project, m.slug, prID, removeUsers); err != nil {
+				return fmt.Errorf("remove: %w", err)
+			}
+		}
+		if len(addUsers) > 0 {
+			if err := m.svc.AddReviewers(m.project, m.slug, prID, addUsers); err != nil {
+				return fmt.Errorf("add: %w", err)
 			}
 			// Persist each successfully-added reviewer to the
 			// per-host recents list so the next overlay can offer
-			// them as quick picks. Best-effort — the reviewers are
-			// already on the PR, so a save failure shouldn't fail
-			// the action.
+			// them as quick picks. Best-effort.
 			for _, u := range picked {
 				_ = config.AddRecentReviewer(host, config.RecentReviewer{
 					Username:    u.Username,
@@ -496,8 +422,41 @@ func (m model) submitReviewerPicks() (tea.Model, tea.Cmd) {
 					Email:       u.Email,
 				})
 			}
-			return nil
-		}))
+		}
+		return nil
+	}))
+}
+
+// pluckUsernames extracts the Username field from each user.
+func pluckUsernames(us []api.User) []string {
+	out := make([]string, 0, len(us))
+	for _, u := range us {
+		out = append(out, u.Username)
+	}
+	return out
+}
+
+// pluckLabels formats each user as a human-readable label for the toast.
+func pluckLabels(us []api.User) []string {
+	out := make([]string, 0, len(us))
+	for _, u := range us {
+		out = append(out, formatUserLabel(u))
+	}
+	return out
+}
+
+// buildSubmitLabel produces the action toast: "added X, Y · removed Z".
+func buildSubmitLabel(adds, removes []string) string {
+	switch {
+	case len(adds) > 0 && len(removes) > 0:
+		return fmt.Sprintf("added %s · removed %s",
+			strings.Join(adds, ", "), strings.Join(removes, ", "))
+	case len(adds) > 0:
+		return fmt.Sprintf("added reviewer(s) %s", strings.Join(adds, ", "))
+	case len(removes) > 0:
+		return fmt.Sprintf("removed reviewer(s) %s", strings.Join(removes, ", "))
+	}
+	return "no reviewers changed"
 }
 
 // formatUserLabel produces "Display Name (username) <email>" — used
@@ -520,8 +479,9 @@ func formatUserLabel(u api.User) string {
 	return strings.Join(parts, " ")
 }
 
-// renderReviewerSearch draws the centred overlay: a bordered box with
-// the input on top and the various reviewer panes below.
+// renderReviewerSearch draws the centred overlay card. The caller is
+// responsible for compositing this onto the underlying view via
+// placeOverlay so the modal feels stacked.
 func (m model) renderReviewerSearch() string {
 	s := m.reviewerSearch
 	if s == nil {
@@ -530,12 +490,7 @@ func (m model) renderReviewerSearch() string {
 	width := editorBoxInnerWidth(m.width) + 2
 	innerW := width - 2
 
-	title := "ADD REVIEWER"
-	if s.remove {
-		title = "REMOVE REVIEWER"
-	}
-
-	header := theme.TitleBadge.Render(" "+title+" ") + "  " +
+	header := theme.TitleBadge.Render(" MANAGE REVIEWERS ") + "  " +
 		theme.TitleChipDim.Render("enter pick · ctrl+s submit · esc cancel · ctrl+u clear")
 
 	sectionHeader := func(label string) string {
@@ -543,27 +498,6 @@ func (m model) renderReviewerSearch() string {
 	}
 
 	parts := []string{header, ""}
-
-	// "On this PR" pane: lists the existing reviewers so the user
-	// can see who's already there before picking. In remove mode
-	// this is also the source list, but the search results pane
-	// repeats them filtered — keep the section to anchor the modal.
-	if len(s.existingDisplay) > 0 {
-		parts = append(parts, sectionHeader("On this PR"))
-		for _, r := range s.existingDisplay {
-			line := "  " + r.DisplayName
-			if r.DisplayName == "" {
-				line = "  " + r.Username
-			} else if r.Username != r.DisplayName {
-				line += "  (" + r.Username + ")"
-			}
-			if r.Status != "" {
-				line += "  " + theme.TitleChipDim.Render("["+strings.ToLower(r.Status)+"]")
-			}
-			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(line))
-		}
-		parts = append(parts, "")
-	}
 
 	// Search input + status line.
 	parts = append(parts, s.input.View())
@@ -576,20 +510,14 @@ func (m model) renderReviewerSearch() string {
 	}
 	parts = append(parts, "")
 
-	// Results pane: live SearchUsers results in add mode (with the
-	// per-host "common reviewers" pinned at the top — marked with
-	// ★), client-side-filtered reviewer list in remove mode.
-	resultsLabel := "Search results"
-	if s.remove {
-		resultsLabel = "Reviewers on PR"
-	} else if strings.TrimSpace(s.input.Value()) == "" && len(s.recents) > 0 {
-		resultsLabel = "Common reviewers + directory"
-	}
-	parts = append(parts, sectionHeader(resultsLabel))
+	// Results pane: existing reviewers, recents (★) and directory
+	// matches all in one cursor-navigable list. The marker column
+	// communicates each row's pick state at a glance.
+	parts = append(parts, sectionHeader("Reviewers"))
 	if len(s.results) == 0 {
 		parts = append(parts, theme.TitleChipDim.Render("  (no matches)"))
 	} else {
-		maxRows := 10
+		maxRows := 12
 		if maxRows > len(s.results) {
 			maxRows = len(s.results)
 		}
@@ -604,23 +532,7 @@ func (m model) renderReviewerSearch() string {
 			end = len(s.results)
 		}
 		for i := start; i < end; i++ {
-			u := s.results[i]
-			marker := "  "
-			if pickedHas(s.picked, u.Username) {
-				marker = "✓ "
-			} else if _, recent := s.recentSet[strings.ToLower(u.Username)]; recent {
-				marker = "★ "
-			}
-			line := marker + formatUserLabel(u)
-			if i == s.cursor {
-				line = lipgloss.NewStyle().
-					Background(lipgloss.Color("57")).
-					Foreground(lipgloss.Color("231")).
-					Bold(true).
-					Width(innerW - 4).
-					Render(line)
-			}
-			parts = append(parts, line)
+			parts = append(parts, s.renderResultRow(i, innerW))
 		}
 		if len(s.results) > maxRows {
 			parts = append(parts, theme.TitleChipDim.Render(
@@ -628,16 +540,16 @@ func (m model) renderReviewerSearch() string {
 		}
 	}
 
-	// Picked pane: what gets sent on submit.
-	if len(s.picked) > 0 {
-		parts = append(parts, "")
-		pickLabel := "Picked to add"
-		if s.remove {
-			pickLabel = "Picked to remove"
+	// Picks pane: a running summary of what submit will do.
+	if len(s.pickedAdd) > 0 || len(s.pickedRemove) > 0 {
+		parts = append(parts, "", sectionHeader("Will submit"))
+		for _, u := range s.pickedAdd {
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("10")).
+				Render("  + "+formatUserLabel(u)))
 		}
-		parts = append(parts, sectionHeader(pickLabel))
-		for _, u := range s.picked {
-			parts = append(parts, "  ✓ "+formatUserLabel(u))
+		for _, u := range s.pickedRemove {
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
+				Render("  − "+formatUserLabel(u)))
 		}
 	}
 
@@ -649,16 +561,63 @@ func (m model) renderReviewerSearch() string {
 		Padding(1, 2).
 		Width(width)
 
-	return lipgloss.Place(m.width, m.height-2,
-		lipgloss.Center, lipgloss.Center,
-		box.Render(body),
-	)
+	return box.Render(body)
 }
 
-// pickedHas reports whether username is in the picked slice.
-func pickedHas(picked []api.User, username string) bool {
-	for _, p := range picked {
-		if p.Username == username {
+// renderResultRow formats one row in the results list. The marker
+// column is "+", "−", "✓" (existing), "★" (recent), or blank, with
+// the cursor row highlighted.
+func (s *reviewerSearchState) renderResultRow(i, innerW int) string {
+	u := s.results[i]
+	key := strings.ToLower(u.Username)
+
+	_, onPR := s.existing[key]
+	_, recent := s.recentSet[key]
+	pickedToAdd := userInSlice(s.pickedAdd, u.Username)
+	pickedToRemove := userInSlice(s.pickedRemove, u.Username)
+
+	marker := "  "
+	switch {
+	case pickedToAdd:
+		marker = "+ "
+	case pickedToRemove:
+		marker = "− "
+	case onPR:
+		marker = "✓ "
+	case recent:
+		marker = "★ "
+	}
+
+	tag := ""
+	switch {
+	case pickedToAdd:
+		tag = "  " + theme.TitleChipDim.Render("[queued: add]")
+	case pickedToRemove:
+		tag = "  " + theme.TitleChipDim.Render("[queued: remove]")
+	case onPR:
+		tag = "  " + theme.TitleChipDim.Render("[on PR]")
+	case recent:
+		tag = "  " + theme.TitleChipDim.Render("[recent]")
+	}
+
+	line := marker + formatUserLabel(u) + tag
+	if i == s.cursor {
+		// Keep the highlight a fixed width so the row reads as a
+		// solid bar rather than a ragged stripe.
+		line = lipgloss.NewStyle().
+			Background(lipgloss.Color("57")).
+			Foreground(lipgloss.Color("231")).
+			Bold(true).
+			Width(innerW - 4).
+			Render(line)
+	}
+	return line
+}
+
+// userInSlice reports whether a username is in a slice of users.
+func userInSlice(xs []api.User, username string) bool {
+	for _, x := range xs {
+		if x.Username == username {
 			return true
 		}
 	}

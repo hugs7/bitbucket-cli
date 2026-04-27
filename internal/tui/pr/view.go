@@ -83,17 +83,16 @@ func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR, hasSelect
 	// Keys that only make sense when there's a PR selected. Stripped
 	// wholesale when hasSelection is false.
 	prActionKeys := map[string]bool{
-		k.Approve.Help().Key:        true,
-		k.Unapprove.Help().Key:      true,
-		k.NeedsWork.Help().Key:      true,
-		k.Merge.Help().Key:          true,
-		k.EditDesc.Help().Key:       true,
-		k.Comments.Help().Key:       true,
-		k.Diff.Help().Key:           true,
-		k.Open.Help().Key:           true,
-		k.DeclinePR.Help().Key:      true,
-		k.AddReviewer.Help().Key:    true,
-		k.RemoveReviewer.Help().Key: true,
+		k.Approve.Help().Key:         true,
+		k.Unapprove.Help().Key:       true,
+		k.NeedsWork.Help().Key:       true,
+		k.Merge.Help().Key:           true,
+		k.EditDesc.Help().Key:        true,
+		k.Comments.Help().Key:        true,
+		k.Diff.Help().Key:            true,
+		k.Open.Help().Key:            true,
+		k.DeclinePR.Help().Key:       true,
+		k.ManageReviewers.Help().Key: true,
 	}
 
 	allow := func(b key.Binding) bool {
@@ -257,10 +256,12 @@ func (m model) renderForMode(mode viewMode) string {
 		// to breathe. The status line still rides along below.
 		body = m.editor.view(m.width, m.height-2, m.editor.label())
 	case viewReviewerSearch:
-		// Reviewer-search overlay: a centred bordered card with
-		// search input + live-filtered results. Same centred-modal
-		// treatment as the inline editor.
-		body = m.renderReviewerSearch()
+		// Manage-reviewers overlay: a centred bordered card layered
+		// on top of the underlying view (PR list / detail) so the
+		// modal feels stacked rather than replacing the screen.
+		bg := m.renderForMode(m.reviewerSearchReturnTo)
+		card := m.renderReviewerSearch()
+		body = placeOverlay(bg, card, -1)
 	default:
 		header := titleBar(fmt.Sprintf("PULL REQUESTS · %s/%s", m.project, m.slug),
 			theme.TitleChip.Render(strings.ToUpper(m.state)),

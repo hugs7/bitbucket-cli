@@ -185,9 +185,12 @@ type model struct {
 	settings         list.Model
 	settingsReturnTo viewMode
 
-	// reviewerSearch holds the in-process Add/Remove-Reviewer
-	// overlay state when m.mode == viewReviewerSearch. nil otherwise.
-	reviewerSearch *reviewerSearchState
+	// reviewerSearch holds the in-process manage-reviewers overlay
+	// state when m.mode == viewReviewerSearch. nil otherwise.
+	// reviewerSearchReturnTo is the mode we came from so the
+	// underlying view can be re-rendered as the modal's backdrop.
+	reviewerSearch         *reviewerSearchState
+	reviewerSearchReturnTo viewMode
 }
 
 // diffFile is one entry in the file-tree side panel.
@@ -853,14 +856,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reviewerSearch.err = nil
-		filtered := filterOutExisting(msg.users, m.reviewerSearch.existing)
-		// Empty query → keep recents pinned at the top so the user
-		// can pick a frequent collaborator with one tap. Non-empty
-		// queries replace results entirely so search feels precise.
+		// Empty query → rebuild the unified list (existing + recents
+		// + directory) so the user keeps seeing who's on the PR and
+		// the ★ recents row when they clear the input. Non-empty
+		// queries replace results with just the directory matches so
+		// search feels precise.
 		if strings.TrimSpace(msg.query) == "" {
-			m.reviewerSearch.results = mergeRecentsWithUsers(m.reviewerSearch.recents, filtered)
+			m.reviewerSearch.results = buildManageResults(
+				m.reviewerSearch.existingDisplay,
+				m.reviewerSearch.recents,
+				msg.users,
+			)
 		} else {
-			m.reviewerSearch.results = filtered
+			m.reviewerSearch.results = msg.users
 		}
 		m.reviewerSearch.clampCursor()
 		return m, nil
@@ -1638,10 +1646,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingDeclinePRID = id
 					m.mode = viewConfirmDecline
 					return m, nil
-				case key.Matches(msg, m.keys.AddReviewer):
-					return m, m.startAddReviewer(id)
-				case key.Matches(msg, m.keys.RemoveReviewer):
-					return m, m.startRemoveReviewer(id, it.pr.Reviewers)
+				case key.Matches(msg, m.keys.ManageReviewers):
+					return m, m.startManageReviewers(id, it.pr.Reviewers, viewDetail)
 				}
 			}
 			var cmd tea.Cmd
@@ -1902,13 +1908,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = viewConfirmDecline
 				return m, nil
 			}
-		case key.Matches(msg, m.keys.AddReviewer):
+		case key.Matches(msg, m.keys.ManageReviewers):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				return m, m.startAddReviewer(it.pr.ID)
-			}
-		case key.Matches(msg, m.keys.RemoveReviewer):
-			if it, ok := m.list.SelectedItem().(prItem); ok {
-				return m, m.startRemoveReviewer(it.pr.ID, it.pr.Reviewers)
+				return m, m.startManageReviewers(it.pr.ID, it.pr.Reviewers, viewList)
 			}
 		}
 	}
