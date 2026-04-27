@@ -38,15 +38,15 @@ scoop bucket add hugs7 https://github.com/hugs7/scoop-bucket
 scoop install bb
 
 # Debian / Ubuntu — apt
-curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.deb.sh' | sudo -E bash
+curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bitbucket-cli/setup.deb.sh' | sudo -E bash
 sudo apt install bitbucket-cli
 
 # Fedora / RHEL — dnf
-curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.rpm.sh' | sudo -E bash
+curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bitbucket-cli/setup.rpm.sh' | sudo -E bash
 sudo dnf install bitbucket-cli
 
 # Alpine — apk
-curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.alpine.sh' | sudo -E bash
+curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bitbucket-cli/setup.alpine.sh' | sudo -E bash
 sudo apk add bitbucket-cli
 ```
 

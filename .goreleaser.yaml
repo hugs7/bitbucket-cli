@@ -93,9 +93,9 @@ publishers:
     # .Format / .Ext for all artifact types.
     cmd: |
       sh -c 'case "{{ .ArtifactPath }}" in
-        *.deb) exec cloudsmith push deb hugs7/bb/any-distro/any-version "{{ .ArtifactPath }}" ;;
-        *.rpm) exec cloudsmith push rpm hugs7/bb/any-distro/any-version "{{ .ArtifactPath }}" ;;
-        *.apk) exec cloudsmith push alpine hugs7/bb/alpine/any-version "{{ .ArtifactPath }}" ;;
+        *.deb) exec cloudsmith push deb hugs7/bitbucket-cli/any-distro/any-version "{{ .ArtifactPath }}" ;;
+        *.rpm) exec cloudsmith push rpm hugs7/bitbucket-cli/any-distro/any-version "{{ .ArtifactPath }}" ;;
+        *.apk) exec cloudsmith push alpine hugs7/bitbucket-cli/alpine/any-version "{{ .ArtifactPath }}" ;;
         *)     echo "cloudsmith: skipping {{ .ArtifactPath }}"; exit 0 ;;
       esac'
     env:
