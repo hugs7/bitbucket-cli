@@ -30,6 +30,11 @@ type Service interface {
 	CreatePR(project, slug string, in CreatePRInput) (*PullRequest, error)
 	MergePR(project, slug string, id int) error
 	DeclinePR(project, slug string, id int) error
+
+	// DeleteBranch removes a branch from the remote repo. Used after
+	// MergePR to clean up the source branch when the user opted into
+	// "delete branch on merge".
+	DeleteBranch(project, slug, branch string) error
 	PRDiff(project, slug string, id int) (string, error)
 
 	UpdatePRDescription(project, slug string, id int, description string) error

@@ -76,6 +76,14 @@ func (c *Client) NewRequest(method, endpoint string, body io.Reader) (*http.Requ
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "bb-cli")
+	// Bitbucket Server / Data Center enforces XSRF on POST/PUT/DELETE
+	// for any client it thinks might be a browser (i.e. anything that
+	// accepts cookies, including HTTP-token auth in some setups). The
+	// documented opt-out is X-Atlassian-Token: no-check; without it
+	// merges, declines, reviewer updates, etc. fail with HTTP 403
+	// "X-Atlassian-Token: no-check". Cloud ignores the header so it's
+	// safe to always set.
+	req.Header.Set("X-Atlassian-Token", "no-check")
 	return req, nil
 }
 

@@ -55,6 +55,16 @@ type Config struct {
 	// editor launches the user's $EDITOR full-screen via tea.ExecProcess.
 	// Either way, F11 toggles between modes for the current edit.
 	InlineEditor bool `yaml:"inline_editor,omitempty"`
+
+	// PTYEditor enables the experimental PTY-embedded editor for
+	// diff-anchored comment edits — the user's real $EDITOR (vim,
+	// nvim, …) runs inside a pseudo-terminal rendered between diff
+	// lines. Off by default because the inline rendering is unreliable
+	// on Windows ConPTY, WSL, and some Linux terminal/editor combos
+	// (insert mode wedges, screen stays blank). When false, diff-edits
+	// fall back to the proven fullscreen $EDITOR path. Toggle via
+	// settings (,).
+	PTYEditor bool `yaml:"pty_editor,omitempty"`
 }
 
 // FavRepo is a repo entry persisted in the user's favourites list.
@@ -170,6 +180,15 @@ func SetTheme(name string) error {
 // overlay; when false, they shell out to the user's $EDITOR.
 func SetInlineEditor(on bool) error {
 	loaded.InlineEditor = on
+	return save()
+}
+
+// SetPTYEditor persists the PTY-embedded editor preference. When
+// true, diff-anchored edits spawn $EDITOR inside a pseudo-terminal
+// rendered between diff lines; when false, they fall back to the
+// fullscreen $EDITOR path. Off by default — see Config.PTYEditor.
+func SetPTYEditor(on bool) error {
+	loaded.PTYEditor = on
 	return save()
 }
 

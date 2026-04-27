@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -228,6 +229,13 @@ func (c *cloudService) MergePR(workspace, slug string, id int) error {
 
 func (c *cloudService) DeclinePR(workspace, slug string, id int) error {
 	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/decline", workspace, slug, id), nil, nil)
+}
+
+// DeleteBranch removes a branch from the remote repo via Cloud's
+// refs/branches endpoint. URL-encoded so feature/foo branches work.
+func (c *cloudService) DeleteBranch(workspace, slug, branch string) error {
+	return c.client.deleteJSON(fmt.Sprintf("repositories/%s/%s/refs/branches/%s",
+		workspace, slug, url.PathEscape(branch)))
 }
 
 func (c *cloudService) PRDiff(workspace, slug string, id int) (string, error) {

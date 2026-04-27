@@ -241,6 +241,18 @@ func (s *serverService) DeclinePR(project, slug string, id int) error {
 	return s.client.postJSON(endpoint, nil, nil)
 }
 
+// DeleteBranch removes a branch via the branch-utils REST plugin
+// (shipped with Bitbucket Server / Data Center). The endpoint sits
+// under /rest/branch-utils/ rather than the core API base, so we
+// build a full URL from HostRoot and reuse bodyJSON for the DELETE
+// + JSON-body handshake.
+func (s *serverService) DeleteBranch(project, slug, branch string) error {
+	endpoint := fmt.Sprintf("%s/rest/branch-utils/latest/projects/%s/repos/%s/branches",
+		s.client.HostRoot(), project, slug)
+	body := map[string]any{"name": branch, "dryRun": false}
+	return s.client.bodyJSON("DELETE", endpoint, body, nil)
+}
+
 func (s *serverService) PRDiff(project, slug string, id int) (string, error) {
 	endpoint := fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d.diff", project, slug, id)
 	req, err := s.client.NewRequest("GET", endpoint, nil)

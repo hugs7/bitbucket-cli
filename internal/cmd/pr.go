@@ -138,9 +138,16 @@ func newPRCreateCmd() *cobra.Command {
 				}
 			}
 
+			// Pre-load remote branches from local git so the
+			// source/target inputs autocomplete (tab-cycle) through
+			// real branch names instead of forcing the user to type
+			// them blind.
+			branches := remoteBranches()
 			form := huh.NewForm(huh.NewGroup(
-				huh.NewInput().Title("Source branch").Value(&source).Validate(nonEmpty),
-				huh.NewInput().Title("Target branch").Value(&target).Validate(nonEmpty),
+				huh.NewInput().Title("Source branch").Value(&source).
+					Suggestions(branches).Validate(nonEmpty),
+				huh.NewInput().Title("Target branch").Value(&target).
+					Suggestions(branches).Validate(nonEmpty),
 				huh.NewInput().Title("Title").Value(&title).Validate(nonEmpty),
 				huh.NewText().Title("Description (optional)").Value(&body),
 			))
@@ -206,6 +213,7 @@ func newPRCheckoutCmd() *cobra.Command {
 
 func newPRMergeCmd() *cobra.Command {
 	var repoFlag, hostFlag string
+	var deleteBranch, deleteSet bool
 	c := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Merge a pull request",
@@ -219,10 +227,26 @@ func newPRMergeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Track whether --delete-branch was passed explicitly so
+			// we only prompt interactively when the user didn't make
+			// a choice via flags. Cobra's Changed() is the signal.
+			deleteSet = cmd.Flags().Changed("delete-branch")
+			pr, err := svc.GetPR(project, slug, id)
+			if err != nil {
+				return err
+			}
 			var confirm bool
-			if err := huh.NewConfirm().
-				Title(fmt.Sprintf("Merge PR #%d?", id)).
-				Value(&confirm).Run(); err != nil {
+			fields := []huh.Field{
+				huh.NewConfirm().
+					Title(fmt.Sprintf("Merge PR #%d (%s → %s)?", id, pr.SourceRef, pr.TargetRef)).
+					Value(&confirm),
+			}
+			if !deleteSet {
+				fields = append(fields, huh.NewConfirm().
+					Title(fmt.Sprintf("Delete source branch %q after merge?", pr.SourceRef)).
+					Value(&deleteBranch))
+			}
+			if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
 				return err
 			}
 			if !confirm {
@@ -232,11 +256,19 @@ func newPRMergeCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("✓ Merged PR #%d\n", id)
+			if deleteBranch && pr.SourceRef != "" {
+				if err := svc.DeleteBranch(project, slug, pr.SourceRef); err != nil {
+					fmt.Fprintf(os.Stderr, "warn: deleted PR but failed to remove branch %q: %v\n", pr.SourceRef, err)
+				} else {
+					fmt.Printf("✓ Deleted branch %s\n", pr.SourceRef)
+				}
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	c.Flags().BoolVar(&deleteBranch, "delete-branch", false, "delete the source branch after a successful merge")
 	return c
 }
 
@@ -829,4 +861,53 @@ func bytesTrim(b []byte) []byte {
 		b = b[:len(b)-1]
 	}
 	return b
+}
+
+// remoteBranches returns the names of branches known to the local git
+// repo: local heads (e.g. "feature/foo") plus remote-tracking branches
+// with the remote prefix stripped (e.g. "origin/main" → "main"). Used
+// to feed huh's input autocomplete when creating a PR. Returns nil
+// silently if git isn't available or we're not inside a repo — the
+// input then degrades to plain text entry.
+func remoteBranches() []string {
+	out, err := exec.Command("git", "for-each-ref",
+		"--format=%(refname)",
+		"refs/heads", "refs/remotes").Output()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var branches []string
+	for _, line := range strings.Split(string(out), "\n") {
+		ref := strings.TrimSpace(line)
+		var name string
+		switch {
+		case strings.HasPrefix(ref, "refs/heads/"):
+			name = strings.TrimPrefix(ref, "refs/heads/")
+		case strings.HasPrefix(ref, "refs/remotes/"):
+			rest := strings.TrimPrefix(ref, "refs/remotes/")
+			// Drop the "<remote>/" segment; skip the symbolic
+			// "<remote>/HEAD" alias.
+			if i := strings.Index(rest, "/"); i > 0 {
+				rest = rest[i+1:]
+			} else {
+				continue
+			}
+			if rest == "HEAD" {
+				continue
+			}
+			name = rest
+		default:
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		branches = append(branches, name)
+	}
+	return branches
 }
