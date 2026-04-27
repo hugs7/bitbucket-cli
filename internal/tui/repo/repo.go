@@ -21,9 +21,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
-	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
+	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
 // RepoAction mirrors HomeAction: returned to the caller when the user
@@ -48,29 +49,30 @@ func Repo(svc api.Service, project, slug string) (*RepoAction, error) {
 }
 
 type repoKeys struct {
-	Up, Down, OpenPRs, Open, Clone, Help, Quit, Back key.Binding
+	Up, Down, OpenPRs, Open, Clone, Settings, Help, Quit, Back key.Binding
 }
 
 func defaultRepoKeys() repoKeys {
 	return repoKeys{
-		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "scroll up")),
-		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "scroll down")),
-		OpenPRs: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "PRs")),
-		Open:    key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
-		Clone:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clone")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "scroll up")),
+		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "scroll down")),
+		OpenPRs:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "PRs")),
+		Open:     key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
+		Clone:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clone")),
+		Settings: key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
+		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	}
 }
 
 func (k repoKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.OpenPRs, k.Open, k.Clone, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.OpenPRs, k.Open, k.Clone, k.Settings, k.Help, k.Quit}
 }
 func (k repoKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.OpenPRs},
-		{k.Open, k.Clone, k.Help, k.Back, k.Quit},
+		{k.Open, k.Clone, k.Settings, k.Help, k.Back, k.Quit},
 	}
 }
 
@@ -89,6 +91,12 @@ type repoModel struct {
 	help    help.Model
 	keys    repoKeys
 
+	// settings overlay (toggled with `,`). When `settingsOpen` is
+	// true the overlay owns the keymap and the underlying view is
+	// hidden behind the panel.
+	settings     settings.Model
+	settingsOpen bool
+
 	width, height int
 	status        string
 	err           error
@@ -105,17 +113,23 @@ type repoErrMsg struct{ err error }
 func newRepoModel(svc api.Service, project, slug string) repoModel {
 	theme.Init()
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	// |/-\ under 3270 to match old TTY cadence; braille dot otherwise.
+	if theme.Mainframe() {
+		sp.Spinner = spinner.Line
+	} else {
+		sp.Spinner = spinner.Dot
+	}
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 	return repoModel{
-		svc:     svc,
-		project: project,
-		slug:    slug,
-		keys:    defaultRepoKeys(),
-		spinner: sp,
-		help:    help.New(),
-		preview: viewport.New(0, 0),
-		loading: 1, // we always start by fetching repo metadata
+		svc:      svc,
+		project:  project,
+		slug:     slug,
+		keys:     defaultRepoKeys(),
+		spinner:  sp,
+		help:     help.New(),
+		preview:  viewport.New(0, 0),
+		settings: settings.New(),
+		loading:  1, // we always start by fetching repo metadata
 	}
 }
 
@@ -212,6 +226,20 @@ func (m repoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Settings overlay owns all keys while open; esc closes,
+		// everything else routes through the overlay's list.
+		if m.settingsOpen {
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Back):
+				m.settingsOpen = false
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.settings, cmd = m.settings.Update(msg)
+			return m, cmd
+		}
 		switch {
 		case key.Matches(msg, m.keys.Quit), key.Matches(msg, m.keys.Back):
 			return m, tea.Quit
@@ -225,11 +253,18 @@ func (m repoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Open):
 			if m.repo != nil && m.repo.WebURL != "" {
 				_ = sysutil.OpenInBrowser(m.repo.WebURL)
-				m.status = "✓ opened in browser"
+				m.status = theme.OKPrefix() + "opened in browser"
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.Clone):
 			return m, m.cloneRepo()
+		case key.Matches(msg, m.keys.Settings):
+			// Open the universal settings overlay (theme, editor
+			// modes, …). Sized to the inner viewport so it sits
+			// neatly above the help bar.
+			m.settingsOpen = true
+			m.settings.SetSize(m.width, m.height-4)
+			return m, nil
 		}
 	}
 
@@ -242,7 +277,7 @@ func (m repoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // gets standard git progress output and any auth prompts directly.
 func (m *repoModel) cloneRepo() tea.Cmd {
 	if m.repo == nil || m.repo.CloneHTTPS == "" {
-		m.status = "✗ no clone URL available yet"
+		m.status = theme.ErrPrefix() + "no clone URL available yet"
 		return nil
 	}
 	url := m.repo.CloneHTTPS
@@ -250,7 +285,7 @@ func (m *repoModel) cloneRepo() tea.Cmd {
 		if err != nil {
 			return repoErrMsg{fmt.Errorf("git clone: %w", err)}
 		}
-		return statusMsg{"✓ cloned " + url}
+		return statusMsg{theme.OKPrefix() + "cloned " + url}
 	})
 }
 
@@ -263,15 +298,23 @@ func (m repoModel) View() string {
 		return theme.StatusErr.Render("error: "+m.err.Error()) + "\n\npress q to quit"
 	}
 
-	header := theme.TitleBar(
-		fmt.Sprintf("REPO · %s/%s", m.project, m.slug),
-		m.headerChips()...,
-	)
-
-	left := lipgloss.NewStyle().Padding(0, 1).Render(m.preview.View())
-	right := lipgloss.NewStyle().Padding(0, 1).Render(m.rightPane())
-
-	body := header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	var body string
+	if m.settingsOpen {
+		// Replace the body with the settings overlay so the user
+		// has the whole frame to navigate toggles. Header chrome
+		// stays so they remember which screen they came from.
+		body = theme.TitleBar("SETTINGS",
+			theme.TitleChipDim.Render("persisted to ~/.config/bb/config.yml")) +
+			"\n" + m.settings.View()
+	} else {
+		header := theme.TitleBar(
+			fmt.Sprintf("REPO · %s/%s", m.project, m.slug),
+			m.headerChips()...,
+		)
+		left := lipgloss.NewStyle().Padding(0, 1).Render(m.preview.View())
+		right := lipgloss.NewStyle().Padding(0, 1).Render(m.rightPane())
+		body = header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
 
 	footer := m.help.View(m.keys)
 	statusLine := theme.RenderStatusLine(m.loading > 0, m.spinner.View(), m.status)

@@ -68,6 +68,20 @@ func buildSettingsItems() []list.Item {
 			},
 		},
 		settingItem{
+			label:   "PTY editor (experimental)",
+			hint:    "Embed $EDITOR (vim/nvim) inline between diff lines. Off → fullscreen $EDITOR. Unreliable on Windows / WSL — kept off by default.",
+			valueFn: func() string { return onOff(config.Get().PTYEditor) },
+			toggleFn: func(m *model) tea.Cmd {
+				cur := config.Get().PTYEditor
+				if err := config.SetPTYEditor(!cur); err != nil {
+					m.status = "✗ save: " + err.Error()
+					return nil
+				}
+				m.status = fmt.Sprintf("✓ PTY editor: %s", onOff(!cur))
+				return nil
+			},
+		},
+		settingItem{
 			label: "Diff view",
 			hint:  "Split = side-by-side; Unified = single column",
 			valueFn: func() string {

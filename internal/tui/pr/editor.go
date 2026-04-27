@@ -174,7 +174,7 @@ type inlineEditor struct {
 func newInlineEditor(req editorRequest, w, h int) inlineEditor {
 	ta := textarea.New()
 	ta.Placeholder = "Type your text — ctrl+s to save · esc to cancel · F11 for $EDITOR"
-	ta.Prompt = "│ "
+	ta.Prompt = theme.VerticalRule() + " "
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
 	if req.initial != "" {
@@ -232,7 +232,7 @@ func editorBoxInnerHeight(h int) int {
 // underlying view (typically replacing the body for that frame).
 func (e inlineEditor) view(width, height int, label string) string {
 	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Border()).
 		BorderForeground(lipgloss.Color("57")).
 		Padding(1, 2).
 		Width(editorBoxInnerWidth(width) + 2)

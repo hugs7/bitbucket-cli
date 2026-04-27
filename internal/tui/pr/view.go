@@ -28,6 +28,8 @@ func (m model) helpView() string {
 		km = m.keys.confirmHelp()
 	case viewConfirmDecline:
 		km = m.keys.confirmHelp()
+	case viewConfirmMerge:
+		km = m.keys.confirmHelp()
 	case viewPalette:
 		km = m.keys.paletteHelp()
 	case viewSettings:
@@ -84,8 +86,18 @@ func (m model) renderForMode(mode viewMode) string {
 		)
 		tree := m.renderDiffTree()
 		sep := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
-			Render(strings.Repeat("│\n", lipgloss.Height(tree)))
-		split := lipgloss.JoinHorizontal(lipgloss.Top, tree, sep, m.diff.View())
+			Render(strings.Repeat(theme.VerticalRule()+"\n", lipgloss.Height(tree)))
+		// When the PTY editor is active, render it as a fixed pane
+		// BELOW the diff viewport instead of injecting into the
+		// scrollable content. Inside-the-viewport injection caused
+		// the pane to be clipped by viewport.YOffset whenever the
+		// cursor row sat near the bottom — making the editor appear
+		// "wedged" because the user couldn't see nvim's response.
+		right := m.diff.View()
+		if m.pty != nil && m.pty.Active() && m.editorReturnTo == viewDiff {
+			right += "\n" + m.pty.View(m.diff.Width)
+		}
+		split := lipgloss.JoinHorizontal(lipgloss.Top, tree, sep, right)
 		body = header + "\n" + split
 	case viewDetail:
 		label := "PR DETAIL"
@@ -100,7 +112,7 @@ func (m model) renderForMode(mode viewMode) string {
 		warn := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9")).
 			Bold(true).
-			BorderStyle(lipgloss.RoundedBorder()).
+			BorderStyle(theme.Border()).
 			BorderForeground(lipgloss.Color("9")).
 			Padding(0, 2)
 		body = "\n  " + warn.Render(fmt.Sprintf("Delete comment #%d?  [y/n]", m.pendingDeleteCommentID))
@@ -108,10 +120,24 @@ func (m model) renderForMode(mode viewMode) string {
 		warn := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9")).
 			Bold(true).
-			BorderStyle(lipgloss.RoundedBorder()).
+			BorderStyle(theme.Border()).
 			BorderForeground(lipgloss.Color("9")).
 			Padding(0, 2)
 		body = "\n  " + warn.Render(fmt.Sprintf("Decline PR #%d?  [y/n]", m.pendingDeclinePRID))
+	case viewConfirmMerge:
+		box := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("10")).
+			Bold(true).
+			BorderStyle(theme.Border()).
+			BorderForeground(lipgloss.Color("10")).
+			Padding(0, 2)
+		check := "[ ]"
+		if m.pendingMergeDeleteBranch {
+			check = "[x]"
+		}
+		text := fmt.Sprintf("Merge PR #%d?  [y/n]\n  %s d  delete source branch %q after merge",
+			m.pendingMergePRID, check, m.pendingMergeSourceRef)
+		body = "\n  " + box.Render(text)
 	case viewPalette:
 		// Render whatever view we came from as the background, then
 		// overlay the palette card on top — gives an "Amp-style"

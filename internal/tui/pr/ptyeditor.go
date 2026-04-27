@@ -133,6 +133,32 @@ func newPTYEditor(req editorRequest, cols, rows int) (*ptyEditor, tea.Cmd, error
 		os.Remove(tmp)
 		return nil, nil, fmt.Errorf("close temp: %w", cerr)
 	}
+	// Optional debug log: set BB_DEBUG_PTY=1 to capture what we
+	// seeded plus the resolved temp path. Lets users verify the
+	// editor is actually being handed the existing comment text.
+	if os.Getenv("BB_DEBUG_PTY") != "" {
+		debugLog := func() {
+			lf, lerr := os.OpenFile("/tmp/bb-pty-debug.log",
+				os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			if lerr != nil {
+				return
+			}
+			defer lf.Close()
+			fmt.Fprintf(lf, "[%s] purpose=%s prID=%d commentID=%d initial-bytes=%d header-bytes=%d tmp=%s\n",
+				time.Now().Format("15:04:05"),
+				req.purpose, req.prID, req.commentID,
+				len(req.initial), len(req.header), tmp)
+			if len(req.initial) > 0 {
+				fmt.Fprintf(lf, "  initial[0..200]=%q\n", req.initial[:min(len(req.initial), 200)])
+			}
+			data, _ := os.ReadFile(tmp)
+			fmt.Fprintf(lf, "  on-disk-bytes=%d\n", len(data))
+			if len(data) > 0 {
+				fmt.Fprintf(lf, "  on-disk[0..200]=%q\n", string(data[:min(len(data), 200)]))
+			}
+		}
+		debugLog()
+	}
 
 	editor := config.Get().EditorCmd()
 	parts := strings.Fields(editor)
@@ -214,6 +240,18 @@ func (pe *ptyEditor) waitExit(ch <-chan error) tea.Cmd {
 		err := <-ch
 		return ptyExitedMsg{err: err}
 	}
+}
+
+// ChromeHeight reports the total terminal-row footprint of the PTY
+// pane (header line + body rows + top/bottom border). Layout uses
+// this to shrink the diff viewport so the embedded editor isn't
+// clipped off the bottom of the screen.
+func (pe *ptyEditor) ChromeHeight() int {
+	if pe == nil {
+		return 0
+	}
+	// rows = body height; +1 header line; +2 border (top+bottom).
+	return pe.rows + 3
 }
 
 // Active reports whether the editor process is still running.
@@ -412,14 +450,14 @@ func (pe *ptyEditor) View(diffWidth int) string {
 	body := strings.Join(lines, "\n")
 
 	header := theme.TitleBadge.Render(" "+ptyEditorLabel(pe.req)+" ") + "  " +
-		theme.TitleChipDim.Render(":w to save · :q! to abort · live "+config.Get().EditorCmd())
+		theme.TitleChipDim.Render(":w to save · :q! to abort · ctrl+c to force-kill · live "+config.Get().EditorCmd())
 
 	w := diffWidth - 4
 	if w < 30 {
 		w = 30
 	}
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Border()).
 		BorderForeground(lipgloss.Color("57")).
 		Padding(0, 1).
 		Width(w).

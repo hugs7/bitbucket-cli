@@ -6,6 +6,7 @@ package pr
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +49,7 @@ const (
 	viewComments
 	viewConfirmDelete
 	viewConfirmDecline
+	viewConfirmMerge
 	viewPalette
 	viewEditor
 	viewSettings
@@ -85,6 +87,13 @@ type model struct {
 
 	// when set, we're in a decline-PR confirm sub-mode
 	pendingDeclinePRID int
+
+	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
+	// whether to remove the source branch after a successful merge;
+	// the user flips it with 'd' on the confirm screen.
+	pendingMergePRID         int
+	pendingMergeSourceRef    string
+	pendingMergeDeleteBranch bool
 
 	// prBuilds caches the latest build state per PR id so the list
 	// can render a status dot without re-fetching on every keystroke.
@@ -249,7 +258,12 @@ func newPRModel(svc api.Service, project, slug string) model {
 	l.Styles.Title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	// |/-\ under 3270 to match old TTY cadence; braille dot otherwise.
+	if theme.Mainframe() {
+		sp.Spinner = spinner.Line
+	} else {
+		sp.Spinner = spinner.Dot
+	}
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 
 	cdel := list.NewDefaultDelegate()
@@ -472,6 +486,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildDiffRows()
 			m.ensureDiffCursorVisible()
 		}
+		// Forward the resize to the embedded PTY editor too — nvim
+		// caches its window size from the pty(7) ioctl and won't
+		// reflow on its own.
+		if m.pty != nil && m.pty.Active() {
+			m.pty.Resize(ptyInlineCols(m.diff.Width), ptyInlineRows(m.diff.Height))
+		}
 		return m, nil
 
 	case tea.MouseMsg:
@@ -674,6 +694,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		req := m.pty.req
 		m.pty.Close()
 		m.pty = nil
+		// Reclaim the screen rows we reserved for the editor pane in
+		// layout() so the diff viewport stretches back to full height.
+		m.layout()
 		m.diff.SetContent(m.renderDiffRows())
 		if msg.err != nil {
 			rerr = msg.err
@@ -702,6 +725,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the diff lines. Saving the file in the editor commits the
 		// comment; quitting without saving an empty file aborts.
 		if m.mode == viewDiff && isDiffOriginated(msg.req.purpose) {
+			// PTY-embedded editor (vim/nvim inside a pseudo-terminal
+			// rendered as a fixed pane below the diff viewport) is
+			// opt-in via the "pty_editor" setting. Default off so the
+			// fullscreen $EDITOR fallback handles every platform out
+			// of the box. Windows ConPTY still has known vt10x
+			// rendering issues, so we keep that platform pinned to
+			// fullscreen even when the toggle is on.
+			if !config.Get().PTYEditor || runtime.GOOS == "windows" {
+				return m, runFullscreenEditor(msg.req)
+			}
 			rows := ptyInlineRows(m.diff.Height)
 			cols := ptyInlineCols(m.diff.Width)
 			pe, startCmd, err := newPTYEditor(msg.req, cols, rows)
@@ -711,6 +744,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.pty = pe
 			m.editorReturnTo = m.mode
+			// Re-layout NOW so the diff viewport shrinks to make room
+			// for the fixed-pane PTY editor below it. Without this
+			// the editor pane spills past the bottom of the terminal
+			// and looks "wedged".
+			m.layout()
 			m.diff.SetContent(m.renderDiffRows())
 			m.ensureDiffCursorVisible()
 			return m, startCmd
@@ -905,10 +943,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// PTY-embedded editor owns *every* keystroke while active so
 		// vim-style commands (esc, :w, /search, …) reach the editor
-		// instead of being interpreted as bb shortcuts. The editor
-		// quits via its own commands (:q in vim, etc.) — we don't
-		// expose a bb-side "abort" key on purpose.
+		// instead of being interpreted as bb shortcuts. The exception
+		// is ctrl+c (and ctrl+\): users expect these to escape, and a
+		// hung / wedged editor leaves the TUI completely unresponsive
+		// otherwise. Both kill the editor process and emit
+		// ptyExitedMsg so the standard cleanup path runs.
 		if m.pty != nil && m.pty.Active() {
+			switch msg.String() {
+			case "ctrl+c", "ctrl+\\":
+				pe := m.pty
+				pe.Close()
+				return m, func() tea.Msg {
+					return ptyExitedMsg{err: fmt.Errorf("aborted")}
+				}
+			}
 			m.pty.SendKey(msg)
 			m.diff.SetContent(m.renderDiffRows())
 			return m, nil
@@ -1488,10 +1536,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.svc.NeedsWorkPR(m.project, m.slug, id)
 					}))
 				case key.Matches(msg, m.keys.Merge):
-					m.loading = true
-					return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("merged #%d", id), true, func() error {
-						return m.svc.MergePR(m.project, m.slug, id)
-					}))
+					m.pendingMergePRID = id
+					m.pendingMergeSourceRef = it.pr.SourceRef
+					m.pendingMergeDeleteBranch = false
+					m.mode = viewConfirmMerge
+					return m, nil
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
@@ -1501,6 +1550,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingDeclinePRID = id
 					m.mode = viewConfirmDecline
 					return m, nil
+				case key.Matches(msg, m.keys.AddReviewer):
+					return m, editInTUI("add-reviewer",
+						fmt.Sprintf("pr-%d-add-reviewer", id), id, 0,
+						"# Enter one or more usernames (Server) or UUIDs/emails\n"+
+							"# (Cloud), separated by space or comma. First non-comment\n"+
+							"# line is used. Save & exit to submit; empty cancels.\n")
+				case key.Matches(msg, m.keys.RemoveReviewer):
+					return m, editInTUI("remove-reviewer",
+						fmt.Sprintf("pr-%d-remove-reviewer", id), id, 0,
+						reviewerListHint(it.pr.Reviewers))
 				}
 			}
 			var cmd tea.Cmd
@@ -1550,6 +1609,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingDeclinePRID = 0
 				m.mode = viewList
 				m.status = "decline cancelled"
+				return m, nil
+			}
+			return m, nil
+		case viewConfirmMerge:
+			switch msg.String() {
+			case "d":
+				// Toggle "delete source branch on merge" without
+				// leaving the confirm screen so the user can flip
+				// their mind before pressing y.
+				m.pendingMergeDeleteBranch = !m.pendingMergeDeleteBranch
+				return m, nil
+			case "y", "Y", "enter":
+				prID := m.pendingMergePRID
+				src := m.pendingMergeSourceRef
+				del := m.pendingMergeDeleteBranch
+				m.pendingMergePRID = 0
+				m.pendingMergeSourceRef = ""
+				m.pendingMergeDeleteBranch = false
+				m.mode = viewList
+				m.loading = true
+				label := fmt.Sprintf("merged #%d", prID)
+				if del {
+					label = fmt.Sprintf("merged #%d + deleted %s", prID, src)
+				}
+				return m, tea.Batch(m.spinner.Tick, m.doAction(label, true, func() error {
+					if err := m.svc.MergePR(m.project, m.slug, prID); err != nil {
+						return err
+					}
+					if del && src != "" {
+						// Branch deletion is best-effort: the merge
+						// already succeeded, so surface the failure
+						// in the toast but don't undo the merge.
+						if derr := m.svc.DeleteBranch(m.project, m.slug, src); derr != nil {
+							return fmt.Errorf("merged but branch delete failed: %w", derr)
+						}
+					}
+					return nil
+				}))
+			case "n", "N", "esc":
+				m.pendingMergePRID = 0
+				m.pendingMergeSourceRef = ""
+				m.pendingMergeDeleteBranch = false
+				m.mode = viewList
+				m.status = "merge cancelled"
 				return m, nil
 			}
 			return m, nil
@@ -1690,11 +1793,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.Merge):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				id := it.pr.ID
-				m.loading = true
-				return m, tea.Batch(m.spinner.Tick, m.doAction(fmt.Sprintf("merged #%d", id), true, func() error {
-					return m.svc.MergePR(m.project, m.slug, id)
-				}))
+				m.pendingMergePRID = it.pr.ID
+				m.pendingMergeSourceRef = it.pr.SourceRef
+				m.pendingMergeDeleteBranch = false
+				m.mode = viewConfirmMerge
+				return m, nil
 			}
 		case key.Matches(msg, m.keys.EditDesc):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
@@ -1709,6 +1812,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = viewConfirmDecline
 				return m, nil
 			}
+		case key.Matches(msg, m.keys.AddReviewer):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, editInTUI("add-reviewer",
+					fmt.Sprintf("pr-%d-add-reviewer", it.pr.ID), it.pr.ID, 0,
+					"# Enter one or more usernames (Server) or UUIDs/emails\n"+
+						"# (Cloud), separated by space or comma. First non-comment\n"+
+						"# line is used. Save & exit to submit; empty cancels.\n")
+			}
+		case key.Matches(msg, m.keys.RemoveReviewer):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, editInTUI("remove-reviewer",
+					fmt.Sprintf("pr-%d-remove-reviewer", it.pr.ID), it.pr.ID, 0,
+					reviewerListHint(it.pr.Reviewers))
+			}
 		}
 	}
 
@@ -1716,6 +1833,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.list, cmd = m.list.Update(msg)
 	m.updateDetail()
 	return m, cmd
+}
+
+// reviewerListHint builds the seeded text shown in the remove-reviewer
+// editor: a header explaining what to do plus one commented line per
+// current reviewer so users can copy/paste a username instead of
+// remembering it.
+func reviewerListHint(rs []api.Reviewer) string {
+	hint := ""
+	for _, r := range rs {
+		hint += "# " + r.Username
+		if r.DisplayName != "" && r.DisplayName != r.Username {
+			hint += "  (" + r.DisplayName + ")"
+		}
+		hint += "\n"
+	}
+	if hint == "" {
+		hint = "# (no reviewers on this PR)\n"
+	}
+	return "# Enter one or more usernames/UUIDs to remove,\n" +
+		"# separated by space or comma. Current reviewers:\n" +
+		hint
 }
 
 func (m *model) layout() {
@@ -1737,6 +1875,17 @@ func (m *model) layout() {
 		m.diff.Width = m.width
 	}
 	m.diff.Height = m.height - helpHeight - 1
+	// When the PTY-embedded editor is active, carve out screen rows
+	// for it BELOW the diff viewport (rendered as a fixed pane in
+	// view.go). Without this the diff viewport stretches the full
+	// height and the PTY pane drops off the bottom of the terminal.
+	if m.pty != nil && m.pty.Active() && m.editorReturnTo == viewDiff {
+		ptyH := m.pty.ChromeHeight() + 1 // +1 gap line between diff and pane
+		m.diff.Height -= ptyH
+		if m.diff.Height < 6 {
+			m.diff.Height = 6
+		}
+	}
 	m.comments.SetSize(m.width, m.height-helpHeight-2)
 	m.settings.SetSize(m.width, m.height-helpHeight-4)
 }

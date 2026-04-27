@@ -37,7 +37,7 @@ type paletteWidget struct {
 func newPaletteWidget() paletteWidget {
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter…"
-	ti.Prompt = "🔎 "
+	ti.Prompt = theme.SearchPrompt()
 	ti.CharLimit = 120
 	return paletteWidget{input: ti}
 }
@@ -199,7 +199,7 @@ func (p paletteWidget) View(width, height int) string {
 	}, "\n")
 
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Border()).
 		BorderForeground(lipgloss.Color("57")).
 		Padding(1, 2).
 		Width(cardW).

@@ -8,7 +8,7 @@ package home
 import "github.com/charmbracelet/bubbles/key"
 
 type homeKeys struct {
-	Up, Down, Enter, Tab, ShiftTab, Search, Open, Quit, Back, Help, OpenPRs, ToggleFav, ClearStatus key.Binding
+	Up, Down, Enter, Tab, ShiftTab, Search, Open, Quit, Back, Help, OpenPRs, ToggleFav, ClearStatus, Settings key.Binding
 }
 
 func defaultHomeKeys() homeKeys {
@@ -23,6 +23,7 @@ func defaultHomeKeys() homeKeys {
 		OpenPRs:     key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "open PRs")),
 		ToggleFav:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "favourite")),
 		ClearStatus: key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "clear status")),
+		Settings:    key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
 		Quit:        key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 		Back:        key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back / blur")),
 		Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
@@ -30,12 +31,12 @@ func defaultHomeKeys() homeKeys {
 }
 
 func (k homeKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.Search, k.OpenPRs, k.ToggleFav, k.Open, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.Search, k.OpenPRs, k.ToggleFav, k.Open, k.Settings, k.Help, k.Quit}
 }
 func (k homeKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Tab, k.ShiftTab, k.Search},
-		{k.OpenPRs, k.ToggleFav, k.Open, k.ClearStatus, k.Help, k.Back, k.Quit},
+		{k.OpenPRs, k.ToggleFav, k.Open, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
 	}
 }
 
