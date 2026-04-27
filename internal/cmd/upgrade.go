@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -119,6 +120,24 @@ func runUpgrade(info BuildInfo, checkOnly, force bool, opts upgradeOpts) error {
 	}
 	if checkOnly {
 		fmt.Println("a newer version is available — run `bb upgrade` to install")
+		return nil
+	}
+
+	// Refuse to clobber a binary that a package manager owns:
+	// self-replacing /opt/homebrew/Cellar/.../bb or a dpkg-tracked
+	// file would put the install into a state where the next
+	// `brew upgrade` / `apt upgrade` silently reverts the binary,
+	// and worse, leaves the package manager's checksum / inventory
+	// out of sync. Manual copies (e.g. `cp bb /opt/homebrew/bin/bb`
+	// without going through brew) aren't symlinks into Cellar and
+	// aren't tracked by dpkg, so they fall through and self-update
+	// normally — covering the user's manual-install path.
+	exe, _ := os.Executable()
+	if pm := detectPackageManager(exe); pm != nil && !force {
+		fmt.Printf("\nbb appears to be managed by %s — use the package manager to upgrade:\n",
+			pm.name)
+		fmt.Printf("  %s\n\n", pm.cmd)
+		fmt.Println("(re-run with --force to ignore this check and replace the binary in place)")
 		return nil
 	}
 
@@ -340,6 +359,66 @@ func extractTarGz(src, want, dst string) error {
 		return err
 	}
 	return fmt.Errorf("%s not found in %s", want, src)
+}
+
+// pkgManager is one detected install source — what to call it in
+// user-facing messages, plus the command the user should run to
+// upgrade through that channel.
+type pkgManager struct {
+	name string
+	cmd  string
+}
+
+// detectPackageManager returns a non-empty pkgManager when the given
+// executable path looks like it was installed (and is therefore
+// owned) by a system package manager. Detection is best-effort and
+// deliberately conservative: an unknown / ambiguous path returns the
+// zero value so we still self-update for plain manual installs.
+//
+// We resolve symlinks first so that a /opt/homebrew/bin/bb pointing
+// into /opt/homebrew/Cellar/bitbucket-cli/<v>/bin/bb is identified
+// as a brew install, while a regular file copied into the same
+// directory by hand is not.
+func detectPackageManager(execPath string) *pkgManager {
+	if execPath == "" {
+		return nil
+	}
+	real, err := filepath.EvalSymlinks(execPath)
+	if err != nil {
+		real = execPath
+	}
+
+	// Homebrew stores every artefact under <prefix>/Cellar/<formula>/
+	// and exposes them via symlinks in <prefix>/bin. The Cellar
+	// substring is unique to brew so we can match either Apple
+	// Silicon (/opt/homebrew/Cellar) or Intel (/usr/local/Cellar /
+	// /home/linuxbrew/.linuxbrew/Cellar) installs in one check.
+	if strings.Contains(real, "/Cellar/") {
+		return &pkgManager{name: "Homebrew", cmd: "brew upgrade bitbucket-cli"}
+	}
+
+	// dpkg / rpm only matter on Linux. We avoid spawning these on
+	// macOS where they may exist as Homebrew formulae (`dpkg` is on
+	// brew) but never own /usr/local files in the system sense.
+	if runtime.GOOS == "linux" {
+		// dpkg -S <path> exits 0 + prints "<pkg>: <path>" when the
+		// file is tracked, non-zero on miss. We discard stderr by
+		// using Output() so the "no path found" diagnostic doesn't
+		// leak into our own output on a clean miss.
+		if _, err := exec.LookPath("dpkg"); err == nil {
+			if out, err := exec.Command("dpkg", "-S", real).Output(); err == nil && len(out) > 0 {
+				return &pkgManager{name: "apt/dpkg", cmd: "sudo apt update && sudo apt upgrade bitbucket-cli"}
+			}
+		}
+		if _, err := exec.LookPath("rpm"); err == nil {
+			if out, err := exec.Command("rpm", "-qf", real).Output(); err == nil &&
+				len(out) > 0 && !strings.Contains(string(out), "not owned by any package") {
+				return &pkgManager{name: "rpm/dnf", cmd: "sudo dnf upgrade bitbucket-cli"}
+			}
+		}
+	}
+
+	return nil
 }
 
 func humanSize(n int64) string {
