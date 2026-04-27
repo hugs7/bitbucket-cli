@@ -15,6 +15,7 @@ import (
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -261,7 +262,11 @@ func (m *homeModel) renderPRDetail(rp api.ReviewPR) string {
 	}
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
-		sb.WriteString(p.Description)
+		// PR descriptions on Bitbucket are markdown — render them
+		// through the shared glamour wrapper so headings, lists,
+		// fenced code blocks etc. look the same as a README in the
+		// preview pane next door.
+		sb.WriteString(mdrender.Render(p.Description, m.preview.Width))
 	}
 	return sb.String()
 }

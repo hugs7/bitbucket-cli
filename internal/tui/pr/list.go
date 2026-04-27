@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
-
+	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
 )
 
 type prItem struct {
@@ -149,7 +149,10 @@ func (m *model) updateDetail() {
 
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
-		sb.WriteString(p.Description)
+		// PR descriptions on Bitbucket are markdown — same shared
+		// glamour wrapper as README rendering in the home and repo
+		// previews so the styling stays uniform across surfaces.
+		sb.WriteString(mdrender.Render(p.Description, m.detail.Width))
 	}
 
 	m.detail.SetContent(sb.String())
