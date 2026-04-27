@@ -798,39 +798,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, runFullscreenEditor(msg.req)
 
+	case createPRMsg:
+		// huh form completed (or aborted). Empty source/target/title
+		// after a non-cancelled run is still treated as cancellation
+		// — the validators block submission so this is unreachable in
+		// practice, but the guard keeps the code defensive.
+		if msg.cancelled {
+			m.status = "create PR cancelled"
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "create PR: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.title == "" || msg.source == "" || msg.target == "" {
+			m.status = "create PR cancelled"
+			return m, nil
+		}
+		in := api.CreatePRInput{
+			Title:       msg.title,
+			Description: msg.body,
+			SourceRef:   msg.source,
+			TargetRef:   msg.target,
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+			p, err := m.svc.CreatePR(m.project, m.slug, in)
+			if err != nil {
+				return actionDoneMsg{text: "create PR", err: err}
+			}
+			return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
+		})
+
 	case editorResultMsg:
 		text := strings.TrimSpace(msg.text)
 		if msg.err != nil {
 			m.status = "✗ editor: " + msg.err.Error()
 			return m, nil
-		}
-		// "create-pr" needs to peek at structured fields before the
-		// generic "empty buffer" check, since the template itself is
-		// non-empty even when the user hasn't filled anything in.
-		if msg.purpose == "create-pr" {
-			title, source, target, body := parseCreatePRTemplate(msg.text)
-			if title == "" {
-				m.status = "aborted (no title)"
-				return m, nil
-			}
-			if source == "" || target == "" {
-				m.status = "✗ source and target branches are required"
-				return m, nil
-			}
-			in := api.CreatePRInput{
-				Title:       title,
-				Description: body,
-				SourceRef:   source,
-				TargetRef:   target,
-			}
-			m.loading = true
-			return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
-				p, err := m.svc.CreatePR(m.project, m.slug, in)
-				if err != nil {
-					return actionDoneMsg{text: "create PR", err: err}
-				}
-				return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
-			})
 		}
 		if text == "" {
 			m.status = "aborted (empty)"
