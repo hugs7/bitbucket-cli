@@ -34,9 +34,6 @@ brew install hugs7/tap/bb
 scoop bucket add hugs7 https://github.com/hugs7/scoop-bucket
 scoop install bb
 
-# Windows — Winget
-winget install hugs7.bb
-
 # Debian / Ubuntu — apt (via Cloudsmith)
 curl -1sLf 'https://dl.cloudsmith.io/public/hugs7/bb/setup.deb.sh' | sudo -E bash
 sudo apt install bb
@@ -71,7 +68,6 @@ go build -o bb ./cmd/bb
 |---|---|
 | Homebrew | `brew upgrade bb` |
 | Scoop | `scoop update bb` |
-| Winget | `winget upgrade bb` |
 | apt (Cloudsmith) | `sudo apt update && sudo apt upgrade bb` |
 | dnf (Cloudsmith) | `sudo dnf upgrade bb` |
 | apk (Cloudsmith) | `sudo apk upgrade bb` |

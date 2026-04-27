@@ -41,11 +41,8 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
-          # Default GITHUB_TOKEN can publish to *this* repo only.
-          # To publish to your homebrew-tap / scoop-bucket / winget-pkgs
-          # forks you need a Personal Access Token (classic, scope: repo,
-          # workflow) saved as a repo secret named TAP_GITHUB_TOKEN, then
-          # uncomment the line below.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          # PAT (classic, scopes: repo, workflow) — needed so GoReleaser
+          # can push to hugs7/homebrew-tap and hugs7/scoop-bucket. The
+          # default GITHUB_TOKEN only has access to *this* repo.
+          GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}

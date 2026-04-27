@@ -105,14 +105,3 @@ scoops:
     homepage: https://github.com/hugs7/bitbucket-cli
     description: A comprehensive command-line interface for Bitbucket.
     license: MIT
-
-winget:
-  - name: bb
-    publisher: hugs7
-    license: MIT
-    homepage: https://github.com/hugs7/bitbucket-cli
-    short_description: A comprehensive command-line interface for Bitbucket.
-    repository:
-      owner: hugs7
-      name: winget-pkgs
-      branch: bb-{{.Version}}

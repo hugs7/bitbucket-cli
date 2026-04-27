@@ -42,12 +42,11 @@ func newUpgradeCmd(info BuildInfo) *cobra.Command {
 		Short: "Upgrade bb to the latest release",
 		Long: `Download and install the latest release of bb from GitHub.
 
-If you installed bb via Homebrew, Scoop, Winget, apt or dnf, prefer
-your package manager's update command instead:
+If you installed bb via Homebrew, Scoop, apt or dnf, prefer your
+package manager's update command instead:
 
   brew upgrade bb
   scoop update bb
-  winget upgrade bb
   sudo apt update && sudo apt upgrade bb
   sudo dnf upgrade bb`,
 		Args: cobra.NoArgs,
