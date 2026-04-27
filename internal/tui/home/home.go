@@ -477,9 +477,21 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// scroll just works once the message reaches them. Without
 		// this dispatcher mouse-wheel input was silently dropped on
 		// the dashboard tab — only j/k keyboard navigation moved
-		// the view, which is what users were complaining about.
+		// the view.
 		switch m.tab {
 		case tabDashboard:
+			// dashVP's line buffer is populated by renderDashboard
+			// during View(), but View runs on a throwaway copy of
+			// the model — so the stored model's dashVP.lines is
+			// empty when this MouseMsg arrives, and viewport's
+			// ScrollDown returns immediately ("len(lines)==0"
+			// guard). Refresh content here so the wheel actually
+			// scrolls.
+			innerW := m.dashVP.Width
+			if innerW == 0 {
+				innerW = m.width
+			}
+			m.refreshDashContent(innerW)
 			var cmd tea.Cmd
 			m.dashVP, cmd = m.dashVP.Update(msg)
 			return m, cmd
