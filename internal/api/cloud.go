@@ -843,3 +843,12 @@ func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) 
 	}
 	return out, nil
 }
+
+// SearchUsers is not yet implemented for Bitbucket Cloud — there's no
+// directory-search endpoint that works without a workspace context,
+// and the workspace is encoded into the project param of every other
+// call rather than being available on the service. Callers should
+// fall back to free-text reviewer entry on Cloud.
+func (c *cloudService) SearchUsers(query string, limit int) ([]User, error) {
+	return nil, nil
+}

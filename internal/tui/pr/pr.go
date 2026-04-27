@@ -53,6 +53,7 @@ const (
 	viewPalette
 	viewEditor
 	viewSettings
+	viewReviewerSearch
 )
 
 // buildDot is a thin alias for theme.BuildDot so the dozens of
@@ -183,6 +184,10 @@ type model struct {
 	// esc drops back to where the user opened it.
 	settings         list.Model
 	settingsReturnTo viewMode
+
+	// reviewerSearch holds the in-process Add/Remove-Reviewer
+	// overlay state when m.mode == viewReviewerSearch. nil otherwise.
+	reviewerSearch *reviewerSearchState
 }
 
 // diffFile is one entry in the file-tree side panel.
@@ -830,6 +835,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
 		})
 
+	case reviewerSearchTickMsg:
+		// Stale tick (a newer keystroke superseded this one) — drop.
+		if m.reviewerSearch == nil || msg.version != m.reviewerSearch.searchVersion {
+			return m, nil
+		}
+		return m, m.runReviewerSearchNow(msg.version, msg.query)
+
+	case reviewerSearchResultsMsg:
+		// Stale response (newer keystroke superseded this one) — drop.
+		if m.reviewerSearch == nil || msg.version != m.reviewerSearch.searchVersion {
+			return m, nil
+		}
+		m.reviewerSearch.loading = false
+		if msg.err != nil {
+			m.reviewerSearch.err = msg.err
+			return m, nil
+		}
+		m.reviewerSearch.err = nil
+		m.reviewerSearch.results = filterOutExisting(msg.users, m.reviewerSearch.existing)
+		if m.reviewerSearch.cursor >= len(m.reviewerSearch.results) {
+			m.reviewerSearch.cursor = len(m.reviewerSearch.results) - 1
+		}
+		if m.reviewerSearch.cursor < 0 {
+			m.reviewerSearch.cursor = 0
+		}
+		return m, nil
+
 	case editorResultMsg:
 		text := strings.TrimSpace(msg.text)
 		if msg.err != nil {
@@ -1005,6 +1037,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to vim mid-thought without losing the draft).
 		if m.editorActive && m.mode == viewEditor {
 			return m.handleEditorKey(msg)
+		}
+
+		// Reviewer-search overlay owns the keymap while open: arrows
+		// navigate, space toggles, enter submits, esc cancels.
+		// Anything else flows into the textinput and triggers a
+		// debounced search.
+		if m.mode == viewReviewerSearch {
+			return m.handleReviewerSearchKey(msg)
 		}
 
 		// Settings overlay owns the keymap while open.
@@ -1596,15 +1636,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.mode = viewConfirmDecline
 					return m, nil
 				case key.Matches(msg, m.keys.AddReviewer):
-					return m, editInTUI("add-reviewer",
-						fmt.Sprintf("pr-%d-add-reviewer", id), id, 0,
-						"# Enter one or more usernames (Server) or UUIDs/emails\n"+
-							"# (Cloud), separated by space or comma. First non-comment\n"+
-							"# line is used. Save & exit to submit; empty cancels.\n")
+					return m, m.startAddReviewer(id)
 				case key.Matches(msg, m.keys.RemoveReviewer):
-					return m, editInTUI("remove-reviewer",
-						fmt.Sprintf("pr-%d-remove-reviewer", id), id, 0,
-						reviewerListHint(it.pr.Reviewers))
+					return m, m.startRemoveReviewer(id, it.pr.Reviewers)
 				}
 			}
 			var cmd tea.Cmd
@@ -1867,17 +1901,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.AddReviewer):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				return m, editInTUI("add-reviewer",
-					fmt.Sprintf("pr-%d-add-reviewer", it.pr.ID), it.pr.ID, 0,
-					"# Enter one or more usernames (Server) or UUIDs/emails\n"+
-						"# (Cloud), separated by space or comma. First non-comment\n"+
-						"# line is used. Save & exit to submit; empty cancels.\n")
+				return m, m.startAddReviewer(it.pr.ID)
 			}
 		case key.Matches(msg, m.keys.RemoveReviewer):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				return m, editInTUI("remove-reviewer",
-					fmt.Sprintf("pr-%d-remove-reviewer", it.pr.ID), it.pr.ID, 0,
-					reviewerListHint(it.pr.Reviewers))
+				return m, m.startRemoveReviewer(it.pr.ID, it.pr.Reviewers)
 			}
 		}
 	}
@@ -1886,27 +1914,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.list, cmd = m.list.Update(msg)
 	m.updateDetail()
 	return m, cmd
-}
-
-// reviewerListHint builds the seeded text shown in the remove-reviewer
-// editor: a header explaining what to do plus one commented line per
-// current reviewer so users can copy/paste a username instead of
-// remembering it.
-func reviewerListHint(rs []api.Reviewer) string {
-	hint := ""
-	for _, r := range rs {
-		hint += "# " + r.Username
-		if r.DisplayName != "" && r.DisplayName != r.Username {
-			hint += "  (" + r.DisplayName + ")"
-		}
-		hint += "\n"
-	}
-	if hint == "" {
-		hint = "# (no reviewers on this PR)\n"
-	}
-	return "# Enter one or more usernames/UUIDs to remove,\n" +
-		"# separated by space or comma. Current reviewers:\n" +
-		hint
 }
 
 func (m *model) layout() {

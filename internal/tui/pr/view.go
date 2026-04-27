@@ -35,6 +35,10 @@ func (m model) helpView() string {
 		km = m.keys.paletteHelp()
 	case viewSettings:
 		km = m.keys.settingsHelp()
+	case viewReviewerSearch:
+		// Header inside the overlay already documents space/enter/
+		// esc, so suppress the global help bar to avoid duplication.
+		return ""
 	default:
 		km = m.contextualListHelp()
 	}
@@ -252,6 +256,11 @@ func (m model) renderForMode(mode viewMode) string {
 		// the overlay own the whole frame so the textarea has room
 		// to breathe. The status line still rides along below.
 		body = m.editor.view(m.width, m.height-2, m.editor.label())
+	case viewReviewerSearch:
+		// Reviewer-search overlay: a centred bordered card with
+		// search input + live-filtered results. Same centred-modal
+		// treatment as the inline editor.
+		body = m.renderReviewerSearch()
 	default:
 		header := titleBar(fmt.Sprintf("PULL REQUESTS · %s/%s", m.project, m.slug),
 			theme.TitleChip.Render(strings.ToUpper(m.state)),

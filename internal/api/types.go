@@ -37,6 +37,15 @@ type Reviewer struct {
 	Approved    bool
 }
 
+// User is a unified user representation returned from a directory
+// search. The display name is what reviewers see in the Bitbucket UI;
+// Username is what we send to AddReviewers / RemoveReviewers.
+type User struct {
+	Username    string // login (Server) or UUID/account_id (Cloud)
+	DisplayName string
+	Email       string
+}
+
 // Comment is a unified PR comment representation.
 type Comment struct {
 	ID        int

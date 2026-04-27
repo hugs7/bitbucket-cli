@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -960,6 +961,43 @@ func (s *serverService) ListBuildsForRef(project, slug, ref string, limit int) (
 			Ref:       ref,
 			Commit:    commit,
 			CreatedAt: time.UnixMilli(b.DateAdded),
+		})
+	}
+	return out, nil
+}
+
+// SearchUsers performs a directory search via /rest/api/1.0/users.
+// The Server REST API matches the filter against username, name and
+// email — exactly what the Bitbucket UI's reviewer search does. An
+// empty filter returns the first `limit` users (alphabetical).
+func (s *serverService) SearchUsers(query string, limit int) ([]User, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	endpoint := fmt.Sprintf("users?limit=%d", limit)
+	if query != "" {
+		endpoint += "&filter=" + url.QueryEscape(query)
+	}
+	var resp struct {
+		Values []struct {
+			Name         string `json:"name"`
+			DisplayName  string `json:"displayName"`
+			EmailAddress string `json:"emailAddress"`
+			Active       bool   `json:"active"`
+		} `json:"values"`
+	}
+	if err := s.client.getJSON(endpoint, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(resp.Values))
+	for _, u := range resp.Values {
+		if !u.Active {
+			continue
+		}
+		out = append(out, User{
+			Username:    u.Name,
+			DisplayName: u.DisplayName,
+			Email:       u.EmailAddress,
 		})
 	}
 	return out, nil

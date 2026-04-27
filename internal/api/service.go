@@ -57,6 +57,13 @@ type Service interface {
 	AddReviewers(project, slug string, prID int, usernames []string) error
 	RemoveReviewers(project, slug string, prID int, usernames []string) error
 
+	// SearchUsers performs a directory search for reviewers,
+	// matching the query against display name / username / email.
+	// An empty query returns the first `limit` users (most-recent
+	// first on Cloud, alphabetical on Server). The username on the
+	// returned User is what AddReviewers / RemoveReviewers want.
+	SearchUsers(query string, limit int) ([]User, error)
+
 	CreateRepo(in CreateRepoInput) (*Repo, error)
 
 	ListWebhooks(project, slug string) ([]Webhook, error)
