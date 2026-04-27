@@ -14,14 +14,36 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
+	"github.com/hugs7/bitbucket-cli/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
+	prtui "github.com/hugs7/bitbucket-cli/internal/tui/pr"
 )
 
 func newPRCmd() *cobra.Command {
+	var hostFlag string
 	c := &cobra.Command{
-		Use:   "pr",
+		Use:   "pr [url]",
 		Short: "Work with pull requests",
+		Long: `Work with pull requests.
+
+When given a Bitbucket pull-request URL as the only argument, opens
+the interactive PR TUI for that repository with the cursor focused
+on the referenced PR. Both Cloud and Server URL shapes are accepted:
+
+  bb pr https://bitbucket.org/<workspace>/<repo>/pull-requests/42
+  bb pr https://bitbucket.mycorp.example/projects/PROJ/repos/repo/pull-requests/42
+
+With no arguments, prints help.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			return runPRURL(args[0], hostFlag)
+		},
 	}
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from URL or configured default)")
 	c.AddCommand(
 		newPRListCmd(), newPRViewCmd(), newPRCreateCmd(),
 		newPRCheckoutCmd(), newPRMergeCmd(), newPRDeclineCmd(),
@@ -31,6 +53,41 @@ func newPRCmd() *cobra.Command {
 		newPRDescribeCmd(), newPRWatchCmd(), newPRStackCmd(),
 	)
 	return c
+}
+
+// runPRURL parses a Bitbucket pull-request URL, resolves a Service
+// for its host, and launches the PR TUI focused on the referenced
+// PR id. Used by `bb pr <url>` so the user can paste a link from
+// chat / a code review and land directly on it.
+//
+// hostFlag overrides the host parsed from the URL — useful when the
+// URL uses a public-facing alias (e.g. a vanity domain) but auth was
+// configured under a different name.
+func runPRURL(rawURL, hostFlag string) error {
+	ref, err := gitctx.ParsePRURL(rawURL)
+	if err != nil {
+		return err
+	}
+	cfg := config.Get()
+	host := ref.Host
+	if hostFlag != "" {
+		host = hostFlag
+	}
+	if host == "" {
+		host = cfg.DefaultHost
+	}
+	if host == "" {
+		return fmt.Errorf("could not determine host from URL %q — pass --host", rawURL)
+	}
+	hcfg, ok := cfg.Hosts[host]
+	if !ok {
+		return fmt.Errorf("no auth for host %q — run `bb auth login --host %s`", host, host)
+	}
+	svc, err := api.NewService(host, hcfg)
+	if err != nil {
+		return err
+	}
+	return prtui.RunFocused(svc, ref.Project, ref.Slug, ref.ID)
 }
 
 func newPRListCmd() *cobra.Command {

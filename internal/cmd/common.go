@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,6 +13,27 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
 )
+
+// expandTilde turns a leading "~" or "~/" into the user's home dir.
+// Falls back to the original path if the home dir can't be resolved
+// — better to forward the literal "~" to git and let it complain
+// loudly than to silently swallow the error.
+func expandTilde(p string) string {
+	if p == "" || p[0] != '~' {
+		return p
+	}
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p // e.g. "~user/foo" — not supported, leave alone
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
+}
 
 // resolveContext resolves which (host, project, slug) the command should
 // operate on, given an optional --repo flag like "PROJ/repo" or

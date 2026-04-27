@@ -12,6 +12,7 @@ import (
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 	"github.com/hugs7/bitbucket-cli/internal/tui/pr"
 	"github.com/hugs7/bitbucket-cli/internal/tui/repo"
 )
@@ -48,6 +49,37 @@ func openRepoTUI(repoFlag, hostFlag string) error {
 		return err
 	}
 	return runRepoTUI(svc, project, slug)
+}
+
+// runRepoTUIAtPath resolves the Bitbucket repo from the git remote
+// of the working tree at path and opens the repo overview TUI for
+// it. Used by `bb <path>` so the user can land on the repo screen
+// for any tree on disk without first cd-ing into it.
+//
+// Tilde-prefixed paths (`~`, `~/foo`) are expanded here because Go
+// doesn't do shell-style ~ expansion and the user may pass the path
+// quoted (e.g. `bb '~/code/bar'`) or via a script that bypasses the
+// shell's own substitution.
+func runRepoTUIAtPath(path string) error {
+	path = expandTilde(path)
+	r, err := gitctx.AtPath(path, "")
+	if err != nil {
+		return err
+	}
+	cfg := config.Get()
+	host := r.Host
+	if host == "" {
+		host = cfg.DefaultHost
+	}
+	hcfg, ok := cfg.Hosts[host]
+	if !ok {
+		return fmt.Errorf("no auth for host %q — run `bb auth login --host %s`", host, host)
+	}
+	svc, err := api.NewService(host, hcfg)
+	if err != nil {
+		return err
+	}
+	return runRepoTUI(svc, r.Project, r.Slug)
 }
 
 // runRepoTUI drives the repo overview TUI's "follow-up action" loop

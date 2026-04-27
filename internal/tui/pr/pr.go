@@ -31,7 +31,17 @@ import (
 
 // PRs launches the interactive pull-requests TUI.
 func Run(svc api.Service, project, slug string) error {
+	return RunFocused(svc, project, slug, 0)
+}
+
+// RunFocused launches the PR TUI for the given repo and, when prID
+// is non-zero, snaps the list cursor onto that PR as soon as the
+// initial fetch returns. Used by `bb pr <url>` so the user lands on
+// the PR they pasted instead of having to scroll the list to find
+// it. prID == 0 falls through to the standard "select first" path.
+func RunFocused(svc api.Service, project, slug string, prID int) error {
 	m := newPRModel(svc, project, slug)
+	m.targetPRID = prID
 	// WithMouseCellMotion enables wheel + click events so viewports
 	// and lists can be scrolled with the mouse.
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -92,6 +102,13 @@ type model struct {
 
 	// when set, we're in a delete-PR confirm sub-mode
 	pendingDeletePRID int
+
+	// targetPRID is the PR id we want the list cursor to snap onto
+	// once the initial fetch lands. Set by RunFocused (i.e. when
+	// the user invoked `bb pr <url>`). Consumed and zeroed after
+	// the first prsLoadedMsg so subsequent reloads (state filter
+	// changes, manual refresh) don't keep yanking the cursor back.
+	targetPRID int
 
 	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
 	// whether to remove the source branch after a successful merge;
@@ -661,6 +678,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			buildCmds = append(buildCmds, m.fetchBuildForPR(p))
 		}
 		m.list.SetItems(items)
+		// Snap the cursor onto the user's "open this PR" target if
+		// they launched via `bb pr <url>` and the matching item is
+		// in the result set. Skipping the consume on a miss means a
+		// later state-filter switch (which re-fires fetchPRs) still
+		// has a chance to land on the PR if it was filtered out the
+		// first time around.
+		if m.targetPRID != 0 {
+			for i, it := range items {
+				if pi, ok := it.(prItem); ok && pi.pr.ID == m.targetPRID {
+					m.list.Select(i)
+					m.targetPRID = 0
+					break
+				}
+			}
+		}
 		m.updateDetail()
 		if len(buildCmds) == 0 {
 			return m, nil

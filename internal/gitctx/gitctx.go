@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -19,10 +20,23 @@ type Repo struct {
 // Current returns the Repo represented by the given git remote (defaults
 // to "origin") in the current working directory.
 func Current(remote string) (*Repo, error) {
+	return AtPath("", remote)
+}
+
+// AtPath is like Current but reads the remote config from the
+// repository at dir instead of the process cwd. dir == "" falls
+// back to cwd. Used by `bb <path>` so the user can ask for the
+// repo overview of any working tree without having to cd into it.
+func AtPath(dir, remote string) (*Repo, error) {
 	if remote == "" {
 		remote = "origin"
 	}
-	out, err := exec.Command("git", "config", "--get", "remote."+remote+".url").Output()
+	args := []string{}
+	if dir != "" {
+		args = append(args, "-C", dir)
+	}
+	args = append(args, "config", "--get", "remote."+remote+".url")
+	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("not in a git repo or no remote %q: %w", remote, err)
 	}
@@ -58,6 +72,63 @@ func Parse(raw string) (*Repo, error) {
 	}
 	r.Host = u.Hostname()
 	return fillPath(r, u.Path)
+}
+
+// PRRef is a parsed "look at PR #N in this repo" coordinate, sourced
+// from a Bitbucket Cloud or Server URL.
+type PRRef struct {
+	Repo
+	ID int
+}
+
+// ParsePRURL extracts host / project / slug / id from a Bitbucket
+// Cloud or Server pull-request URL. Both URL shapes are supported
+// (and the trailing /overview, /diff, /commits suffixes Bitbucket
+// itself sticks on the end of the path are tolerated):
+//
+//	https://bitbucket.org/<workspace>/<repo>/pull-requests/<id>[/...]
+//	https://<host>/projects/<PROJ>/repos/<repo>/pull-requests/<id>[/...]
+//
+// Returns an error for anything that doesn't look like one of those
+// — we'd rather be loud than silently route the user to the wrong
+// repo.
+func ParsePRURL(raw string) (*PRRef, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("not a URL: %q", raw)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	idx := -1
+	for i, p := range parts {
+		if p == "pull-requests" || p == "pullrequests" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 || idx+1 >= len(parts) {
+		return nil, fmt.Errorf("no /pull-requests/<id> segment in %q", raw)
+	}
+	id, err := strconv.Atoi(parts[idx+1])
+	if err != nil {
+		return nil, fmt.Errorf("PR id is not an integer in %q", raw)
+	}
+
+	var project, slug string
+	switch {
+	// Server form: /projects/<PROJ>/repos/<repo>/pull-requests/<id>.
+	case idx >= 4 && parts[0] == "projects" && parts[2] == "repos":
+		project, slug = parts[1], parts[3]
+	// Cloud form: /<workspace>/<repo>/pull-requests/<id>.
+	case idx == 2:
+		project, slug = parts[0], parts[1]
+	default:
+		return nil, fmt.Errorf("unrecognised pull-request URL shape: %q", raw)
+	}
+
+	return &PRRef{
+		Repo: Repo{Host: u.Hostname(), Project: project, Slug: slug, Remote: raw},
+		ID:   id,
+	}, nil
 }
 
 func fillPath(r *Repo, path string) (*Repo, error) {

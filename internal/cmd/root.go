@@ -19,12 +19,17 @@ func NewRootCmd(info BuildInfo) *cobra.Command {
 	var cfgPath string
 
 	root := &cobra.Command{
-		Use:           "bb",
-		Short:         "bb is a command-line interface for Bitbucket",
-		Long:          "bb is a fast, comprehensive CLI for Bitbucket Cloud and Bitbucket Data Center.",
+		Use:   "bb [path]",
+		Short: "bb is a command-line interface for Bitbucket",
+		Long: `bb is a fast, comprehensive CLI for Bitbucket Cloud and Bitbucket Data Center.
+
+With no arguments, opens the interactive home dashboard. Pass a
+filesystem path (e.g. ` + "`bb .`" + ` or ` + "`bb ../other-repo`" + `) to skip the
+dashboard and drop straight onto the repo overview TUI for the
+working tree at that path.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.NoArgs,
+		Args:          cobra.MaximumNArgs(1),
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return config.Load(cfgPath)
 		},
@@ -36,12 +41,16 @@ func NewRootCmd(info BuildInfo) *cobra.Command {
 		PersistentPostRun: func(cmd *cobra.Command, args []string) {
 			notifyIfUpdateAvailable(info)
 		},
-		// `bb` with no args opens the interactive home dashboard. The
-		// home model can return a "next action" (e.g. open the PR
-		// browser for a particular repo); we loop until the user
-		// quits cleanly so they can flow between TUIs without
-		// dropping back to the shell each time.
+		// `bb` with no args opens the interactive home dashboard. A
+		// single positional path argument — `bb .`, `bb ../foo`,
+		// `bb ~/code/bar` — short-circuits straight to the repo
+		// overview TUI for that working tree, mirroring how `gh repo
+		// view` accepts an optional path. The home loop only runs
+		// when no path is given so the two flows stay independent.
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				return runRepoTUIAtPath(args[0])
+			}
 			svc, err := defaultService("")
 			if err != nil {
 				return err
