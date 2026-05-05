@@ -45,6 +45,8 @@ func (m model) helpView() string {
 		// Header inside the overlay already documents space/enter/
 		// esc, so suppress the global help bar to avoid duplication.
 		return ""
+	case viewMessages:
+		km = m.keys.messagesHelp()
 	default:
 		km = m.contextualListHelp()
 	}
@@ -265,6 +267,15 @@ func (m model) renderForMode(mode viewMode) string {
 		// the overlay own the whole frame so the textarea has room
 		// to breathe. The status line still rides along below.
 		body = m.editor.view(m.width, m.height-2, m.editor.label())
+	case viewMessages:
+		// :messages history. Sized to the model's viewport so the
+		// list scrolls independently of whatever was on screen
+		// before — esc returns the user to that previous view via
+		// the navigation stack.
+		header := titleBar("MESSAGES",
+			theme.TitleChipDim.Render(fmt.Sprintf("%d entries", len(m.messages))),
+			theme.TitleChipDim.Render("esc to close"))
+		body = header + "\n" + m.messagesVP.View()
 	case viewReviewerSearch:
 		// Manage-reviewers overlay: a centred bordered card layered
 		// on top of the underlying view (PR list / detail) so the

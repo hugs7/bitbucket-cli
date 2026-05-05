@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
@@ -102,29 +101,5 @@ func (m *model) commentMutation(prID int, label string, fn func() error) tea.Cmd
 	})
 }
 
-// currentGitBranch returns the current local git branch name (or "" on
-// failure). Used to pre-fill the source branch when creating a PR.
 
-func renderComments(cs []api.Comment) string {
-	if len(cs) == 0 {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).
-			Render("No comments yet — press n to add one.")
-	}
-	b := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	var sb strings.Builder
-	for i, c := range cs {
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		when := ""
-		if !c.CreatedAt.IsZero() {
-			when = c.CreatedAt.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(&sb, "%s  %s\n", b.Render(c.Author), muted.Render(when))
-		sb.WriteString(c.Text)
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
 

@@ -301,16 +301,7 @@ func newRepoBrowseCmd() *cobra.Command {
 		Use:   "browse",
 		Short: "Open the repository in your browser",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
-			if err != nil {
-				return err
-			}
-			r, err := svc.GetRepo(project, slug)
-			if err != nil {
-				return err
-			}
-			fmt.Println(r.WebURL)
-			return openInBrowser(r.WebURL)
+			return browseCurrentRepo(repoFlag, hostFlag)
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")

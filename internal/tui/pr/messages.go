@@ -5,7 +5,11 @@
 // the model file shorter; everything is just data with no behaviour.
 package pr
 
-import "github.com/hugs7/bitbucket-cli/internal/api"
+import (
+	"time"
+
+	"github.com/hugs7/bitbucket-cli/internal/api"
+)
 
 // ---------- messages ----------
 
@@ -46,10 +50,22 @@ type editorResultMsg struct {
 }
 type errMsg struct{ err error }
 
-// clearStatusMsg fires after a transient toast's lifetime expires.
-// gen is matched against the model's current statusGen so a newer
-// toast set in the meantime isn't wiped by an older tick.
-type clearStatusMsg struct{ gen int }
+// statusTickMsg is the heartbeat the model uses to age out toast
+// messages. It fires once per statusTickInterval; the handler clears
+// the live status when it has been visible for more than
+// statusToastTTL and re-arms the ticker. A single self-renewing tick
+// is cheaper than scheduling a one-shot clear command on every
+// status assignment and avoids the bookkeeping that approach
+// requires (generation counters, cancellation, etc.).
+type statusTickMsg struct{}
+
+// messageEntry is one rolled-up entry in the :messages history. The
+// full styled status line is preserved so revisiting a message looks
+// the same as it did when it first flashed past.
+type messageEntry struct {
+	at   time.Time
+	text string
+}
 
 // aiDescribeDoneMsg lands when the configured AI command returns a
 // suggested PR description. The TUI then opens the description editor

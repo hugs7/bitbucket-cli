@@ -423,6 +423,14 @@ func buildPaletteItems(mode viewMode) []list.Item {
 			m.err = nil
 			return nil
 		}},
+		paletteItem{label: "View messages (:messages)", hint: ":messages", run: func(m *model) tea.Cmd {
+			// openMessages pushes the current mode onto the
+			// navigation stack so esc returns the user to
+			// whichever view they had open before the palette
+			// took over.
+			m.openMessages()
+			return nil
+		}},
 		paletteItem{label: "Quit bb", hint: "q / ctrl+c", run: func(m *model) tea.Cmd {
 			return tea.Quit
 		}},

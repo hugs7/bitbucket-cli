@@ -191,3 +191,12 @@ func (k keyMap) settingsHelp() modeKeyMap {
 		full:  [][]key.Binding{{k.Up, k.Down, k.SettingsToggle, k.ClearStatus, k.Back, k.Quit}},
 	}
 }
+
+// messagesHelp documents the :messages history view: scroll, clear
+// the log, navigate back to wherever we came from.
+func (k keyMap) messagesHelp() modeKeyMap {
+	return modeKeyMap{
+		short: [][]key.Binding{{k.Up, k.Down, k.ClearStatus, k.Back, k.Quit}},
+		full:  [][]key.Binding{{k.Up, k.Down, k.ClearStatus, k.Back, k.Quit}},
+	}
+}

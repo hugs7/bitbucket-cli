@@ -234,24 +234,6 @@ func newHomeModel(svc api.Service) homeModel {
 	return m
 }
 
-// applyRestore re-seats list cursors after data has loaded so a
-// returning user lands back where they were.
-func (m *homeModel) applyRestore() {
-	if m.restore == nil {
-		return
-	}
-	rows := m.dashFlatRows()
-	if m.restore.DashIdx >= 0 && m.restore.DashIdx < len(rows) {
-		m.dashCursor = m.restore.DashIdx
-	}
-	if m.restore.FavIdx >= 0 && m.restore.FavIdx < len(m.favs.Items()) {
-		m.favs.Select(m.restore.FavIdx)
-	}
-	if m.restore.BrowseIdx >= 0 && m.restore.BrowseIdx < len(m.browse.Items()) {
-		m.browse.Select(m.restore.BrowseIdx)
-	}
-}
-
 // refreshFavourites pulls the persisted favourites list (filtered to
 // the current host) into the favs list model.
 func (m *homeModel) refreshFavourites() {

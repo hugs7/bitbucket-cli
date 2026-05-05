@@ -65,6 +65,11 @@ const (
 	viewEditor
 	viewSettings
 	viewReviewerSearch
+	// viewMessages renders the rolling toast history (vim's
+	// :messages). Opened from the palette or the dedicated
+	// shortcut so the user can revisit a status that flashed past
+	// before the auto-clear timer fired.
+	viewMessages
 )
 
 // buildDot is a thin alias for theme.BuildDot so the dozens of
@@ -151,10 +156,22 @@ type model struct {
 	help    help.Model
 	keys    keyMap
 
-	loading   bool
-	status    string // transient toast
-	statusGen int    // bumps every time status is set so stale auto-clear ticks are ignored
-	err       error
+	loading bool
+	status  string // transient toast shown above the help bar
+	// statusSetAt is bumped every time `status` changes (detected by
+	// the change-watcher at the top of Update). The status ticker
+	// uses it to decide when to clear an idle toast so callers don't
+	// have to thread a tea.Cmd through every status assignment.
+	statusSetAt        time.Time
+	lastObservedStatus string
+	// messages is the rolling history of every non-empty status the
+	// model has ever shown. The :messages view renders this list so
+	// the user can revisit a toast that flicked past too quickly.
+	messages []messageEntry
+	// messagesVP scrolls the :messages view independently from the
+	// PR detail / diff viewports.
+	messagesVP viewport.Model
+	err        error
 
 	width, height int
 	diffID        int
@@ -356,6 +373,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 		list:           l,
 		detail:         viewport.New(0, 0),
 		diff:           viewport.New(0, 0),
+		messagesVP:     viewport.New(0, 0),
 		comments:       cl,
 		palette:        newPaletteWidget(),
 		settings:       sl,
@@ -369,7 +387,7 @@ func newPRModel(svc api.Service, project, slug string) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.fetchPRs())
+	return tea.Batch(m.spinner.Tick, m.fetchPRs(), statusTick())
 }
 
 // ---------- async commands ----------
@@ -645,6 +663,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case viewPalette:
 			cmd := m.palette.Update(msg)
+			return m, cmd
+		case viewMessages:
+			var cmd tea.Cmd
+			m.messagesVP, cmd = m.messagesVP.Update(msg)
 			return m, cmd
 		}
 		return m, nil
@@ -1182,14 +1204,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
-	case clearStatusMsg:
-		// Only clear if no newer toast has overwritten the status
-		// in the meantime; otherwise the user would see their
-		// fresh message vanish prematurely.
-		if msg.gen == m.statusGen {
+	case statusTickMsg:
+		// Heartbeat: notice any status mutation that happened
+		// between ticks (so the :messages history records it and
+		// the visibility timer is reset to "now"), then wipe the
+		// toast once it has been steady on screen for longer than
+		// the TTL. Always re-arm the tick — a single recurring
+		// timer is cheaper than scheduling a one-shot per status
+		// assignment.
+		m.observeStatusChange()
+		if m.status != "" && time.Since(m.statusSetAt) > statusToastTTL {
 			m.status = ""
+			m.observeStatusChange()
 		}
-		return m, nil
+		return m, statusTick()
 
 	case tea.KeyMsg:
 		if m.list.FilterState() == list.Filtering {
@@ -2105,6 +2133,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.comments, cmd = m.comments.Update(msg)
 			return m, cmd
+		case viewMessages:
+			// :messages history view: scroll the viewport, and
+			// allow ctrl+l to wipe the log entirely (mirrors how
+			// vim's :messages clear works).
+			if key.Matches(msg, m.keys.ClearStatus) {
+				m.messages = nil
+				m.status = ""
+				m.messagesVP.SetContent(m.renderMessagesBody())
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.messagesVP, cmd = m.messagesVP.Update(msg)
+			return m, cmd
 		}
 
 		// viewList handling.
@@ -2272,6 +2313,45 @@ func (m *model) layout() {
 	}
 	m.comments.SetSize(m.width, m.height-helpHeight-2)
 	m.settings.SetSize(m.width, m.height-helpHeight-4)
+	// :messages history viewport — same accounting as the detail
+	// view (one row for the title bar, one for the help footer).
+	m.messagesVP.Width = m.width
+	m.messagesVP.Height = m.height - helpHeight - 2
+	if m.mode == viewMessages {
+		m.messagesVP.SetContent(m.renderMessagesBody())
+	}
+}
+
+// renderMessagesBody formats every recorded toast as "HH:MM:SS  msg"
+// with the newest entry at the bottom (matching `:messages` in vim
+// and append-only chat logs). The viewport handles scrolling so the
+// renderer can stay dumb and just produce a single string.
+func (m *model) renderMessagesBody() string {
+	if len(m.messages) == 0 {
+		return theme.TitleChipDim.Render("  no messages yet — actions you take will land here")
+	}
+	var sb strings.Builder
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	for i, e := range m.messages {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(muted.Render(e.at.Format("15:04:05")))
+		sb.WriteString("  ")
+		sb.WriteString(e.text)
+	}
+	return sb.String()
+}
+
+// openMessages switches into the :messages history view, refreshing
+// its content from the latest toast log and scrolling to the bottom
+// so the most recent entry is visible. Pushes the current mode so
+// esc walks back where the user was.
+func (m *model) openMessages() {
+	m.observeStatusChange()
+	m.messagesVP.SetContent(m.renderMessagesBody())
+	m.messagesVP.GotoBottom()
+	m.pushMode(viewMessages)
 }
 
 // treeWidth picks a sensible width for the diff file-tree side panel.
@@ -2405,31 +2485,59 @@ func (m *model) popMode() (viewMode, bool) {
 
 // copyPRLink writes the PR's web URL to the system clipboard and
 // surfaces a transient toast so the user gets feedback that the
-// action landed (or didn't). Returns a tea.Cmd that auto-clears the
-// toast after a few seconds so it doesn't squat on the help bar.
+// action landed (or didn't). The status auto-clears via the global
+// status ticker — no per-callsite scheduling needed.
 func (m *model) copyPRLink(url string) tea.Cmd {
 	if url == "" {
-		return m.setTransientStatus(theme.ErrPrefix() + "no link available for this PR")
+		m.status = theme.ErrPrefix() + "no link available for this PR"
+		return nil
 	}
 	if err := sysutil.CopyToClipboard(url); err != nil {
-		return m.setTransientStatus(theme.ErrPrefix() + "copy failed: " + err.Error())
+		m.status = theme.ErrPrefix() + "copy failed: " + err.Error()
+		return nil
 	}
-	return m.setTransientStatus(theme.OKPrefix() + "link copied: " + url)
+	m.status = theme.OKPrefix() + "link copied: " + url
+	return nil
 }
 
-// setTransientStatus stages a toast and returns a tea.Cmd that
-// dismisses it after statusToastTTL. Each call bumps statusGen so a
-// newer toast invalidates pending clear ticks for older ones.
-func (m *model) setTransientStatus(text string) tea.Cmd {
-	m.status = text
-	m.statusGen++
-	gen := m.statusGen
-	return tea.Tick(statusToastTTL, func(time.Time) tea.Msg {
-		return clearStatusMsg{gen: gen}
+// statusToastTTL is how long a toast stays on screen before the
+// status ticker wipes it. Five seconds matches the comparable
+// "transient confirmation" feel in editors like VS Code's
+// notification toasts.
+const statusToastTTL = 5 * time.Second
+
+// statusTickInterval is how often the heartbeat fires to age out
+// toasts. Half a second is small enough that the perceived clear
+// time is "about 5s" without spending CPU on a sub-100ms tick.
+const statusTickInterval = 500 * time.Millisecond
+
+// statusTick produces the self-renewing heartbeat that drives toast
+// auto-dismissal. Keep it cheap: just a Tick that emits an empty
+// statusTickMsg.
+func statusTick() tea.Cmd {
+	return tea.Tick(statusTickInterval, func(time.Time) tea.Msg {
+		return statusTickMsg{}
 	})
 }
 
-const statusToastTTL = 5 * time.Second
+// observeStatusChange is called at the very top of Update for every
+// message. When the live status differs from what we last saw it
+// records a fresh history entry and resets the visibility timer.
+// This lets every "m.status = X" callsite stay a one-line assignment
+// while still getting auto-dismissal and :messages history for free.
+func (m *model) observeStatusChange() {
+	if m.status == m.lastObservedStatus {
+		return
+	}
+	m.statusSetAt = time.Now()
+	m.lastObservedStatus = m.status
+	if m.status != "" {
+		m.messages = append(m.messages, messageEntry{
+			at:   m.statusSetAt,
+			text: m.status,
+		})
+	}
+}
 
 func humanTime(t time.Time) string { return strutil.HumanTime(t) }
 
@@ -2482,11 +2590,6 @@ var (
 func editInlineInTUI(prID int, path string, lineNo int, side string) tea.Cmd {
 	return requestEditInline(prID, path, lineNo, side)
 }
-
-// sanitizeForFilename is a thin alias for strutil.SanitizeForFilename,
-// kept locally so the dozens of TUI callers don't need to import the
-// utility package each.
-func sanitizeForFilename(s string) string { return strutil.SanitizeForFilename(s) }
 
 // splitFirstLineTokens reads the first non-blank, non-comment line of
 // the editor buffer and returns its whitespace- and comma-separated
