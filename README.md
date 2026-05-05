@@ -63,6 +63,18 @@ curl -fsSL https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/in
 irm https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install.ps1 | iex
 ```
 
+### Manual install (macOS + zsh, no sudo, no Homebrew)
+
+Drops the binary into `~/.local/bin/bb` and the zsh completion into
+`~/.zsh/completions/_bb`, and adds the necessary `fpath` snippet to
+`~/.zshrc` (idempotent — re-run any time to upgrade in place):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install-mac-zsh.sh | sh
+```
+
+Make sure `~/.local/bin` is on your `$PATH`.
+
 ### From source
 
 ```sh
