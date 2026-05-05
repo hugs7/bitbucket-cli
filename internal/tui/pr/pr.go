@@ -1757,6 +1757,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						_ = openInBrowser(it.pr.WebURL)
 					}
 					return m, nil
+				case key.Matches(msg, m.keys.CopyLink):
+					m.copyPRLink(it.pr.WebURL)
+					return m, nil
 				case key.Matches(msg, m.keys.Approve):
 					if m.isOwnPR(it.pr) {
 						m.status = theme.ErrPrefix() + "can't approve your own PR"
@@ -2085,6 +2088,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.WebURL != "" {
 				_ = openInBrowser(it.pr.WebURL)
 			}
+		case key.Matches(msg, m.keys.CopyLink):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				m.copyPRLink(it.pr.WebURL)
+			}
 		case key.Matches(msg, m.keys.Approve):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				if m.isOwnPR(it.pr) {
@@ -2302,6 +2309,21 @@ func (m model) renderDiffTree() string {
 // call sites stay terse. The single source of truth lives in
 // internal/sysutil and internal/strutil respectively.
 func openInBrowser(url string) error { return sysutil.OpenInBrowser(url) }
+
+// copyPRLink writes the PR's web URL to the system clipboard and
+// surfaces a status line so the user gets feedback that the action
+// landed (or didn't).
+func (m *model) copyPRLink(url string) {
+	if url == "" {
+		m.status = theme.ErrPrefix() + "no link available for this PR"
+		return
+	}
+	if err := sysutil.CopyToClipboard(url); err != nil {
+		m.status = theme.ErrPrefix() + "copy failed: " + err.Error()
+		return
+	}
+	m.status = theme.OKPrefix() + "link copied: " + url
+}
 
 func humanTime(t time.Time) string { return strutil.HumanTime(t) }
 

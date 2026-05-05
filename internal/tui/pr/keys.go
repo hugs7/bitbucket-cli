@@ -13,6 +13,7 @@ type keyMap struct {
 	Enter            key.Binding
 	Diff             key.Binding
 	Open             key.Binding
+	CopyLink         key.Binding
 	Refresh          key.Binding
 	State, StatePrev key.Binding
 	Help             key.Binding
@@ -52,6 +53,7 @@ func defaultKeys() keyMap {
 		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "view detail")),
 		Diff:      key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
 		Open:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
+		CopyLink:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy link")),
 		Refresh:   key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		State:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s/S", "state ←/→")),
 		StatePrev: key.NewBinding(key.WithKeys("S")),
@@ -123,7 +125,7 @@ func (k keyMap) listHelp() modeKeyMap {
 	return modeKeyMap{
 		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
 		full: [][]key.Binding{
-			{k.Up, k.Down, k.Enter, k.Diff, k.Open},
+			{k.Up, k.Down, k.Enter, k.Diff, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
 			{k.EditDesc, k.Comments, k.Refresh, k.State},
 			{k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR},
@@ -150,7 +152,7 @@ func (k keyMap) detailHelp() modeKeyMap {
 	return modeKeyMap{
 		short: [][]key.Binding{{k.Up, k.Down, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Back, k.Quit}},
 		full: [][]key.Binding{
-			{k.Up, k.Down, k.Diff, k.Comments, k.Open},
+			{k.Up, k.Down, k.Diff, k.Comments, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
 			{k.EditDesc, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Help, k.Back, k.Quit},
 		},
