@@ -11,6 +11,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,56 @@ func currentGitBranch() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// branchToTitle turns a git branch name into a sensible default PR
+// title. Examples:
+//
+//	feature/some-feature       → "Feature: Some feature"
+//	bugfix/fix_the_thing       → "Bugfix: Fix the thing"
+//	hotfix/JIRA-123-broken     → "Hotfix: JIRA-123 broken"
+//	some-feature               → "Some feature"
+//
+// The first path segment becomes the prefix (capitalised, followed by
+// ": "). Remaining segments are merged into a single sentence with
+// '-' / '_' / '/' treated as word separators. Existing capitalisation
+// inside tokens (e.g. "JIRA-123") is preserved — we only force the
+// first character of the prefix and the body to uppercase.
+func branchToTitle(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return ""
+	}
+	var prefix, rest string
+	if i := strings.Index(branch, "/"); i > 0 {
+		prefix = branch[:i]
+		rest = branch[i+1:]
+	} else {
+		rest = branch
+	}
+	rest = strings.Map(func(r rune) rune {
+		if r == '-' || r == '_' || r == '/' {
+			return ' '
+		}
+		return r
+	}, rest)
+	// Collapse runs of whitespace introduced by adjacent separators
+	// (e.g. "foo--bar" → "foo  bar" → "foo bar").
+	rest = strings.Join(strings.Fields(rest), " ")
+	rest = upperFirst(rest)
+	if prefix == "" {
+		return rest
+	}
+	return upperFirst(prefix) + ": " + rest
+}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
 
 // remoteBranches returns the names of branches known to the local git
@@ -161,6 +212,7 @@ func (m *model) startCreatePR() tea.Cmd {
 	form := &createPRForm{
 		source:   source,
 		target:   target,
+		title:    branchToTitle(source),
 		branches: remoteBranches(),
 	}
 	return tea.Exec(form, func(err error) tea.Msg {
