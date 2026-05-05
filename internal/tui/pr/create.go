@@ -139,7 +139,13 @@ type createPRMsg struct {
 // via the standard message loop.
 type createPRForm struct {
 	source, target, title, body string
-	branches                    []string
+	// titleHint is shown as the title input's placeholder so the
+	// user sees the suggested title without it sitting in the
+	// field as text they'd have to clear before retyping. If they
+	// submit without typing anything, we adopt titleHint as the
+	// final title.
+	titleHint string
+	branches  []string
 
 	stdin          io.Reader
 	stdout, stderr io.Writer
@@ -175,7 +181,20 @@ func (f *createPRForm) Run() error {
 			Suggestions(f.branches).Validate(formNonEmpty),
 		huh.NewInput().Title("Target branch").Value(&f.target).
 			Suggestions(f.branches).Validate(formNonEmpty),
-		huh.NewInput().Title("Title").Value(&f.title).Validate(formNonEmpty),
+		// Title shows the branch-derived suggestion as a
+		// placeholder rather than pre-filled text — typing
+		// replaces it without the user having to clear the
+		// field first. Empty submissions fall back to the hint
+		// after the form returns, so the validator only checks
+		// that we have *some* title (hint or typed).
+		huh.NewInput().Title("Title").Value(&f.title).
+			Placeholder(f.titleHint).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" && strings.TrimSpace(f.titleHint) == "" {
+					return fmt.Errorf("required")
+				}
+				return nil
+			}),
 		huh.NewText().Title("Description (optional)").Value(&f.body),
 	)).WithInput(f.stdin).WithOutput(f.stdout).WithKeyMap(keymap)
 
@@ -189,6 +208,13 @@ func (f *createPRForm) Run() error {
 		}
 		f.err = err
 		return nil
+	}
+
+	// Adopt the placeholder title when the user accepted it by
+	// hitting enter without typing — the placeholder is purely
+	// visual in huh, so f.title is still empty at this point.
+	if strings.TrimSpace(f.title) == "" {
+		f.title = f.titleHint
 	}
 
 	// After the form succeeds, sanity-check that the source branch
@@ -337,10 +363,10 @@ func (m *model) startCreatePR() tea.Cmd {
 		target = r.DefaultRef
 	}
 	form := &createPRForm{
-		source:   source,
-		target:   target,
-		title:    branchToTitle(source),
-		branches: remoteBranches(),
+		source:    source,
+		target:    target,
+		titleHint: branchToTitle(source),
+		branches:  remoteBranches(),
 	}
 	return tea.Exec(form, func(err error) tea.Msg {
 		// Propagate any unexpected error from the harness itself
