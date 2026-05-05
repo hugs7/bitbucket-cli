@@ -184,11 +184,17 @@ func (f *createPRForm) Run() error {
 		// Title shows the branch-derived suggestion as a
 		// placeholder rather than pre-filled text — typing
 		// replaces it without the user having to clear the
-		// field first. Empty submissions fall back to the hint
-		// after the form returns, so the validator only checks
-		// that we have *some* title (hint or typed).
+		// field first. PlaceholderFunc is re-evaluated whenever
+		// f.source changes so picking a different source branch
+		// instantly updates the suggested title. Empty
+		// submissions fall back to the live hint after the form
+		// returns, so the validator only checks that we have
+		// *some* title (hint or typed).
 		huh.NewInput().Title("Title").Value(&f.title).
-			Placeholder(f.titleHint).
+			PlaceholderFunc(func() string {
+				f.titleHint = branchToTitle(f.source)
+				return f.titleHint
+			}, &f.source).
 			Validate(func(s string) error {
 				if strings.TrimSpace(s) == "" && strings.TrimSpace(f.titleHint) == "" {
 					return fmt.Errorf("required")
