@@ -23,6 +23,7 @@ type keyMap struct {
 
 	Approve, Unapprove, NeedsWork, Merge key.Binding
 	EditDesc, Comments, AddComment       key.Binding
+	EditTarget                           key.Binding
 	CreatePR, DeclinePR, DeletePR        key.Binding
 	ManageReviewers                      key.Binding
 
@@ -71,6 +72,7 @@ func defaultKeys() keyMap {
 		NeedsWork:  key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "needs work")),
 		Merge:      key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "merge")),
 		EditDesc:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit description")),
+		EditTarget: key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "edit target branch")),
 		Comments:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comments")),
 		AddComment: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new comment")),
 		CreatePR:   key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "create PR")),
@@ -127,7 +129,7 @@ func (k keyMap) listHelp() modeKeyMap {
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
-			{k.EditDesc, k.Comments, k.Refresh, k.State},
+			{k.EditDesc, k.EditTarget, k.Comments, k.Refresh, k.State},
 			{k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR},
 			{k.PaletteOpen, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
 		},
@@ -154,7 +156,7 @@ func (k keyMap) detailHelp() modeKeyMap {
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Diff, k.Comments, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
-			{k.EditDesc, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Help, k.Back, k.Quit},
+			{k.EditDesc, k.EditTarget, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Help, k.Back, k.Quit},
 		},
 	}
 }

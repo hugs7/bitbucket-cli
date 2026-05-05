@@ -293,6 +293,15 @@ func (c *cloudService) UpdatePRDescription(workspace, slug string, id int, descr
 	body := map[string]any{"description": description}
 	return c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d", workspace, slug, id), body, nil)
 }
+
+func (c *cloudService) UpdatePRTarget(workspace, slug string, id int, targetRef string) error {
+	body := map[string]any{
+		"destination": map[string]any{
+			"branch": map[string]string{"name": targetRef},
+		},
+	}
+	return c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d", workspace, slug, id), body, nil)
+}
 func (c *cloudService) ApprovePR(workspace, slug string, id int) error {
 	return c.client.postJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d/approve", workspace, slug, id), nil, nil)
 }

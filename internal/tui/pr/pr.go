@@ -933,6 +933,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
 		})
 
+	case editTargetMsg:
+		// huh form for "edit target branch" completed. Treat empty
+		// or unchanged target as a no-op to avoid an extra API call
+		// + a misleading "updated" toast when nothing changed.
+		if msg.cancelled {
+			m.status = "edit target cancelled"
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "edit target: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.target == "" {
+			m.status = "edit target cancelled"
+			return m, nil
+		}
+		// Skip the API call if the user re-submitted the same
+		// target — saves a round-trip and avoids the reviewer
+		// round-trip's risk of clobbering on Server.
+		for _, it := range m.list.Items() {
+			pi, ok := it.(prItem)
+			if !ok || pi.pr.ID != msg.prID {
+				continue
+			}
+			if pi.pr.TargetRef == msg.target {
+				m.status = theme.OKPrefix() + fmt.Sprintf("PR #%d already targets %s", msg.prID, msg.target)
+				return m, nil
+			}
+			break
+		}
+		prID := msg.prID
+		target := msg.target
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.doAction(
+			fmt.Sprintf("retargeted #%d → %s", prID, target),
+			true,
+			func() error {
+				return m.svc.UpdatePRTarget(m.project, m.slug, prID, target)
+			},
+		))
+
 	case mergeStrategiesLoadedMsg:
 		// Strategies fetched — populate the dialog state and switch
 		// into the confirm view. On error we still show the dialog
@@ -1807,6 +1848,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
+				case key.Matches(msg, m.keys.EditTarget):
+					return m, m.startEditTarget(id, it.pr.TargetRef)
 				case key.Matches(msg, m.keys.CreatePR):
 					return m, m.startCreatePR()
 				case key.Matches(msg, m.keys.DeclinePR):
@@ -2151,6 +2194,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				return m, editInTUI("edit-description",
 					fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, 0, it.pr.Description)
+			}
+		case key.Matches(msg, m.keys.EditTarget):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, m.startEditTarget(it.pr.ID, it.pr.TargetRef)
 			}
 		case key.Matches(msg, m.keys.CreatePR):
 			return m, m.startCreatePR()

@@ -413,6 +413,25 @@ func (s *serverService) UpdatePRDescription(project, slug string, id int, descri
 	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), body, nil)
 }
 
+func (s *serverService) UpdatePRTarget(project, slug string, id int, targetRef string) error {
+	// Same round-trip dance as UpdatePRDescription: PUT replaces
+	// the resource, so we must send the existing reviewers back
+	// or Bitbucket Server will quietly clear them. version is
+	// required for optimistic locking.
+	v, reviewers, err := s.prVersionAndReviewers(project, slug, id)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
+		"version":   v,
+		"reviewers": reviewers,
+		"toRef": map[string]any{
+			"id": "refs/heads/" + targetRef,
+		},
+	}
+	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), body, nil)
+}
+
 func (s *serverService) participantStatus(project, slug string, id int, status string, approved bool) error {
 	user := s.client.cfg.Username
 	if user == "" {

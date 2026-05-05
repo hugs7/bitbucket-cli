@@ -130,6 +130,12 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				}
 				return nil
 			}},
+			paletteItem{label: "Edit target branch", hint: "T", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					return m.startEditTarget(it.pr.ID, it.pr.TargetRef)
+				}
+				return nil
+			}},
 			paletteItem{label: "AI: generate description from diff", hint: "palette", run: func(m *model) tea.Cmd {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
 					m.loading = true

@@ -56,6 +56,14 @@ type Service interface {
 	PRDiff(project, slug string, id int) (string, error)
 
 	UpdatePRDescription(project, slug string, id int, description string) error
+
+	// UpdatePRTarget changes the destination/target branch of an
+	// existing PR. targetRef is a short branch name (e.g. "main",
+	// not "refs/heads/main"). Some servers reject this if the new
+	// target has no commits in common with the source — the API
+	// error is propagated to the caller.
+	UpdatePRTarget(project, slug string, id int, targetRef string) error
+
 	ApprovePR(project, slug string, id int) error
 	UnapprovePR(project, slug string, id int) error
 	NeedsWorkPR(project, slug string, id int) error
