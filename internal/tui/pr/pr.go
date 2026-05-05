@@ -81,6 +81,12 @@ type model struct {
 	state   string
 
 	mode viewMode
+	// modeStack is a navigation history of "user-driven" view
+	// modes (list/detail/diff/comments). pushMode appends the
+	// current mode then sets a new one; the Back handler pops it
+	// so esc walks back along the path the user took rather than
+	// always jumping straight to the list.
+	modeStack []viewMode
 
 	list     list.Model
 	detail   viewport.Model
@@ -755,7 +761,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff.SetContent(m.renderDiffRows())
 		m.diff.GotoTop()
 		m.ensureDiffCursorVisible()
-		m.mode = viewDiff
+		m.pushMode(viewDiff)
 		if needComments {
 			return m, m.fetchDiffComments(msg.id)
 		}
@@ -793,7 +799,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items = append(items, commentItem{c})
 		}
 		m.comments.SetItems(items)
-		m.mode = viewComments
+		m.pushMode(viewComments)
 		return m, nil
 
 	case actionDoneMsg:
@@ -1326,11 +1332,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if m.mode != viewList {
-				m.mode = viewList
+			// Walk back along the user's navigation history (e.g.
+			// list → detail → diff → esc returns to detail, not
+			// straight to list). Falling off the bottom of the
+			// stack exits the TUI as it always did.
+			if m.mode == viewList {
+				return m, tea.Quit
+			}
+			if prev, ok := m.popMode(); ok {
+				m.mode = prev
 				return m, nil
 			}
-			return m, tea.Quit
+			m.mode = viewList
+			return m, nil
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()
@@ -2123,7 +2137,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Enter):
 			if _, ok := m.list.SelectedItem().(prItem); ok {
 				m.detail.GotoTop()
-				m.mode = viewDetail
+				m.pushMode(viewDetail)
 				return m, nil
 			}
 		case key.Matches(msg, m.keys.Diff):
@@ -2365,6 +2379,29 @@ func (m model) renderDiffTree() string {
 // call sites stay terse. The single source of truth lives in
 // internal/sysutil and internal/strutil respectively.
 func openInBrowser(url string) error { return sysutil.OpenInBrowser(url) }
+
+// pushMode records the current mode on the navigation stack and
+// transitions to next. Use this at every "drill-down" transition
+// (list→detail, list/detail→diff/comments) so Back can unwind the
+// user's exact path.
+func (m *model) pushMode(next viewMode) {
+	m.modeStack = append(m.modeStack, m.mode)
+	m.mode = next
+}
+
+// popMode rewinds the navigation stack by one step, returning the
+// restored mode and true. When the stack is empty it returns
+// (viewList, false) so the caller can fall back to "quit on root
+// esc" behaviour.
+func (m *model) popMode() (viewMode, bool) {
+	if len(m.modeStack) == 0 {
+		return viewList, false
+	}
+	n := len(m.modeStack) - 1
+	prev := m.modeStack[n]
+	m.modeStack = m.modeStack[:n]
+	return prev, true
+}
 
 // copyPRLink writes the PR's web URL to the system clipboard and
 // surfaces a transient toast so the user gets feedback that the
