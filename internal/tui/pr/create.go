@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -187,8 +188,134 @@ func (f *createPRForm) Run() error {
 			return nil
 		}
 		f.err = err
+		return nil
 	}
+
+	// After the form succeeds, sanity-check that the source branch
+	// actually exists on the remote (and is up to date) — otherwise
+	// the PR would be opened against a ref the server hasn't seen
+	// yet, or against a stale tip that's missing local commits.
+	// Each prompt is independent: the user can decline and we'll
+	// still hand the createPRMsg back so they can continue (e.g.
+	// they pushed manually in another terminal).
+	f.syncSourceBranch(keymap)
 	return nil
+}
+
+// syncSourceBranch is invoked after the main create-PR form. It
+// inspects the local git state for f.source and prompts the user to
+// publish or push it as needed. Errors are surfaced via f.err so the
+// parent TUI shows them instead of silently submitting against a
+// missing/outdated ref.
+func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
+	branch := strings.TrimSpace(f.source)
+	if branch == "" {
+		return
+	}
+	upstream, _ := branchUpstream(branch)
+	if upstream == "" {
+		// No upstream configured → branch isn't on the remote yet
+		// (or at least git doesn't know about it). Offer to push
+		// with -u so the tracking ref is set as a side effect.
+		var push bool
+		prompt := huh.NewForm(huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Branch %q has no upstream on origin.", branch)).
+				Description("Push it now so the PR can target the remote ref?").
+				Affirmative("Yes, push").Negative("No, skip").
+				Value(&push),
+		)).WithInput(f.stdin).WithOutput(f.stdout).WithKeyMap(keymap)
+		if err := prompt.Run(); err != nil {
+			if err == huh.ErrUserAborted {
+				f.cancelled = true
+				return
+			}
+			f.err = err
+			return
+		}
+		if push {
+			if err := gitPushNewBranch(branch, f.stdout, f.stderr); err != nil {
+				f.err = fmt.Errorf("push %q failed: %w", branch, err)
+			}
+		}
+		return
+	}
+
+	// Upstream exists — check whether the local tip has commits
+	// the remote tip doesn't, and offer to push them.
+	ahead, err := branchAhead(branch, upstream)
+	if err != nil || ahead == 0 {
+		return
+	}
+	commits := "commit"
+	if ahead != 1 {
+		commits = "commits"
+	}
+	var push bool
+	prompt := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title(fmt.Sprintf("Branch %q is ahead of %s by %d %s.", branch, upstream, ahead, commits)).
+			Description("Push the unpushed commits before opening the PR?").
+			Affirmative("Yes, push").Negative("No, skip").
+			Value(&push),
+	)).WithInput(f.stdin).WithOutput(f.stdout).WithKeyMap(keymap)
+	if err := prompt.Run(); err != nil {
+		if err == huh.ErrUserAborted {
+			f.cancelled = true
+			return
+		}
+		f.err = err
+		return
+	}
+	if push {
+		if err := gitPushBranch(branch, f.stdout, f.stderr); err != nil {
+			f.err = fmt.Errorf("push %q failed: %w", branch, err)
+		}
+	}
+}
+
+// branchUpstream returns the configured upstream ref (e.g.
+// "origin/feature/x") for branch, or "" when no upstream is set or
+// git can't be reached.
+func branchUpstream(branch string) (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref",
+		branch+"@{upstream}").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// branchAhead returns how many commits branch has that upstream
+// doesn't. Zero means the branch is up to date (or behind, which we
+// don't try to fix here — that's the user's problem to rebase).
+func branchAhead(branch, upstream string) (int, error) {
+	out, err := exec.Command("git", "rev-list", "--count",
+		upstream+".."+branch).Output()
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
+// gitPushNewBranch publishes a brand-new branch to origin with -u so
+// the upstream tracking ref is set as a side effect.
+func gitPushNewBranch(branch string, stdout, stderr io.Writer) error {
+	cmd := exec.Command("git", "push", "-u", "origin", branch)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+// gitPushBranch pushes an already-tracked branch to its configured
+// upstream. We pass the branch explicitly rather than relying on the
+// current HEAD because the user may have picked a non-current branch
+// in the create-PR form.
+func gitPushBranch(branch string, stdout, stderr io.Writer) error {
+	cmd := exec.Command("git", "push", "origin", branch)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
 }
 
 func formNonEmpty(s string) error {
