@@ -145,9 +145,10 @@ type model struct {
 	help    help.Model
 	keys    keyMap
 
-	loading bool
-	status  string // transient toast
-	err     error
+	loading   bool
+	status    string // transient toast
+	statusGen int    // bumps every time status is set so stale auto-clear ticks are ignored
+	err       error
 
 	width, height int
 	diffID        int
@@ -1134,6 +1135,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
+	case clearStatusMsg:
+		// Only clear if no newer toast has overwritten the status
+		// in the meantime; otherwise the user would see their
+		// fresh message vanish prematurely.
+		if msg.gen == m.statusGen {
+			m.status = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.list.FilterState() == list.Filtering {
 			break
@@ -1758,8 +1768,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				case key.Matches(msg, m.keys.CopyLink):
-					m.copyPRLink(it.pr.WebURL)
-					return m, nil
+					return m, m.copyPRLink(it.pr.WebURL)
 				case key.Matches(msg, m.keys.Approve):
 					if m.isOwnPR(it.pr) {
 						m.status = theme.ErrPrefix() + "can't approve your own PR"
@@ -2090,7 +2099,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.CopyLink):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
-				m.copyPRLink(it.pr.WebURL)
+				return m, m.copyPRLink(it.pr.WebURL)
 			}
 		case key.Matches(msg, m.keys.Approve):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
@@ -2311,19 +2320,32 @@ func (m model) renderDiffTree() string {
 func openInBrowser(url string) error { return sysutil.OpenInBrowser(url) }
 
 // copyPRLink writes the PR's web URL to the system clipboard and
-// surfaces a status line so the user gets feedback that the action
-// landed (or didn't).
-func (m *model) copyPRLink(url string) {
+// surfaces a transient toast so the user gets feedback that the
+// action landed (or didn't). Returns a tea.Cmd that auto-clears the
+// toast after a few seconds so it doesn't squat on the help bar.
+func (m *model) copyPRLink(url string) tea.Cmd {
 	if url == "" {
-		m.status = theme.ErrPrefix() + "no link available for this PR"
-		return
+		return m.setTransientStatus(theme.ErrPrefix() + "no link available for this PR")
 	}
 	if err := sysutil.CopyToClipboard(url); err != nil {
-		m.status = theme.ErrPrefix() + "copy failed: " + err.Error()
-		return
+		return m.setTransientStatus(theme.ErrPrefix() + "copy failed: " + err.Error())
 	}
-	m.status = theme.OKPrefix() + "link copied: " + url
+	return m.setTransientStatus(theme.OKPrefix() + "link copied: " + url)
 }
+
+// setTransientStatus stages a toast and returns a tea.Cmd that
+// dismisses it after statusToastTTL. Each call bumps statusGen so a
+// newer toast invalidates pending clear ticks for older ones.
+func (m *model) setTransientStatus(text string) tea.Cmd {
+	m.status = text
+	m.statusGen++
+	gen := m.statusGen
+	return tea.Tick(statusToastTTL, func(time.Time) tea.Msg {
+		return clearStatusMsg{gen: gen}
+	})
+}
+
+const statusToastTTL = 5 * time.Second
 
 func humanTime(t time.Time) string { return strutil.HumanTime(t) }
 
@@ -2344,7 +2366,6 @@ func titleBar(section string, chips ...string) string {
 func renderStatusLine(loading bool, sp, status string) string {
 	return theme.RenderStatusLine(loading, sp, status)
 }
-func joinFooter(status, help string) string { return theme.JoinFooter(status, help) }
 
 // Diff styling — package-level so both unified and split renderers
 // share the same colour palette without re-allocating per call.

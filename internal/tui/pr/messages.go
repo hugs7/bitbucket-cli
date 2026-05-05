@@ -46,6 +46,11 @@ type editorResultMsg struct {
 }
 type errMsg struct{ err error }
 
+// clearStatusMsg fires after a transient toast's lifetime expires.
+// gen is matched against the model's current statusGen so a newer
+// toast set in the meantime isn't wiped by an older tick.
+type clearStatusMsg struct{ gen int }
+
 // aiDescribeDoneMsg lands when the configured AI command returns a
 // suggested PR description. The TUI then opens the description editor
 // pre-filled with `text` so the user can review / tweak before saving.

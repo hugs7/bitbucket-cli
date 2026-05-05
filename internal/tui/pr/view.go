@@ -156,7 +156,13 @@ func (m model) View() string {
 	body := m.renderForMode(m.mode)
 	footer := m.helpView()
 	statusLine := renderStatusLine(m.loading, m.spinner.View(), m.status)
-	return body + "\n" + joinFooter(statusLine, footer)
+	// The toast lives on its own line directly above the help bar so
+	// it never squats over the keyboard shortcuts. When there's no
+	// toast we drop the line entirely to avoid a phantom blank row.
+	if statusLine == "" {
+		return body + "\n" + footer
+	}
+	return body + "\n" + statusLine + "\n" + footer
 }
 
 // renderForMode produces the body string for a given mode, used both
