@@ -171,10 +171,7 @@ func computeWordHighlights(lines []diffLine) {
 		}
 		dels := lines[dStart:aStart]
 		adds := lines[aStart:i]
-		n := len(dels)
-		if len(adds) < n {
-			n = len(adds)
-		}
+		n := min(len(adds), len(dels))
 		for k := 0; k < n; k++ {
 			oldBody := strings.TrimPrefix(dels[k].raw, "-")
 			newBody := strings.TrimPrefix(adds[k].raw, "+")
