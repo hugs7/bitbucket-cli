@@ -63,6 +63,25 @@ type Config struct {
 	// AddRecentReviewer.
 	RecentReviewers map[string][]RecentReviewer `yaml:"recent_reviewers,omitempty"`
 
+	// Keybindings overrides default TUI key bindings. Keys are the
+	// snake_case names of the model's keyMap fields (e.g. "approve",
+	// "merge", "edit_target", "diff_search_next") and values are
+	// comma-separated key names exactly as accepted by the bubbles
+	// "key" package (e.g. "y", "shift+m", "ctrl+x").
+	//
+	// Example:
+	//
+	//   keybindings:
+	//     approve: "y, A"
+	//     merge: "g"
+	//     copy_link: "Y"
+	//
+	// Unknown names are ignored at startup with a warning toast so
+	// typos don't crash the TUI. Only single-keystroke bindings are
+	// supported today; vim-style sequences like "g m" are out of
+	// scope for now.
+	Keybindings map[string]string `yaml:"keybindings,omitempty"`
+
 	// PTYEditor enables the experimental PTY-embedded editor for
 	// diff-anchored comment edits — the user's real $EDITOR (vim,
 	// nvim, …) runs inside a pseudo-terminal rendered between diff

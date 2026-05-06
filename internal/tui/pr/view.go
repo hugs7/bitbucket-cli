@@ -45,6 +45,8 @@ func (m model) helpView() string {
 		// Header inside the overlay already documents space/enter/
 		// esc, so suppress the global help bar to avoid duplication.
 		return ""
+	case viewMessages:
+		km = m.keys.messagesHelp()
 	default:
 		km = m.contextualListHelp()
 	}
@@ -156,7 +158,20 @@ func (m model) View() string {
 	body := m.renderForMode(m.mode)
 	footer := m.helpView()
 	statusLine := renderStatusLine(m.loading, m.spinner.View(), m.status)
-	return body + "\n" + joinFooter(statusLine, footer)
+	// Diff search input shows above the help bar (and above the
+	// status line) while the user is typing a pattern. Once
+	// committed/cancelled it disappears so the layout never
+	// permanently grows by an extra row.
+	searchLine := m.renderDiffSearchOverlay()
+	parts := []string{body}
+	if searchLine != "" {
+		parts = append(parts, searchLine)
+	}
+	if statusLine != "" {
+		parts = append(parts, statusLine)
+	}
+	parts = append(parts, footer)
+	return strings.Join(parts, "\n")
 }
 
 // renderForMode produces the body string for a given mode, used both
@@ -259,6 +274,15 @@ func (m model) renderForMode(mode viewMode) string {
 		// the overlay own the whole frame so the textarea has room
 		// to breathe. The status line still rides along below.
 		body = m.editor.view(m.width, m.height-2, m.editor.label())
+	case viewMessages:
+		// :messages history. Sized to the model's viewport so the
+		// list scrolls independently of whatever was on screen
+		// before — esc returns the user to that previous view via
+		// the navigation stack.
+		header := titleBar("MESSAGES",
+			theme.TitleChipDim.Render(fmt.Sprintf("%d entries", len(m.messages))),
+			theme.TitleChipDim.Render("esc to close"))
+		body = header + "\n" + m.messagesVP.View()
 	case viewReviewerSearch:
 		// Manage-reviewers overlay: a centred bordered card layered
 		// on top of the underlying view (PR list / detail) so the

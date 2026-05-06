@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -65,6 +66,11 @@ const (
 	viewEditor
 	viewSettings
 	viewReviewerSearch
+	// viewMessages renders the rolling toast history (vim's
+	// :messages). Opened from the palette or the dedicated
+	// shortcut so the user can revisit a status that flashed past
+	// before the auto-clear timer fired.
+	viewMessages
 )
 
 // buildDot is a thin alias for theme.BuildDot so the dozens of
@@ -81,6 +87,12 @@ type model struct {
 	state   string
 
 	mode viewMode
+	// modeStack is a navigation history of "user-driven" view
+	// modes (list/detail/diff/comments). pushMode appends the
+	// current mode then sets a new one; the Back handler pops it
+	// so esc walks back along the path the user took rather than
+	// always jumping straight to the list.
+	modeStack []viewMode
 
 	list     list.Model
 	detail   viewport.Model
@@ -146,8 +158,21 @@ type model struct {
 	keys    keyMap
 
 	loading bool
-	status  string // transient toast
-	err     error
+	status  string // transient toast shown above the help bar
+	// statusSetAt is bumped every time `status` changes (detected by
+	// the change-watcher at the top of Update). The status ticker
+	// uses it to decide when to clear an idle toast so callers don't
+	// have to thread a tea.Cmd through every status assignment.
+	statusSetAt        time.Time
+	lastObservedStatus string
+	// messages is the rolling history of every non-empty status the
+	// model has ever shown. The :messages view renders this list so
+	// the user can revisit a toast that flicked past too quickly.
+	messages []messageEntry
+	// messagesVP scrolls the :messages view independently from the
+	// PR detail / diff viewports.
+	messagesVP viewport.Model
+	err        error
 
 	width, height int
 	diffID        int
@@ -190,6 +215,21 @@ type model struct {
 	// Vim-style count prefix accumulator (e.g. "15j"). Consumed by the
 	// next motion key and reset.
 	numBuf string
+
+	// Diff search ("/pattern" → n/N navigation). diffSearchInput is
+	// the textinput overlay shown while the user is typing; the
+	// state below is set when the pattern is committed (enter).
+	// diffSearchActive controls whether the input is currently
+	// visible / capturing keys; diffSearchPattern remembers the
+	// last committed pattern so n/N keep working after the input
+	// closes; diffSearchMatches is the indices of diffRows that
+	// contain the pattern, and diffSearchIdx is the current cursor
+	// position into that slice.
+	diffSearchInput   textinput.Model
+	diffSearchActive  bool
+	diffSearchPattern string
+	diffSearchMatches []int
+	diffSearchIdx     int
 
 	// zPending is set after the user presses 'z' in diff view; the
 	// next keypress (z/t/b) completes a vim z-motion (center / top /
@@ -343,26 +383,39 @@ func newPRModel(svc api.Service, project, slug string) model {
 	// it via '?' if they want the compact view back.
 	h := help.New()
 	h.ShowAll = true
-	return model{
+	keys := defaultKeys()
+	// Apply any user-defined key overrides from config before the
+	// help bar is rendered for the first time so the displayed
+	// chips already reflect the remap.
+	unknownKeys := applyKeybindingOverrides(&keys, cfg.Keybindings)
+	m := model{
 		svc: svc, project: project, slug: slug,
-		state:          "OPEN",
-		list:           l,
-		detail:         viewport.New(0, 0),
-		diff:           viewport.New(0, 0),
-		comments:       cl,
-		palette:        newPaletteWidget(),
-		settings:       sl,
-		spinner:        sp,
-		help:           h,
-		keys:           defaultKeys(),
-		loading:        true,
-		diffSplit:      cfg.DiffSplit,
-		diffShowInline: !cfg.DiffHideInline,
+		state:           "OPEN",
+		list:            l,
+		detail:          viewport.New(0, 0),
+		diff:            viewport.New(0, 0),
+		messagesVP:      viewport.New(0, 0),
+		diffSearchInput: newDiffSearchInput(),
+		comments:        cl,
+		palette:         newPaletteWidget(),
+		settings:        sl,
+		spinner:         sp,
+		help:            h,
+		keys:            keys,
+		loading:         true,
+		diffSplit:       cfg.DiffSplit,
+		diffShowInline:  !cfg.DiffHideInline,
 	}
+	if len(unknownKeys) > 0 {
+		// Warn once instead of crashing — typos in the config
+		// shouldn't lock the user out of the TUI.
+		m.status = theme.ErrPrefix() + "unknown keybinding name(s) in config: " + strings.Join(unknownKeys, ", ")
+	}
+	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.fetchPRs())
+	return tea.Batch(m.spinner.Tick, m.fetchPRs(), statusTick())
 }
 
 // ---------- async commands ----------
@@ -639,6 +692,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewPalette:
 			cmd := m.palette.Update(msg)
 			return m, cmd
+		case viewMessages:
+			var cmd tea.Cmd
+			m.messagesVP, cmd = m.messagesVP.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
@@ -751,10 +808,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncTreeCursor()
+		// Re-apply the active search (if any) so n/N keep working
+		// across diff reloads. The matches slice is index-based,
+		// so it must be regenerated against the new diffRows.
+		m.recomputeDiffSearchMatches()
+		m.diffSearchIdx = 0
 		m.diff.SetContent(m.renderDiffRows())
 		m.diff.GotoTop()
 		m.ensureDiffCursorVisible()
-		m.mode = viewDiff
+		m.pushMode(viewDiff)
 		if needComments {
 			return m, m.fetchDiffComments(msg.id)
 		}
@@ -792,7 +854,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items = append(items, commentItem{c})
 		}
 		m.comments.SetItems(items)
-		m.mode = viewComments
+		m.pushMode(viewComments)
 		return m, nil
 
 	case actionDoneMsg:
@@ -931,6 +993,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return actionDoneMsg{text: fmt.Sprintf("created PR #%d", p.ID), reload: true}
 		})
+
+	case editTargetMsg:
+		// huh form for "edit target branch" completed. Treat empty
+		// or unchanged target as a no-op to avoid an extra API call
+		// + a misleading "updated" toast when nothing changed.
+		if msg.cancelled {
+			m.status = "edit target cancelled"
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "edit target: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.target == "" {
+			m.status = "edit target cancelled"
+			return m, nil
+		}
+		// Skip the API call if the user re-submitted the same
+		// target — saves a round-trip and avoids the reviewer
+		// round-trip's risk of clobbering on Server.
+		for _, it := range m.list.Items() {
+			pi, ok := it.(prItem)
+			if !ok || pi.pr.ID != msg.prID {
+				continue
+			}
+			if pi.pr.TargetRef == msg.target {
+				m.status = theme.OKPrefix() + fmt.Sprintf("PR #%d already targets %s", msg.prID, msg.target)
+				return m, nil
+			}
+			break
+		}
+		prID := msg.prID
+		target := msg.target
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.doAction(
+			fmt.Sprintf("retargeted #%d → %s", prID, target),
+			true,
+			func() error {
+				return m.svc.UpdatePRTarget(m.project, m.slug, prID, target)
+			},
+		))
 
 	case mergeStrategiesLoadedMsg:
 		// Strategies fetched — populate the dialog state and switch
@@ -1134,6 +1237,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
+	case statusTickMsg:
+		// Heartbeat: notice any status mutation that happened
+		// between ticks (so the :messages history records it and
+		// the visibility timer is reset to "now"), then wipe the
+		// toast once it has been steady on screen for longer than
+		// the TTL. Always re-arm the tick — a single recurring
+		// timer is cheaper than scheduling a one-shot per status
+		// assignment.
+		m.observeStatusChange()
+		if m.status != "" && time.Since(m.statusSetAt) > statusToastTTL {
+			m.status = ""
+			m.observeStatusChange()
+		}
+		return m, statusTick()
+
 	case tea.KeyMsg:
 		if m.list.FilterState() == list.Filtering {
 			break
@@ -1235,6 +1353,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Diff-search input owns the keymap while the user is
+		// typing a pattern: every key flows into the textinput
+		// except enter (commit), esc (cancel), and ctrl+c (quit).
+		// Doing this before the mode-independent block stops "/"
+		// from re-opening the prompt mid-typing and prevents esc
+		// from popping the navigation stack.
+		if m.mode == viewDiff && m.diffSearchActive {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.cancelDiffSearch()
+				return m, nil
+			case "enter":
+				m.commitDiffSearch()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.diffSearchInput, cmd = m.diffSearchInput.Update(msg)
+			return m, cmd
+		}
+
 		// Mode-independent keys come first.
 		switch {
 		case key.Matches(msg, m.keys.Quit):
@@ -1275,11 +1415,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if m.mode != viewList {
-				m.mode = viewList
+			// Walk back along the user's navigation history (e.g.
+			// list → detail → diff → esc returns to detail, not
+			// straight to list). Falling off the bottom of the
+			// stack exits the TUI as it always did.
+			if m.mode == viewList {
+				return m, tea.Quit
+			}
+			if prev, ok := m.popMode(); ok {
+				m.mode = prev
 				return m, nil
 			}
-			return m, tea.Quit
+			m.mode = viewList
+			return m, nil
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()
@@ -1657,6 +1805,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
+			case key.Matches(msg, m.keys.DiffSearch):
+				return m, m.startDiffSearch()
+			case key.Matches(msg, m.keys.DiffSearchNext) && m.diffSearchPattern != "":
+				m.nextDiffMatch()
+				return m, nil
+			case key.Matches(msg, m.keys.DiffSearchPrev) && m.diffSearchPattern != "":
+				m.prevDiffMatch()
+				return m, nil
 			case key.Matches(msg, m.keys.InlineComment):
 				c, ok := m.activeDiffCell()
 				if !ok {
@@ -1757,6 +1913,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						_ = openInBrowser(it.pr.WebURL)
 					}
 					return m, nil
+				case key.Matches(msg, m.keys.CopyLink):
+					return m, m.copyPRLink(it.pr.WebURL)
 				case key.Matches(msg, m.keys.Approve):
 					if m.isOwnPR(it.pr) {
 						m.status = theme.ErrPrefix() + "can't approve your own PR"
@@ -1795,6 +1953,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
+				case key.Matches(msg, m.keys.EditTarget):
+					return m, m.startEditTarget(id, it.pr.TargetRef)
 				case key.Matches(msg, m.keys.CreatePR):
 					return m, m.startCreatePR()
 				case key.Matches(msg, m.keys.DeclinePR):
@@ -2036,6 +2196,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.comments, cmd = m.comments.Update(msg)
 			return m, cmd
+		case viewMessages:
+			// :messages history view: scroll the viewport, and
+			// allow ctrl+l to wipe the log entirely (mirrors how
+			// vim's :messages clear works).
+			if key.Matches(msg, m.keys.ClearStatus) {
+				m.messages = nil
+				m.status = ""
+				m.messagesVP.SetContent(m.renderMessagesBody())
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.messagesVP, cmd = m.messagesVP.Update(msg)
+			return m, cmd
 		}
 
 		// viewList handling.
@@ -2068,7 +2241,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Enter):
 			if _, ok := m.list.SelectedItem().(prItem); ok {
 				m.detail.GotoTop()
-				m.mode = viewDetail
+				m.pushMode(viewDetail)
 				return m, nil
 			}
 		case key.Matches(msg, m.keys.Diff):
@@ -2084,6 +2257,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Open):
 			if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.WebURL != "" {
 				_ = openInBrowser(it.pr.WebURL)
+			}
+		case key.Matches(msg, m.keys.CopyLink):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, m.copyPRLink(it.pr.WebURL)
 			}
 		case key.Matches(msg, m.keys.Approve):
 			if it, ok := m.list.SelectedItem().(prItem); ok {
@@ -2135,6 +2312,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				return m, editInTUI("edit-description",
 					fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, 0, it.pr.Description)
+			}
+		case key.Matches(msg, m.keys.EditTarget):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, m.startEditTarget(it.pr.ID, it.pr.TargetRef)
 			}
 		case key.Matches(msg, m.keys.CreatePR):
 			return m, m.startCreatePR()
@@ -2195,6 +2376,45 @@ func (m *model) layout() {
 	}
 	m.comments.SetSize(m.width, m.height-helpHeight-2)
 	m.settings.SetSize(m.width, m.height-helpHeight-4)
+	// :messages history viewport — same accounting as the detail
+	// view (one row for the title bar, one for the help footer).
+	m.messagesVP.Width = m.width
+	m.messagesVP.Height = m.height - helpHeight - 2
+	if m.mode == viewMessages {
+		m.messagesVP.SetContent(m.renderMessagesBody())
+	}
+}
+
+// renderMessagesBody formats every recorded toast as "HH:MM:SS  msg"
+// with the newest entry at the bottom (matching `:messages` in vim
+// and append-only chat logs). The viewport handles scrolling so the
+// renderer can stay dumb and just produce a single string.
+func (m *model) renderMessagesBody() string {
+	if len(m.messages) == 0 {
+		return theme.TitleChipDim.Render("  no messages yet — actions you take will land here")
+	}
+	var sb strings.Builder
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	for i, e := range m.messages {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(muted.Render(e.at.Format("15:04:05")))
+		sb.WriteString("  ")
+		sb.WriteString(e.text)
+	}
+	return sb.String()
+}
+
+// openMessages switches into the :messages history view, refreshing
+// its content from the latest toast log and scrolling to the bottom
+// so the most recent entry is visible. Pushes the current mode so
+// esc walks back where the user was.
+func (m *model) openMessages() {
+	m.observeStatusChange()
+	m.messagesVP.SetContent(m.renderMessagesBody())
+	m.messagesVP.GotoBottom()
+	m.pushMode(viewMessages)
 }
 
 // treeWidth picks a sensible width for the diff file-tree side panel.
@@ -2303,6 +2523,85 @@ func (m model) renderDiffTree() string {
 // internal/sysutil and internal/strutil respectively.
 func openInBrowser(url string) error { return sysutil.OpenInBrowser(url) }
 
+// pushMode records the current mode on the navigation stack and
+// transitions to next. Use this at every "drill-down" transition
+// (list→detail, list/detail→diff/comments) so Back can unwind the
+// user's exact path.
+func (m *model) pushMode(next viewMode) {
+	m.modeStack = append(m.modeStack, m.mode)
+	m.mode = next
+}
+
+// popMode rewinds the navigation stack by one step, returning the
+// restored mode and true. When the stack is empty it returns
+// (viewList, false) so the caller can fall back to "quit on root
+// esc" behaviour.
+func (m *model) popMode() (viewMode, bool) {
+	if len(m.modeStack) == 0 {
+		return viewList, false
+	}
+	n := len(m.modeStack) - 1
+	prev := m.modeStack[n]
+	m.modeStack = m.modeStack[:n]
+	return prev, true
+}
+
+// copyPRLink writes the PR's web URL to the system clipboard and
+// surfaces a transient toast so the user gets feedback that the
+// action landed (or didn't). The status auto-clears via the global
+// status ticker — no per-callsite scheduling needed.
+func (m *model) copyPRLink(url string) tea.Cmd {
+	if url == "" {
+		m.status = theme.ErrPrefix() + "no link available for this PR"
+		return nil
+	}
+	if err := sysutil.CopyToClipboard(url); err != nil {
+		m.status = theme.ErrPrefix() + "copy failed: " + err.Error()
+		return nil
+	}
+	m.status = theme.OKPrefix() + "link copied: " + url
+	return nil
+}
+
+// statusToastTTL is how long a toast stays on screen before the
+// status ticker wipes it. Five seconds matches the comparable
+// "transient confirmation" feel in editors like VS Code's
+// notification toasts.
+const statusToastTTL = 5 * time.Second
+
+// statusTickInterval is how often the heartbeat fires to age out
+// toasts. Half a second is small enough that the perceived clear
+// time is "about 5s" without spending CPU on a sub-100ms tick.
+const statusTickInterval = 500 * time.Millisecond
+
+// statusTick produces the self-renewing heartbeat that drives toast
+// auto-dismissal. Keep it cheap: just a Tick that emits an empty
+// statusTickMsg.
+func statusTick() tea.Cmd {
+	return tea.Tick(statusTickInterval, func(time.Time) tea.Msg {
+		return statusTickMsg{}
+	})
+}
+
+// observeStatusChange is called at the very top of Update for every
+// message. When the live status differs from what we last saw it
+// records a fresh history entry and resets the visibility timer.
+// This lets every "m.status = X" callsite stay a one-line assignment
+// while still getting auto-dismissal and :messages history for free.
+func (m *model) observeStatusChange() {
+	if m.status == m.lastObservedStatus {
+		return
+	}
+	m.statusSetAt = time.Now()
+	m.lastObservedStatus = m.status
+	if m.status != "" {
+		m.messages = append(m.messages, messageEntry{
+			at:   m.statusSetAt,
+			text: m.status,
+		})
+	}
+}
+
 func humanTime(t time.Time) string { return strutil.HumanTime(t) }
 
 // styleState is a thin alias for theme.StyleState so the in-file
@@ -2322,7 +2621,6 @@ func titleBar(section string, chips ...string) string {
 func renderStatusLine(loading bool, sp, status string) string {
 	return theme.RenderStatusLine(loading, sp, status)
 }
-func joinFooter(status, help string) string { return theme.JoinFooter(status, help) }
 
 // Diff styling — package-level so both unified and split renderers
 // share the same colour palette without re-allocating per call.
@@ -2355,11 +2653,6 @@ var (
 func editInlineInTUI(prID int, path string, lineNo int, side string) tea.Cmd {
 	return requestEditInline(prID, path, lineNo, side)
 }
-
-// sanitizeForFilename is a thin alias for strutil.SanitizeForFilename,
-// kept locally so the dozens of TUI callers don't need to import the
-// utility package each.
-func sanitizeForFilename(s string) string { return strutil.SanitizeForFilename(s) }
 
 // splitFirstLineTokens reads the first non-blank, non-comment line of
 // the editor buffer and returns its whitespace- and comma-separated

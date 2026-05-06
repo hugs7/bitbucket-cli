@@ -63,6 +63,18 @@ curl -fsSL https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/in
 irm https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install.ps1 | iex
 ```
 
+### Manual install (macOS + zsh, no sudo, no Homebrew)
+
+Drops the binary into `~/.local/bin/bb` and the zsh completion into
+`~/.zsh/completions/_bb`, and adds the necessary `fpath` snippet to
+`~/.zshrc` (idempotent — re-run any time to upgrade in place):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hugs7/bitbucket-cli/main/scripts/install-mac-zsh.sh | sh
+```
+
+Make sure `~/.local/bin` is on your `$PATH`.
+
 ### From source
 
 ```sh
@@ -104,6 +116,26 @@ hosts:
 ```
 
 Per-repo overrides go in `.bb.yml` at the repo root.
+
+### Custom keybindings
+
+Override any TUI key in the PR browser by adding a `keybindings` block to your
+config. Names use the snake-case form of the internal binding (e.g. `merge`,
+`approve`, `edit_target`, `diff_search_next`); values are comma-separated key
+strings as accepted by [bubbles/key](https://github.com/charmbracelet/bubbles/tree/main/key)
+(e.g. `y`, `shift+m`, `ctrl+x`).
+
+```yaml
+keybindings:
+  approve: "y, A"
+  merge: "g"
+  copy_link: "Y"
+  diff_search: "ctrl+f"
+```
+
+Unknown names produce a single warning toast at startup; the rest of the map is
+still applied. Only single-keystroke bindings are supported today (vim-style
+sequences like `g m` are not — yet).
 
 ## License
 

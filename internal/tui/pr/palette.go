@@ -130,6 +130,12 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				}
 				return nil
 			}},
+			paletteItem{label: "Edit target branch", hint: "T", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					return m.startEditTarget(it.pr.ID, it.pr.TargetRef)
+				}
+				return nil
+			}},
 			paletteItem{label: "AI: generate description from diff", hint: "palette", run: func(m *model) tea.Cmd {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
 					m.loading = true
@@ -415,6 +421,14 @@ func buildPaletteItems(mode viewMode) []list.Item {
 		paletteItem{label: "Clear status / error", hint: "ctrl+l", run: func(m *model) tea.Cmd {
 			m.status = ""
 			m.err = nil
+			return nil
+		}},
+		paletteItem{label: "View messages (:messages)", hint: ":messages", run: func(m *model) tea.Cmd {
+			// openMessages pushes the current mode onto the
+			// navigation stack so esc returns the user to
+			// whichever view they had open before the palette
+			// took over.
+			m.openMessages()
 			return nil
 		}},
 		paletteItem{label: "Quit bb", hint: "q / ctrl+c", run: func(m *model) tea.Cmd {

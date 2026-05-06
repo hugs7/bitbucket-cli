@@ -163,9 +163,6 @@ func editorResultFor(req editorRequest, text string, err error) editorResultMsg 
 type inlineEditor struct {
 	ta  textarea.Model
 	req editorRequest
-	// promoting is set when the user pressed F11 — the next pass
-	// through Update flushes the buffer to runFullscreenEditor.
-	promoting bool
 }
 
 // newInlineEditor constructs the textarea seeded with req.initial and

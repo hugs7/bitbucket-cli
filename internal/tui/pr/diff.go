@@ -171,10 +171,7 @@ func computeWordHighlights(lines []diffLine) {
 		}
 		dels := lines[dStart:aStart]
 		adds := lines[aStart:i]
-		n := len(dels)
-		if len(adds) < n {
-			n = len(adds)
-		}
+		n := min(len(adds), len(dels))
 		for k := 0; k < n; k++ {
 			oldBody := strings.TrimPrefix(dels[k].raw, "-")
 			newBody := strings.TrimPrefix(adds[k].raw, "+")
@@ -193,8 +190,6 @@ func computeWordHighlights(lines []diffLine) {
 		}
 	}
 }
-
-func (d diffLine) styled() string { return d.style.Render(d.raw) }
 
 // commentable reports whether this row can carry an inline comment.
 func (d diffLine) commentable() bool { return d.path != "" && d.side != "" && d.lineNo > 0 }
@@ -470,10 +465,7 @@ func buildSplitRows(lines []diffLine) []diffRow {
 				adds = append(adds, lines[i])
 				i++
 			}
-			n := len(dels)
-			if len(adds) > n {
-				n = len(adds)
-			}
+			n := max(len(adds), len(dels))
 			for j := 0; j < n; j++ {
 				row := diffRow{cells: [2]diffCell{emptyOld, emptyNew}}
 				if j < len(dels) {
@@ -719,10 +711,8 @@ func (m *model) renderDiffRows() string {
 	if width <= 0 {
 		width = 80
 	}
-	colW := (width - 5) / 2 // 2 for marker, 3 for separator " │ "
-	if colW < 10 {
-		colW = 10
-	}
+
+	colW := max(10, (width-5)/2) // 2 for marker, 3 for separator " │ "
 
 	m.diffRowYs = make([]int, 0, len(m.diffRows)+1)
 	visual := 0
