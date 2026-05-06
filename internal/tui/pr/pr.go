@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -215,6 +216,21 @@ type model struct {
 	// next motion key and reset.
 	numBuf string
 
+	// Diff search ("/pattern" → n/N navigation). diffSearchInput is
+	// the textinput overlay shown while the user is typing; the
+	// state below is set when the pattern is committed (enter).
+	// diffSearchActive controls whether the input is currently
+	// visible / capturing keys; diffSearchPattern remembers the
+	// last committed pattern so n/N keep working after the input
+	// closes; diffSearchMatches is the indices of diffRows that
+	// contain the pattern, and diffSearchIdx is the current cursor
+	// position into that slice.
+	diffSearchInput   textinput.Model
+	diffSearchActive  bool
+	diffSearchPattern string
+	diffSearchMatches []int
+	diffSearchIdx     int
+
 	// zPending is set after the user presses 'z' in diff view; the
 	// next keypress (z/t/b) completes a vim z-motion (center / top /
 	// bottom). Reset on any other key.
@@ -367,23 +383,35 @@ func newPRModel(svc api.Service, project, slug string) model {
 	// it via '?' if they want the compact view back.
 	h := help.New()
 	h.ShowAll = true
-	return model{
+	keys := defaultKeys()
+	// Apply any user-defined key overrides from config before the
+	// help bar is rendered for the first time so the displayed
+	// chips already reflect the remap.
+	unknownKeys := applyKeybindingOverrides(&keys, cfg.Keybindings)
+	m := model{
 		svc: svc, project: project, slug: slug,
-		state:          "OPEN",
-		list:           l,
-		detail:         viewport.New(0, 0),
-		diff:           viewport.New(0, 0),
-		messagesVP:     viewport.New(0, 0),
-		comments:       cl,
-		palette:        newPaletteWidget(),
-		settings:       sl,
-		spinner:        sp,
-		help:           h,
-		keys:           defaultKeys(),
-		loading:        true,
-		diffSplit:      cfg.DiffSplit,
-		diffShowInline: !cfg.DiffHideInline,
+		state:           "OPEN",
+		list:            l,
+		detail:          viewport.New(0, 0),
+		diff:            viewport.New(0, 0),
+		messagesVP:      viewport.New(0, 0),
+		diffSearchInput: newDiffSearchInput(),
+		comments:        cl,
+		palette:         newPaletteWidget(),
+		settings:        sl,
+		spinner:         sp,
+		help:            h,
+		keys:            keys,
+		loading:         true,
+		diffSplit:       cfg.DiffSplit,
+		diffShowInline:  !cfg.DiffHideInline,
 	}
+	if len(unknownKeys) > 0 {
+		// Warn once instead of crashing — typos in the config
+		// shouldn't lock the user out of the TUI.
+		m.status = theme.ErrPrefix() + "unknown keybinding name(s) in config: " + strings.Join(unknownKeys, ", ")
+	}
+	return m
 }
 
 func (m model) Init() tea.Cmd {
@@ -780,6 +808,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncTreeCursor()
+		// Re-apply the active search (if any) so n/N keep working
+		// across diff reloads. The matches slice is index-based,
+		// so it must be regenerated against the new diffRows.
+		m.recomputeDiffSearchMatches()
+		m.diffSearchIdx = 0
 		m.diff.SetContent(m.renderDiffRows())
 		m.diff.GotoTop()
 		m.ensureDiffCursorVisible()
@@ -1320,6 +1353,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Diff-search input owns the keymap while the user is
+		// typing a pattern: every key flows into the textinput
+		// except enter (commit), esc (cancel), and ctrl+c (quit).
+		// Doing this before the mode-independent block stops "/"
+		// from re-opening the prompt mid-typing and prevents esc
+		// from popping the navigation stack.
+		if m.mode == viewDiff && m.diffSearchActive {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.cancelDiffSearch()
+				return m, nil
+			case "enter":
+				m.commitDiffSearch()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.diffSearchInput, cmd = m.diffSearchInput.Update(msg)
+			return m, cmd
+		}
+
 		// Mode-independent keys come first.
 		switch {
 		case key.Matches(msg, m.keys.Quit):
@@ -1749,6 +1804,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+				return m, nil
+			case key.Matches(msg, m.keys.DiffSearch):
+				return m, m.startDiffSearch()
+			case key.Matches(msg, m.keys.DiffSearchNext) && m.diffSearchPattern != "":
+				m.nextDiffMatch()
+				return m, nil
+			case key.Matches(msg, m.keys.DiffSearchPrev) && m.diffSearchPattern != "":
+				m.prevDiffMatch()
 				return m, nil
 			case key.Matches(msg, m.keys.InlineComment):
 				c, ok := m.activeDiffCell()

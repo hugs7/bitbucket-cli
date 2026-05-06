@@ -158,13 +158,20 @@ func (m model) View() string {
 	body := m.renderForMode(m.mode)
 	footer := m.helpView()
 	statusLine := renderStatusLine(m.loading, m.spinner.View(), m.status)
-	// The toast lives on its own line directly above the help bar so
-	// it never squats over the keyboard shortcuts. When there's no
-	// toast we drop the line entirely to avoid a phantom blank row.
-	if statusLine == "" {
-		return body + "\n" + footer
+	// Diff search input shows above the help bar (and above the
+	// status line) while the user is typing a pattern. Once
+	// committed/cancelled it disappears so the layout never
+	// permanently grows by an extra row.
+	searchLine := m.renderDiffSearchOverlay()
+	parts := []string{body}
+	if searchLine != "" {
+		parts = append(parts, searchLine)
 	}
-	return body + "\n" + statusLine + "\n" + footer
+	if statusLine != "" {
+		parts = append(parts, statusLine)
+	}
+	parts = append(parts, footer)
+	return strings.Join(parts, "\n")
 }
 
 // renderForMode produces the body string for a given mode, used both
