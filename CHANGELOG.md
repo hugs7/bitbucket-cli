@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0](https://github.com/hugs7/bitbucket-cli/compare/v0.5.0...v0.6.0) (2026-05-06)
+
+
+### Features
+
+* auto-clear toasts and add :messages history ([3ac6901](https://github.com/hugs7/bitbucket-cli/commit/3ac69014a5f90c90815b6c69d11249b901ec8a28))
+* auto-clear toasts and add :messages history ([f995a88](https://github.com/hugs7/bitbucket-cli/commit/f995a88f4658d089d0f396b79254013820728097))
+* copy pr link hotkey ([1078d27](https://github.com/hugs7/bitbucket-cli/commit/1078d273b5685ad2672aeb8906355d8eb5953e9e))
+* default PR name ([7846203](https://github.com/hugs7/bitbucket-cli/commit/7846203c1c848c3ceb5e490b0c1c8acee461f9c9))
+* diff search and custom keybindings ([7677699](https://github.com/hugs7/bitbucket-cli/commit/76776994aefc87326fe2622d1741299bb0476ffb))
+* disappearing toast ([6a0fc55](https://github.com/hugs7/bitbucket-cli/commit/6a0fc554ae7f215cd3c4fa849804f0820b95f09c))
+* edit PR target branch ([dfe78af](https://github.com/hugs7/bitbucket-cli/commit/dfe78af37a3c80102587ffa06871156b3508c798))
+* sync source branch to remote prompt ([eec63e2](https://github.com/hugs7/bitbucket-cli/commit/eec63e269c4a0961f0229abb6eda88948dab0365))
+
+
+### Bug Fixes
+
+* history back stack pr ([ffa02df](https://github.com/hugs7/bitbucket-cli/commit/ffa02dfa0bd615bcac481e597cbcb4abafe5096c))
+* PR title as hint ([8f1cfaa](https://github.com/hugs7/bitbucket-cli/commit/8f1cfaa4b9e00d02c32b2a528830d96c03f2964d))
+* reevaluate PR title placeholder on source change ([c302367](https://github.com/hugs7/bitbucket-cli/commit/c302367e3077c4a8dae48a3f740bf54b1eee05c7))
+
 ## [0.5.0](https://github.com/hugs7/bitbucket-cli/compare/v0.4.0...v0.5.0) (2026-04-27)
 
 
