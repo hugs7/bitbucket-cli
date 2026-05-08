@@ -50,7 +50,6 @@ func (i prItem) Description() string {
 	return fmt.Sprintf("%s · %s → %s · %s", i.pr.State, i.pr.SourceRef, i.pr.TargetRef, i.pr.Author)
 }
 
-
 // stackPosition pairs a 1-based depth with the stack's total size so
 // list items can render their "n/total" badge without re-running the
 // stack algorithm on every keystroke.
@@ -146,6 +145,10 @@ func (m *model) updateDetail() {
 		fmt.Fprintln(&sb)
 		sb.WriteString(badge)
 	}
+	if reviewers := renderReviewers(p.Reviewers); reviewers != "" {
+		fmt.Fprintln(&sb)
+		sb.WriteString(reviewers)
+	}
 
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
@@ -185,5 +188,39 @@ func (m *model) reviewerBadge(p api.PullRequest) string {
 	return ""
 }
 
+func renderReviewers(reviewers []api.Reviewer) string {
+	if len(reviewers) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintln(&sb, lipgloss.NewStyle().Bold(true).Render("Reviewers"))
+	for _, r := range reviewers {
+		fmt.Fprintf(&sb, "  %s  %s\n", reviewerStatusLabel(r), reviewerName(r))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
 
+func reviewerName(r api.Reviewer) string {
+	if strings.TrimSpace(r.DisplayName) == "" {
+		return r.Username
+	}
+	if strings.TrimSpace(r.Username) == "" || r.Username == r.DisplayName {
+		return r.DisplayName
+	}
+	return fmt.Sprintf("%s (%s)", r.DisplayName, r.Username)
+}
 
+func reviewerStatusLabel(r api.Reviewer) string {
+	s := strings.ToUpper(strings.TrimSpace(r.Status))
+	if s == "" && r.Approved {
+		s = "APPROVED"
+	}
+	switch s {
+	case "APPROVED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("✓ approved")
+	case "NEEDS_WORK", "CHANGES_REQUESTED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ needs work")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("~ pending")
+	}
+}
