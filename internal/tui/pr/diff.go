@@ -312,6 +312,10 @@ type diffRow struct {
 	annoIsHeader bool           // header (author/timestamp) vs body line of a comment
 }
 
+type renderedDiffRow struct {
+	lines []string
+}
+
 // rebuildDiffRows regenerates the display row sequence from the parsed
 // diff lines + comments according to the current toggles. Called after
 // the diff loads, the comments load, the user toggles split / inline,
@@ -325,11 +329,17 @@ func (m *model) rebuildDiffRows() {
 	if m.diffShowInline {
 		m.diffRows = injectInlineComments(m.diffRows, m.diffComments, m.annotationWidth())
 	}
+	m.invalidateDiffRenderCache()
 	m.diffFiles = computeDiffFiles(m.diffRows)
 	m.diffTree = computeFileTree(m.diffFiles)
 	m.diff.SetContent(m.renderDiffRows())
 	m.clampDiffCursor()
 	m.syncTreeCursor()
+}
+
+func (m *model) invalidateDiffRenderCache() {
+	m.diffRenderRows = nil
+	m.diffRenderW = 0
 }
 
 // annotationWidth returns the wrap width (in cells) for inline-comment
@@ -711,122 +721,146 @@ func (m *model) renderDiffRows() string {
 	if width <= 0 {
 		width = 80
 	}
-
-	colW := max(10, (width-5)/2) // 2 for marker, 3 for separator " │ "
-
-	m.diffRowYs = make([]int, 0, len(m.diffRows)+1)
-	visual := 0
-
-	for i, row := range m.diffRows {
-		m.diffRowYs = append(m.diffRowYs, visual)
-		marker := leftPad
-		if i == m.diffCursor {
-			marker = pointer
-		}
-		// gutterFor returns the styled left bar for an annotation row
-		// — bright slab on header lines, thin bar on body lines, both
-		// painted with the same background as the surrounding text so
-		// the comment block reads as one continuous chip.
-		gutterFor := func(headerLine bool) (string, lipgloss.Style) {
-			if headerLine {
-				return annoGutterStyle.Render("▎ "), annoGutterStyle
-			}
-			return annoBodyGutter.Render("│ "), annoBodyGutter
-		}
-		switch {
-		case row.annotation:
-			b.WriteString(leftPad)
-			glyph, gStyle := gutterFor(row.annoIsHeader)
-			if m.diffSplit {
-				inner := colW - lipgloss.Width(glyph)
-				if inner < 1 {
-					inner = 1
-				}
-				text := truncateForCell(row.annoText, inner)
-				styled := row.annoStyle.Width(inner).MaxWidth(inner).Render(text)
-				cell := glyph + styled
-				blank := strings.Repeat(" ", colW)
-				if row.annoSide == 0 {
-					b.WriteString(cell)
-					b.WriteString(gStyle.Render(" │ "))
-					b.WriteString(blank)
-				} else {
-					b.WriteString(blank)
-					b.WriteString(gStyle.Render(" │ "))
-					b.WriteString(cell)
-				}
-			} else {
-				// Pad the body so the comment background spans the
-				// remaining viewport width, mimicking Bitbucket's
-				// commented-line block.
-				body := width - 2 - 4 - lipgloss.Width(glyph)
-				if body < 1 {
-					body = 1
-				}
-				text := truncateForCell(row.annoText, body)
-				b.WriteString(gStyle.Render("    "))
-				b.WriteString(glyph)
-				b.WriteString(row.annoStyle.Width(body).MaxWidth(body).Render(text))
-			}
-			b.WriteByte('\n')
-			visual++
-		case row.fullWidth:
-			b.WriteString(marker)
-			body := width - 2
-			if body < 1 {
-				body = 1
-			}
-			b.WriteString(row.cells[0].style.Width(body).MaxWidth(body).Render(row.cells[0].raw))
-			b.WriteByte('\n')
-			visual++
-		case m.diffSplit:
-			// Wrap each side independently and stack visual lines so
-			// long code never spills past its column. The first
-			// visual line gets the cursor marker; continuation lines
-			// indent with the leftPad to keep the column lined up.
-			leftChunks := wrapDiffCellChunks(row.cells[0], colW, i == m.diffCursor && m.diffCursorSide == 0)
-			rightChunks := wrapDiffCellChunks(row.cells[1], colW, i == m.diffCursor && m.diffCursorSide == 1)
-			n := len(leftChunks)
-			if len(rightChunks) > n {
-				n = len(rightChunks)
-			}
-			if n == 0 {
-				n = 1
-			}
-			blank := strings.Repeat(" ", colW)
-			for j := 0; j < n; j++ {
-				if j == 0 {
-					b.WriteString(marker)
-				} else {
-					b.WriteString(leftPad)
-				}
-				if j < len(leftChunks) {
-					b.WriteString(leftChunks[j])
-				} else {
-					b.WriteString(blank)
-				}
-				b.WriteString(" │ ")
-				if j < len(rightChunks) {
-					b.WriteString(rightChunks[j])
-				} else {
-					b.WriteString(blank)
-				}
-				b.WriteByte('\n')
-			}
-			visual += n
-		default:
-			b.WriteString(marker)
-			body := width - 2
-			if body < 1 {
-				body = 1
-			}
-			b.WriteString(renderCellWithHL(row.cells[0], body))
-			b.WriteByte('\n')
-			visual++
+	m.ensureDiffRenderCache(width)
+	if len(m.diffRowYs) > 0 {
+		totalLines := m.diffRowYs[len(m.diffRowYs)-1]
+		if totalLines > 0 {
+			b.Grow(totalLines * (width + 1))
 		}
 	}
-	m.diffRowYs = append(m.diffRowYs, visual)
+
+	for i := range m.diffRows {
+		lines := m.diffRenderRows[i].lines
+		if m.diffSplit && i == m.diffCursor && !m.diffRows[i].fullWidth && !m.diffRows[i].annotation {
+			lines = m.renderDiffRowLines(m.diffRows[i], width, true, m.diffCursorSide)
+		}
+		for j, line := range lines {
+			if i == m.diffCursor && j == 0 {
+				b.WriteString(pointer)
+			} else {
+				b.WriteString(leftPad)
+			}
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
 	return b.String()
+}
+
+func (m *model) ensureDiffRenderCache(width int) {
+	if len(m.diffRenderRows) == len(m.diffRows) && m.diffRenderW == width && m.diffRenderSplit == m.diffSplit {
+		return
+	}
+	m.diffRenderRows = make([]renderedDiffRow, len(m.diffRows))
+	m.diffRenderW = width
+	m.diffRenderSplit = m.diffSplit
+	m.diffRowYs = make([]int, 0, len(m.diffRows)+1)
+	visual := 0
+	for i, row := range m.diffRows {
+		m.diffRowYs = append(m.diffRowYs, visual)
+		lines := m.renderDiffRowLines(row, width, false, 0)
+		m.diffRenderRows[i] = renderedDiffRow{lines: lines}
+		visual += len(lines)
+	}
+	m.diffRowYs = append(m.diffRowYs, visual)
+}
+
+func (m *model) renderDiffRowLines(row diffRow, width int, active bool, activeSide int) []string {
+	colW := max(10, (width-5)/2) // 2 for marker, 3 for separator " │ "
+
+	// gutterFor returns the styled left bar for an annotation row
+	// — bright slab on header lines, thin bar on body lines, both
+	// painted with the same background as the surrounding text so
+	// the comment block reads as one continuous chip.
+	gutterFor := func(headerLine bool) (string, lipgloss.Style) {
+		if headerLine {
+			return annoGutterStyle.Render("▎ "), annoGutterStyle
+		}
+		return annoBodyGutter.Render("│ "), annoBodyGutter
+	}
+
+	switch {
+	case row.annotation:
+		var b strings.Builder
+		glyph, gStyle := gutterFor(row.annoIsHeader)
+		if m.diffSplit {
+			inner := colW - lipgloss.Width(glyph)
+			if inner < 1 {
+				inner = 1
+			}
+			text := truncateForCell(row.annoText, inner)
+			styled := row.annoStyle.Width(inner).MaxWidth(inner).Render(text)
+			cell := glyph + styled
+			blank := strings.Repeat(" ", colW)
+			if row.annoSide == 0 {
+				b.WriteString(cell)
+				b.WriteString(gStyle.Render(" │ "))
+				b.WriteString(blank)
+			} else {
+				b.WriteString(blank)
+				b.WriteString(gStyle.Render(" │ "))
+				b.WriteString(cell)
+			}
+		} else {
+			// Pad the body so the comment background spans the
+			// remaining viewport width, mimicking Bitbucket's
+			// commented-line block.
+			body := width - 2 - 4 - lipgloss.Width(glyph)
+			if body < 1 {
+				body = 1
+			}
+			text := truncateForCell(row.annoText, body)
+			b.WriteString(gStyle.Render("    "))
+			b.WriteString(glyph)
+			b.WriteString(row.annoStyle.Width(body).MaxWidth(body).Render(text))
+		}
+		return []string{b.String()}
+
+	case row.fullWidth:
+		body := width - 2
+		if body < 1 {
+			body = 1
+		}
+		return []string{row.cells[0].style.Width(body).MaxWidth(body).Render(row.cells[0].raw)}
+
+	case m.diffSplit:
+		leftActive := active && activeSide == 0
+		rightActive := active && activeSide == 1
+		leftChunks := wrapDiffCellChunks(row.cells[0], colW, leftActive)
+		rightChunks := wrapDiffCellChunks(row.cells[1], colW, rightActive)
+		n := len(leftChunks)
+		if len(rightChunks) > n {
+			n = len(rightChunks)
+		}
+		if n == 0 {
+			n = 1
+		}
+		out := make([]string, 0, n)
+		blank := strings.Repeat(" ", colW)
+		for j := 0; j < n; j++ {
+			var line strings.Builder
+			if j < len(leftChunks) {
+				line.WriteString(leftChunks[j])
+			} else {
+				line.WriteString(blank)
+			}
+			line.WriteString(" │ ")
+			if j < len(rightChunks) {
+				line.WriteString(rightChunks[j])
+			} else {
+				line.WriteString(blank)
+			}
+			out = append(out, line.String())
+		}
+		return out
+
+	default:
+		body := width - 2
+		if body < 1 {
+			body = 1
+		}
+		return []string{renderCellWithHL(row.cells[0], body)}
+	}
 }
 
 // wrapDiffCellChunks returns one or more rendered strings for a split
