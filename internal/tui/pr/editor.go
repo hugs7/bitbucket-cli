@@ -25,8 +25,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/config"
-	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
 // editorRequest captures everything an edit needs: which workflow
@@ -47,9 +47,11 @@ type editorRequest struct {
 	// Initial buffer contents pre-filled for the user.
 	initial string
 
-	// Header is a comment marker prepended to the temp file (and
-	// stripped from the result) so the editor shows context. Inline
-	// comments use it; description / generic edits leave it empty.
+	// Header is a block of editor-only comment lines appended below
+	// the editable area so the editor shows context without putting
+	// scaffolding under the cursor. Lines starting with "#" are
+	// stripped from the result for requests that provide a header.
+	// Inline comments use it; description / generic edits leave it empty.
 	header string
 }
 
@@ -82,9 +84,9 @@ func requestEditInline(prID int, path string, lineNo int, side string) tea.Cmd {
 	if lineNo == 0 {
 		hint = fmt.Sprintf("pr-%d-file-%s", prID, strutil.SanitizeForFilename(path))
 	}
-	header := fmt.Sprintf("<!-- inline comment on %s:%d (%s side) -->\n", path, lineNo, side)
+	header := fmt.Sprintf("# inline comment on %s:%d (%s side)\n# Lines starting with # are ignored.\n", path, lineNo, side)
 	if lineNo == 0 {
-		header = fmt.Sprintf("<!-- file-level comment on %s -->\n", path)
+		header = fmt.Sprintf("# file-level comment on %s\n# Lines starting with # are ignored.\n", path)
 	}
 	return requestEdit(editorRequest{
 		purpose: "add-inline-comment",
@@ -111,11 +113,8 @@ func runFullscreenEditor(req editorRequest) tea.Cmd {
 		return func() tea.Msg { return editorResultFor(req, "", err) }
 	}
 	tmp := f.Name()
-	if req.header != "" {
-		_, _ = f.WriteString(req.header)
-	}
-	if req.initial != "" {
-		_, _ = f.WriteString(req.initial)
+	if seed := editorSeed(req); seed != "" {
+		_, _ = f.WriteString(seed)
 	}
 	f.Close()
 
@@ -133,12 +132,50 @@ func runFullscreenEditor(req editorRequest) tea.Cmd {
 			return editorResultFor(req, "", err)
 		}
 		data, rerr := os.ReadFile(tmp)
-		text := string(data)
-		if req.header != "" {
-			text = strings.TrimPrefix(text, req.header)
-		}
+		text := cleanEditorResult(req, string(data))
 		return editorResultFor(req, text, rerr)
 	})
+}
+
+// editorSeed writes the user's editable content first, then places any
+// editor-only context a couple of lines below it, like git's commit /
+// merge message templates. That keeps scaffolding out of the way when
+// the editor opens at the top of the file.
+func editorSeed(req editorRequest) string {
+	var b strings.Builder
+	if req.initial != "" {
+		b.WriteString(req.initial)
+	}
+	if req.header != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString("\n\n")
+		b.WriteString(req.header)
+		if !strings.HasSuffix(req.header, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// cleanEditorResult removes editor-only comment lines from buffers
+// that were seeded with a header. We also tolerate the old HTML marker
+// format so any in-flight temp files don't leak scaffold text if read.
+func cleanEditorResult(req editorRequest, text string) string {
+	if req.header == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "<!--") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // editorResultFor builds an editorResultMsg from a request + result,
@@ -234,7 +271,7 @@ func (e inlineEditor) view(width, height int, label string) string {
 		Padding(1, 2).
 		Width(editorBoxInnerWidth(width) + 2)
 
-	header := theme.TitleBadge.Render(" " + label + " ") + "  " +
+	header := theme.TitleBadge.Render(" "+label+" ") + "  " +
 		theme.TitleChipDim.Render("ctrl+s save · esc cancel · F11 → $EDITOR")
 	body := header + "\n\n" + e.ta.View()
 

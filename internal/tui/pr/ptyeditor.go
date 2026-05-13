@@ -110,18 +110,11 @@ func newPTYEditor(req editorRequest, cols, rows int) (*ptyEditor, tea.Cmd, error
 		return nil, nil, fmt.Errorf("create temp: %w", err)
 	}
 	tmp := f.Name()
-	if req.header != "" {
-		if _, werr := f.WriteString(req.header); werr != nil {
+	if seed := editorSeed(req); seed != "" {
+		if _, werr := f.WriteString(seed); werr != nil {
 			f.Close()
 			os.Remove(tmp)
-			return nil, nil, fmt.Errorf("write header: %w", werr)
-		}
-	}
-	if req.initial != "" {
-		if _, werr := f.WriteString(req.initial); werr != nil {
-			f.Close()
-			os.Remove(tmp)
-			return nil, nil, fmt.Errorf("write initial: %w", werr)
+			return nil, nil, fmt.Errorf("write seed: %w", werr)
 		}
 	}
 	// Sync to flush kernel buffers BEFORE the editor opens the file.
@@ -312,11 +305,7 @@ func (pe *ptyEditor) ReadResult() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	text := string(data)
-	if pe.req.header != "" {
-		text = strings.TrimPrefix(text, pe.req.header)
-	}
-	return text, nil
+	return cleanEditorResult(pe.req, string(data)), nil
 }
 
 // SendKey translates a bubbletea KeyMsg into the byte sequence the
@@ -471,9 +460,9 @@ func (pe *ptyEditor) View(diffWidth int) string {
 func renderGlyph(g vt10x.Glyph, ch string) string {
 	st := lipgloss.NewStyle()
 	const (
-		attrReverse   = 1 << 0
-		_             = 1 << 1 // underline
-		attrBold      = 1 << 2
+		attrReverse = 1 << 0
+		_           = 1 << 1 // underline
+		attrBold    = 1 << 2
 	)
 	if g.FG.ANSI() {
 		st = st.Foreground(lipgloss.Color(fmt.Sprintf("%d", g.FG)))
