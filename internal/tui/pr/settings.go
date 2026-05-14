@@ -95,7 +95,6 @@ func buildSettingsItems() []list.Item {
 				_ = config.SetDiffPrefs(m.diffSplit, m.diffShowInline)
 				if len(m.diffLines) > 0 {
 					m.rebuildDiffRows()
-					m.diff.SetContent(m.renderDiffRows())
 				}
 				m.status = fmt.Sprintf("✓ diff view: %s", settingDiffViewLabel())
 				return nil
@@ -110,7 +109,6 @@ func buildSettingsItems() []list.Item {
 				_ = config.SetDiffPrefs(m.diffSplit, m.diffShowInline)
 				if len(m.diffLines) > 0 {
 					m.rebuildDiffRows()
-					m.diff.SetContent(m.renderDiffRows())
 				}
 				m.status = fmt.Sprintf("✓ inline comments: %s", onOff(m.diffShowInline))
 				return nil

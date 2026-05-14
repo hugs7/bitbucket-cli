@@ -24,10 +24,10 @@ import (
 
 	"github.com/hugs7/bitbucket-cli/internal/aiutil"
 	"github.com/hugs7/bitbucket-cli/internal/api"
-	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
 // PRs launches the interactive pull-requests TUI.
@@ -76,7 +76,6 @@ const (
 // buildDot is a thin alias for theme.BuildDot so the dozens of
 // in-file callers stay terse.
 func buildDot(state string) string { return theme.BuildDot(state) }
-
 
 // ---------- model ----------
 
@@ -179,13 +178,17 @@ type model struct {
 
 	// Diff navigation: parsed lines + display rows + cursor position so
 	// we can anchor inline comments to the correct (path, side, line).
-	// The viewport itself only knows how to scroll a string, so we
-	// re-render with a row marker each time the cursor moves.
-	diffLines      []diffLine
-	diffRows       []diffRow
-	diffCursor     int
-	diffCursorSide int  // 0=old (LHS), 1=new (RHS); split mode only
-	diffSplit      bool // false=unified, true=side-by-side
+	// The viewport itself only knows how to scroll a string, so we keep
+	// a cache of rendered row bodies and re-compose them with a row
+	// marker each time the cursor moves.
+	diffLines       []diffLine
+	diffRows        []diffRow
+	diffRenderRows  []renderedDiffRow
+	diffRenderW     int
+	diffRenderSplit bool
+	diffCursor      int
+	diffCursorSide  int  // 0=old (LHS), 1=new (RHS); split mode only
+	diffSplit       bool // false=unified, true=side-by-side
 
 	// diffRowYs maps a diffRow index to the visual line offset it
 	// occupies in the rendered viewport content. With split-mode
@@ -193,7 +196,7 @@ type model struct {
 	// lines, so we track the offset per row to keep cursor scroll
 	// math honest. Length = len(diffRows)+1 (last entry is the
 	// total visual line count, useful for "go to bottom" maths).
-	diffRowYs []int
+	diffRowYs        []int
 	diffShowInline   bool // overlay inline review comments
 	diffComments     []api.Comment
 	diffCommentsPRID int
@@ -479,6 +482,7 @@ func (m *model) fetchDiffComments(id int) tea.Cmd {
 		return diffCommentsLoadedMsg{id: id, comments: cs}
 	}
 }
+
 // isOwnPR reports whether the given PR was opened by the configured
 // user. Bitbucket rejects self-approval, so callers gate the
 // Approve / Unapprove / NeedsWork commands on this to avoid an API
@@ -2644,7 +2648,6 @@ var (
 	annoGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Background(lipgloss.Color("57"))
 	annoBodyGutter  = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Background(lipgloss.Color("237"))
 )
-
 
 // editInlineInTUI is editInTUI's cousin for line-anchored comments —
 // it carries path/line/side through to the result message. lineNo == 0

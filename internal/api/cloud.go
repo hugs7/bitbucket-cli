@@ -143,11 +143,27 @@ func (p clPR) toPR() PullRequest {
 		}
 		if pa, ok := approval[r.UUID]; ok {
 			rev.Approved = pa.Approved
-			rev.Status = strings.ToUpper(pa.State)
+			rev.Status = cloudReviewerStatus(pa.State, pa.Approved)
 		}
 		out.Reviewers = append(out.Reviewers, rev)
 	}
 	return out
+}
+
+func cloudReviewerStatus(state string, approved bool) string {
+	if approved {
+		return "APPROVED"
+	}
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "approved":
+		return "APPROVED"
+	case "changes_requested":
+		return "NEEDS_WORK"
+	case "":
+		return "UNAPPROVED"
+	default:
+		return strings.ToUpper(state)
+	}
 }
 
 func (c *cloudService) GetRepo(workspace, slug string) (*Repo, error) {

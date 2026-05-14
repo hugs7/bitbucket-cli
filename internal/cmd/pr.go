@@ -161,6 +161,13 @@ func newPRViewCmd() *cobra.Command {
 				branch.Render(p.TargetRef),
 			)
 			fmt.Fprintln(w, muted.Render(p.WebURL))
+			if len(p.Reviewers) > 0 {
+				fmt.Fprintln(w)
+				fmt.Fprintln(w, b.Render("Reviewers"))
+				for _, r := range p.Reviewers {
+					fmt.Fprintf(w, "  %s  %s\n", reviewerStatusLabel(r), reviewerName(r))
+				}
+			}
 			if p.Description != "" {
 				fmt.Fprintln(w)
 				fmt.Fprintln(w, p.Description)
@@ -171,6 +178,31 @@ func newPRViewCmd() *cobra.Command {
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	return c
+}
+
+func reviewerName(r api.Reviewer) string {
+	if strings.TrimSpace(r.DisplayName) == "" {
+		return r.Username
+	}
+	if strings.TrimSpace(r.Username) == "" || r.Username == r.DisplayName {
+		return r.DisplayName
+	}
+	return fmt.Sprintf("%s (%s)", r.DisplayName, r.Username)
+}
+
+func reviewerStatusLabel(r api.Reviewer) string {
+	s := strings.ToUpper(strings.TrimSpace(r.Status))
+	if s == "" && r.Approved {
+		s = "APPROVED"
+	}
+	switch s {
+	case "APPROVED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("✓ approved")
+	case "NEEDS_WORK", "CHANGES_REQUESTED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ needs work")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("~ pending")
+	}
 }
 
 func newPRCreateCmd() *cobra.Command {
@@ -740,7 +772,7 @@ func newPRReviewerListCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "USERNAME\tNAME\tSTATUS")
 			for _, r := range pr.Reviewers {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", r.Username, r.DisplayName, styleState(r.Status))
+				fmt.Fprintf(w, "%s\t%s\t%s\n", r.Username, r.DisplayName, reviewerStatusLabel(r))
 			}
 			return w.Flush()
 		},

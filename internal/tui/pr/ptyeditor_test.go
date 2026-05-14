@@ -7,6 +7,40 @@ import (
 	"time"
 )
 
+func TestEditorSeedPlacesHeaderBelowEditableArea(t *testing.T) {
+	req := editorRequest{
+		initial: "draft comment",
+		header:  "# inline comment on file.go:12 (new side)\n# Lines starting with # are ignored.\n",
+	}
+
+	got := editorSeed(req)
+	want := "draft comment\n\n\n# inline comment on file.go:12 (new side)\n# Lines starting with # are ignored.\n"
+	if got != want {
+		t.Fatalf("editorSeed() = %q, want %q", got, want)
+	}
+}
+
+func TestCleanEditorResultStripsTemplateComments(t *testing.T) {
+	req := editorRequest{header: "# Lines starting with # are ignored.\n"}
+	input := "actual comment\n\n# inline comment on file.go:12 (new side)\n  # indented helper\n<!-- legacy helper -->\nmore text\n"
+
+	got := cleanEditorResult(req, input)
+	want := "actual comment\n\nmore text\n"
+	if got != want {
+		t.Fatalf("cleanEditorResult() = %q, want %q", got, want)
+	}
+}
+
+func TestCleanEditorResultPreservesHashLinesWithoutTemplate(t *testing.T) {
+	req := editorRequest{}
+	input := "# markdown heading\nbody\n"
+
+	got := cleanEditorResult(req, input)
+	if got != input {
+		t.Fatalf("cleanEditorResult() = %q, want %q", got, input)
+	}
+}
+
 // TestPTYEditorSeedsInitialContent verifies that newPTYEditor writes
 // req.initial to the temp file BEFORE the editor process is launched,
 // so editors like vim/nvim see the existing comment text on open.
