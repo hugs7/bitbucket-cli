@@ -20,7 +20,9 @@ func (s *serverService) Me() string   { return s.client.cfg.Username }
 
 // --- raw response shapes (only the fields we need) ---
 
-type srvLink struct{ Href string `json:"href"` }
+type srvLink struct {
+	Href string `json:"href"`
+}
 type srvLinks struct {
 	Self  []srvLink `json:"self"`
 	Clone []struct {
@@ -29,12 +31,12 @@ type srvLinks struct {
 	} `json:"clone"`
 }
 type srvRepo struct {
-	Slug          string   `json:"slug"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
+	Slug          string               `json:"slug"`
+	Name          string               `json:"name"`
+	Description   string               `json:"description"`
 	Project       struct{ Key string } `json:"project"`
-	Links         srvLinks `json:"links"`
-	DefaultBranch string   `json:"defaultBranch"`
+	Links         srvLinks             `json:"links"`
+	DefaultBranch string               `json:"defaultBranch"`
 }
 
 type srvUser struct {
@@ -43,8 +45,8 @@ type srvUser struct {
 }
 
 type srvRef struct {
-	ID          string `json:"id"`
-	DisplayID   string `json:"displayId"`
+	ID        string `json:"id"`
+	DisplayID string `json:"displayId"`
 }
 
 type srvParticipant struct {
@@ -54,17 +56,17 @@ type srvParticipant struct {
 }
 
 type srvPR struct {
-	ID          int     `json:"id"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	State       string  `json:"state"`
-	CreatedDate int64   `json:"createdDate"`
-	UpdatedDate int64   `json:"updatedDate"`
-	FromRef     srvRef  `json:"fromRef"`
-	ToRef       srvRef  `json:"toRef"`
+	ID          int                    `json:"id"`
+	Title       string                 `json:"title"`
+	Description string                 `json:"description"`
+	State       string                 `json:"state"`
+	CreatedDate int64                  `json:"createdDate"`
+	UpdatedDate int64                  `json:"updatedDate"`
+	FromRef     srvRef                 `json:"fromRef"`
+	ToRef       srvRef                 `json:"toRef"`
 	Author      struct{ User srvUser } `json:"author"`
-	Reviewers   []srvParticipant `json:"reviewers"`
-	Links       srvLinks `json:"links"`
+	Reviewers   []srvParticipant       `json:"reviewers"`
+	Links       srvLinks               `json:"links"`
 }
 
 type srvPaged[T any] struct {
@@ -75,22 +77,22 @@ type srvPaged[T any] struct {
 }
 
 type srvBuild struct {
-	State          string `json:"state"`
-	Key            string `json:"key"`
-	Name           string `json:"name"`
-	URL            string `json:"url"`
-	DateAdded      int64  `json:"dateAdded"`
+	State     string `json:"state"`
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	DateAdded int64  `json:"dateAdded"`
 }
 
 // --- conversions ---
 
 func (r srvRepo) toRepo() Repo {
 	out := Repo{
-		Project:    r.Project.Key,
-		Slug:       r.Slug,
-		Name:       r.Name,
+		Project:     r.Project.Key,
+		Slug:        r.Slug,
+		Name:        r.Name,
 		Description: r.Description,
-		DefaultRef: r.DefaultBranch,
+		DefaultRef:  r.DefaultBranch,
 	}
 	for _, c := range r.Links.Clone {
 		switch c.Name {
@@ -222,7 +224,9 @@ func (s *serverService) MergePR(project, slug string, id int, strategyID string)
 		return err
 	}
 	// Server requires the PR's current version to merge — fetch raw to grab it.
-	var raw struct{ Version int `json:"version"` }
+	var raw struct {
+		Version int `json:"version"`
+	}
 	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
 		return err
 	}
@@ -307,7 +311,9 @@ func defaultServerStrategies() []MergeStrategy {
 }
 
 func (s *serverService) DeclinePR(project, slug string, id int) error {
-	var raw struct{ Version int `json:"version"` }
+	var raw struct {
+		Version int `json:"version"`
+	}
 	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
 		return err
 	}
@@ -321,7 +327,9 @@ func (s *serverService) DeclinePR(project, slug string, id int) error {
 // only effective on declined PRs and requires repo-admin permission;
 // the API surfaces a clear error in either case.
 func (s *serverService) DeletePR(project, slug string, id int) error {
-	var raw struct{ Version int `json:"version"` }
+	var raw struct {
+		Version int `json:"version"`
+	}
 	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
 		return err
 	}
@@ -367,7 +375,9 @@ func (s *serverService) PRDiff(project, slug string, id int) (string, error) {
 // --- mutating actions ---
 
 func (s *serverService) prVersion(project, slug string, id int) (int, error) {
-	var raw struct{ Version int `json:"version"` }
+	var raw struct {
+		Version int `json:"version"`
+	}
 	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), &raw); err != nil {
 		return 0, err
 	}
@@ -409,6 +419,21 @@ func (s *serverService) UpdatePRDescription(project, slug string, id int, descri
 		"version":     v,
 		"description": description,
 		"reviewers":   reviewers,
+	}
+	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), body, nil)
+}
+
+func (s *serverService) UpdatePRTitle(project, slug string, id int, title string) error {
+	// Same reviewer round-trip as UpdatePRDescription: Server treats
+	// an omitted `reviewers` field as "clear reviewers" on PR updates.
+	v, reviewers, err := s.prVersionAndReviewers(project, slug, id)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
+		"version":   v,
+		"title":     title,
+		"reviewers": reviewers,
 	}
 	return s.client.putJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d", project, slug, id), body, nil)
 }
@@ -598,7 +623,9 @@ func (s *serverService) PipelineLogs(project, slug, idOrUUID string) (string, er
 // commentVersion fetches the current version of a comment, needed for
 // edit/delete on Bitbucket Server.
 func (s *serverService) commentVersion(project, slug string, prID, commentID int) (int, error) {
-	var raw struct{ Version int `json:"version"` }
+	var raw struct {
+		Version int `json:"version"`
+	}
 	if err := s.client.getJSON(fmt.Sprintf("projects/%s/repos/%s/pull-requests/%d/comments/%d", project, slug, prID, commentID), &raw); err != nil {
 		return 0, err
 	}
@@ -1120,7 +1147,9 @@ func (s *serverService) ListBuildsForRef(project, slug, ref string, limit int) (
 	}
 
 	// Resolve ref → commit.
-	var commits srvPaged[struct{ ID string `json:"id"` }]
+	var commits srvPaged[struct {
+		ID string `json:"id"`
+	}]
 	endpoint := fmt.Sprintf("projects/%s/repos/%s/commits%s", project, slug, queryString(map[string]string{"until": ref, "limit": "1"}))
 	if err := s.client.getJSON(endpoint, &commits); err != nil {
 		return nil, err

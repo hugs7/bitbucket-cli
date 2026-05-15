@@ -464,10 +464,10 @@ func newPRBrowseCmd() *cobra.Command {
 }
 
 func newPREditCmd() *cobra.Command {
-	var repoFlag, hostFlag, body string
+	var repoFlag, hostFlag, title, body string
 	c := &cobra.Command{
 		Use:   "edit <id>",
-		Short: "Edit a pull request's description in $EDITOR",
+		Short: "Edit a pull request's title or description",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.Atoi(args[0])
@@ -478,7 +478,18 @@ func newPREditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			updated := []string{}
+			if title != "" {
+				if err := svc.UpdatePRTitle(project, slug, id, title); err != nil {
+					return err
+				}
+				updated = append(updated, "title")
+			}
 			if body == "" {
+				if title != "" {
+					fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(updated, " and "), id)
+					return nil
+				}
 				p, err := svc.GetPR(project, slug, id)
 				if err != nil {
 					return err
@@ -491,12 +502,14 @@ func newPREditCmd() *cobra.Command {
 			if err := svc.UpdatePRDescription(project, slug, id, body); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Updated description for PR #%d\n", id)
+			updated = append(updated, "description")
+			fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(updated, " and "), id)
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	c.Flags().StringVarP(&title, "title", "t", "", "new title")
 	c.Flags().StringVarP(&body, "body", "b", "", "new description (skips opening editor)")
 	return c
 }
