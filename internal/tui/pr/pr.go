@@ -1039,6 +1039,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			},
 		))
 
+	case editTitleMsg:
+		// huh form for "edit title" completed. Treat empty or
+		// unchanged titles as no-ops to match the target-branch flow.
+		if msg.cancelled {
+			m.status = "edit title cancelled"
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + "edit title: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.title == "" {
+			m.status = "edit title cancelled"
+			return m, nil
+		}
+		for _, it := range m.list.Items() {
+			pi, ok := it.(prItem)
+			if !ok || pi.pr.ID != msg.prID {
+				continue
+			}
+			if pi.pr.Title == msg.title {
+				m.status = theme.OKPrefix() + fmt.Sprintf("PR #%d already has that title", msg.prID)
+				return m, nil
+			}
+			break
+		}
+		prID := msg.prID
+		title := msg.title
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.doAction(
+			fmt.Sprintf("renamed #%d", prID),
+			true,
+			func() error {
+				return m.svc.UpdatePRTitle(m.project, m.slug, prID, title)
+			},
+		))
+
 	case mergeStrategiesLoadedMsg:
 		// Strategies fetched — populate the dialog state and switch
 		// into the confirm view. On error we still show the dialog
@@ -1957,6 +1994,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
+				case key.Matches(msg, m.keys.EditTitle):
+					return m, m.startEditTitle(id, it.pr.Title)
 				case key.Matches(msg, m.keys.EditTarget):
 					return m, m.startEditTarget(id, it.pr.TargetRef)
 				case key.Matches(msg, m.keys.CreatePR):
@@ -2316,6 +2355,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				return m, editInTUI("edit-description",
 					fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, 0, it.pr.Description)
+			}
+		case key.Matches(msg, m.keys.EditTitle):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, m.startEditTitle(it.pr.ID, it.pr.Title)
 			}
 		case key.Matches(msg, m.keys.EditTarget):
 			if it, ok := m.list.SelectedItem().(prItem); ok {

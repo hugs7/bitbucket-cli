@@ -95,6 +95,7 @@ func applyReviewContext(km modeKeyMap, k keyMap, status string, ownPR, hasSelect
 		k.Unapprove.Help().Key:       true,
 		k.NeedsWork.Help().Key:       true,
 		k.Merge.Help().Key:           true,
+		k.EditTitle.Help().Key:       true,
 		k.EditDesc.Help().Key:        true,
 		k.Comments.Help().Key:        true,
 		k.Diff.Help().Key:            true,
@@ -487,4 +488,3 @@ func prevState(s string) string {
 	}
 	return stateCycle[0]
 }
-

@@ -27,8 +27,8 @@ type keyMap struct {
 	Settings         key.Binding
 
 	Approve, Unapprove, NeedsWork, Merge key.Binding
-	EditDesc, Comments, AddComment       key.Binding
-	EditTarget                           key.Binding
+	EditTitle, EditDesc, Comments        key.Binding
+	AddComment, EditTarget               key.Binding
 	CreatePR, DeclinePR, DeletePR        key.Binding
 	ManageReviewers                      key.Binding
 
@@ -77,6 +77,7 @@ func defaultKeys() keyMap {
 		Unapprove:  key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "unapprove")),
 		NeedsWork:  key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "needs work")),
 		Merge:      key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "merge")),
+		EditTitle:  key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "edit title")),
 		EditDesc:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit description")),
 		EditTarget: key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "edit target branch")),
 		Comments:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comments")),
@@ -144,7 +145,7 @@ func (k keyMap) listHelp() modeKeyMap {
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
-			{k.EditDesc, k.EditTarget, k.Comments, k.Refresh, k.State},
+			{k.EditTitle, k.EditDesc, k.EditTarget, k.Comments, k.Refresh, k.State},
 			{k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR},
 			{k.PaletteOpen, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
 		},
@@ -172,7 +173,7 @@ func (k keyMap) detailHelp() modeKeyMap {
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Diff, k.Comments, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},
-			{k.EditDesc, k.EditTarget, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Help, k.Back, k.Quit},
+			{k.EditTitle, k.EditDesc, k.EditTarget, k.ManageReviewers, k.DeclinePR, k.DeletePR, k.Help, k.Back, k.Quit},
 		},
 	}
 }
@@ -248,6 +249,7 @@ func keyMapBindings(km *keyMap) map[string]*key.Binding {
 		"unapprove":        &km.Unapprove,
 		"needs_work":       &km.NeedsWork,
 		"merge":            &km.Merge,
+		"edit_title":       &km.EditTitle,
 		"edit_desc":        &km.EditDesc,
 		"edit_target":      &km.EditTarget,
 		"comments":         &km.Comments,

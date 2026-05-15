@@ -26,6 +26,15 @@ type editTargetMsg struct {
 	err       error
 }
 
+// editTitleMsg is posted after the title edit form closes. The
+// Update handler validates no-op/cancel cases and then calls the API.
+type editTitleMsg struct {
+	prID      int
+	title     string
+	cancelled bool
+	err       error
+}
+
 // editTargetForm implements tea.ExecCommand: pause the parent
 // program, run the huh form, post results back via editTargetMsg.
 type editTargetForm struct {
@@ -40,9 +49,26 @@ type editTargetForm struct {
 	err       error
 }
 
+// editTitleForm is the same tea.ExecCommand pattern as editTargetForm,
+// but with a single text input seeded from the current PR title.
+type editTitleForm struct {
+	prID  int
+	title string
+
+	stdin          io.Reader
+	stdout, stderr io.Writer
+
+	cancelled bool
+	err       error
+}
+
 func (f *editTargetForm) SetStdin(r io.Reader)  { f.stdin = r }
 func (f *editTargetForm) SetStdout(w io.Writer) { f.stdout = w }
 func (f *editTargetForm) SetStderr(w io.Writer) { f.stderr = w }
+
+func (f *editTitleForm) SetStdin(r io.Reader)  { f.stdin = r }
+func (f *editTitleForm) SetStdout(w io.Writer) { f.stdout = w }
+func (f *editTitleForm) SetStderr(w io.Writer) { f.stderr = w }
 
 func (f *editTargetForm) Run() error {
 	// Match the create-PR form's keymap so the autocomplete UX is
@@ -75,6 +101,30 @@ func (f *editTargetForm) Run() error {
 	return nil
 }
 
+func (f *editTitleForm) Run() error {
+	keymap := huh.NewDefaultKeyMap()
+	keymap.Input.Next = key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "next"),
+	)
+
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title(fmt.Sprintf("New title for PR #%d", f.prID)).
+			Value(&f.title).
+			Validate(formNonEmpty),
+	)).WithInput(f.stdin).WithOutput(f.stdout).WithKeyMap(keymap)
+
+	if err := form.Run(); err != nil {
+		if err == huh.ErrUserAborted {
+			f.cancelled = true
+			return nil
+		}
+		f.err = err
+	}
+	return nil
+}
+
 // startEditTarget launches the huh form via tea.Exec for the
 // currently-selected PR. The parent program is suspended for the
 // duration; on submit/cancel an editTargetMsg lands and the model
@@ -92,6 +142,26 @@ func (m *model) startEditTarget(prID int, currentTarget string) tea.Cmd {
 		return editTargetMsg{
 			prID:      prID,
 			target:    strings.TrimSpace(form.target),
+			cancelled: form.cancelled,
+			err:       form.err,
+		}
+	})
+}
+
+// startEditTitle launches the single-field title edit form for the
+// currently-selected PR.
+func (m *model) startEditTitle(prID int, currentTitle string) tea.Cmd {
+	form := &editTitleForm{
+		prID:  prID,
+		title: currentTitle,
+	}
+	return tea.Exec(form, func(err error) tea.Msg {
+		if err != nil {
+			return editTitleMsg{prID: prID, err: err}
+		}
+		return editTitleMsg{
+			prID:      prID,
+			title:     strings.TrimSpace(form.title),
 			cancelled: form.cancelled,
 			err:       form.err,
 		}
