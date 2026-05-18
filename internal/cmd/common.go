@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,33 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
 )
+
+// resolveBody picks the body text to use for a PR / comment, given
+// the mutually exclusive --body and --body-file flags. A bodyFile of
+// "-" reads from stdin. Returns the chosen body string. If neither
+// flag is set, returns the original body unchanged so the caller can
+// fall back to opening $EDITOR.
+func resolveBody(body, bodyFile string) (string, error) {
+	if body != "" && bodyFile != "" {
+		return "", fmt.Errorf("--body and --body-file are mutually exclusive")
+	}
+	if bodyFile == "" {
+		return body, nil
+	}
+	var (
+		data []byte
+		err  error
+	)
+	if bodyFile == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(expandTilde(bodyFile))
+	}
+	if err != nil {
+		return "", fmt.Errorf("read body file: %w", err)
+	}
+	return string(data), nil
+}
 
 // expandTilde turns a leading "~" or "~/" into the user's home dir.
 // Falls back to the original path if the home dir can't be resolved
