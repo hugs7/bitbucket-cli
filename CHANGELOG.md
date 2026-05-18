@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.0](https://github.com/hugs7/bitbucket-cli/compare/v0.7.0...v0.8.0) (2026-05-18)
+
+
+### Features
+
+* **home:** y to copy link on dashboard ([c98b6ff](https://github.com/hugs7/bitbucket-cli/commit/c98b6ffe627421b4a526735305202dd619f3b4bf))
+* **home:** y to copy link on dashboard ([8b0d324](https://github.com/hugs7/bitbucket-cli/commit/8b0d3241f5fcad3202f5eabe289085ee411e3668))
+* **pr:** add --body-file flag for create / edit / comment ([1489ec3](https://github.com/hugs7/bitbucket-cli/commit/1489ec39d7124f0fdaffbb55327cee0f723397d9))
+
 ## [0.7.0](https://github.com/hugs7/bitbucket-cli/compare/v0.6.0...v0.7.0) (2026-05-14)
 
 
