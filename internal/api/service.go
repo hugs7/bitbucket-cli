@@ -55,6 +55,7 @@ type Service interface {
 	DeleteBranch(project, slug, branch string) error
 	PRDiff(project, slug string, id int) (string, error)
 
+	UpdatePRTitle(project, slug string, id int, title string) error
 	UpdatePRDescription(project, slug string, id int, description string) error
 
 	// UpdatePRTarget changes the destination/target branch of an

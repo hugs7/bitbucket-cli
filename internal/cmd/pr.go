@@ -206,12 +206,16 @@ func reviewerStatusLabel(r api.Reviewer) string {
 }
 
 func newPRCreateCmd() *cobra.Command {
-	var repoFlag, hostFlag, title, body, source, target string
+	var repoFlag, hostFlag, title, body, bodyFile, source, target string
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Create a pull request",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			body, err = resolveBody(body, bodyFile)
 			if err != nil {
 				return err
 			}
@@ -275,6 +279,7 @@ func newPRCreateCmd() *cobra.Command {
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().StringVarP(&title, "title", "t", "", "PR title")
 	c.Flags().StringVarP(&body, "body", "b", "", "PR description")
+	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read PR description from file (use "-" for stdin)`)
 	c.Flags().StringVarP(&source, "source", "s", "", "source branch (default: current branch)")
 	c.Flags().StringVarP(&target, "target", "T", "", "target branch (default: repo default branch)")
 	return c
@@ -464,10 +469,10 @@ func newPRBrowseCmd() *cobra.Command {
 }
 
 func newPREditCmd() *cobra.Command {
-	var repoFlag, hostFlag, body string
+	var repoFlag, hostFlag, title, body, bodyFile string
 	c := &cobra.Command{
 		Use:   "edit <id>",
-		Short: "Edit a pull request's description in $EDITOR",
+		Short: "Edit a pull request's title or description",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.Atoi(args[0])
@@ -478,7 +483,22 @@ func newPREditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			body, err = resolveBody(body, bodyFile)
+			if err != nil {
+				return err
+			}
+			updated := []string{}
+			if title != "" {
+				if err := svc.UpdatePRTitle(project, slug, id, title); err != nil {
+					return err
+				}
+				updated = append(updated, "title")
+			}
 			if body == "" {
+				if title != "" {
+					fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(updated, " and "), id)
+					return nil
+				}
 				p, err := svc.GetPR(project, slug, id)
 				if err != nil {
 					return err
@@ -491,13 +511,16 @@ func newPREditCmd() *cobra.Command {
 			if err := svc.UpdatePRDescription(project, slug, id, body); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Updated description for PR #%d\n", id)
+			updated = append(updated, "description")
+			fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(updated, " and "), id)
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
+	c.Flags().StringVarP(&title, "title", "t", "", "new title")
 	c.Flags().StringVarP(&body, "body", "b", "", "new description (skips opening editor)")
+	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read new description from file (use "-" for stdin)`)
 	return c
 }
 
@@ -596,7 +619,7 @@ func newPRCommentCmd() *cobra.Command {
 }
 
 func newPRCommentEditCmd() *cobra.Command {
-	var repoFlag, hostFlag, body string
+	var repoFlag, hostFlag, body, bodyFile string
 	c := &cobra.Command{
 		Use:   "edit <pr-id> <comment-id>",
 		Short: "Edit one of your PR comments",
@@ -611,6 +634,10 @@ func newPRCommentEditCmd() *cobra.Command {
 				return err
 			}
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			body, err = resolveBody(body, bodyFile)
 			if err != nil {
 				return err
 			}
@@ -645,6 +672,7 @@ func newPRCommentEditCmd() *cobra.Command {
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().StringVarP(&body, "body", "b", "", "new comment text (skips opening editor)")
+	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read new comment text from file (use "-" for stdin)`)
 	return c
 }
 
@@ -694,7 +722,7 @@ func newPRCommentDeleteCmd() *cobra.Command {
 }
 
 func newPRCommentReplyCmd() *cobra.Command {
-	var repoFlag, hostFlag, body string
+	var repoFlag, hostFlag, body, bodyFile string
 	c := &cobra.Command{
 		Use:   "reply <pr-id> <parent-comment-id>",
 		Short: "Reply to a PR comment",
@@ -709,6 +737,10 @@ func newPRCommentReplyCmd() *cobra.Command {
 				return err
 			}
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			body, err = resolveBody(body, bodyFile)
 			if err != nil {
 				return err
 			}
@@ -733,6 +765,7 @@ func newPRCommentReplyCmd() *cobra.Command {
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().StringVarP(&body, "body", "b", "", "reply text (skips opening editor)")
+	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read reply text from file (use "-" for stdin)`)
 	return c
 }
 
@@ -884,7 +917,7 @@ func newPRCommentListCmd() *cobra.Command {
 }
 
 func newPRCommentAddCmd() *cobra.Command {
-	var repoFlag, hostFlag, body, file, side string
+	var repoFlag, hostFlag, body, bodyFile, file, side string
 	var line int
 	c := &cobra.Command{
 		Use:   "add <id>",
@@ -901,6 +934,10 @@ With --file and --line, posts an inline review comment anchored to that line.
 				return err
 			}
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			body, err = resolveBody(body, bodyFile)
 			if err != nil {
 				return err
 			}
@@ -944,6 +981,7 @@ With --file and --line, posts an inline review comment anchored to that line.
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().StringVarP(&body, "body", "b", "", "comment text (skips opening editor)")
+	c.Flags().StringVar(&bodyFile, "body-file", "", `read comment text from file (use "-" for stdin)`)
 	c.Flags().StringVarP(&file, "file", "F", "", "file path for an inline comment")
 	c.Flags().IntVarP(&line, "line", "l", 0, "line number for an inline comment")
 	c.Flags().StringVar(&side, "side", "new", `diff side: "new" (added) or "old" (removed)`)

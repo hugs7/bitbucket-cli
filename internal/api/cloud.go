@@ -18,7 +18,9 @@ func (c *cloudService) Host() string { return c.host }
 func (c *cloudService) Me() string   { return c.client.cfg.Username }
 
 type clLinks struct {
-	HTML  struct{ Href string `json:"href"` } `json:"html"`
+	HTML struct {
+		Href string `json:"href"`
+	} `json:"html"`
 	Clone []struct {
 		Name string `json:"name"`
 		Href string `json:"href"`
@@ -26,12 +28,14 @@ type clLinks struct {
 }
 
 type clRepo struct {
-	Slug        string  `json:"slug"`
-	FullName    string  `json:"full_name"`
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Mainbranch  struct{ Name string `json:"name"` } `json:"mainbranch"`
-	Links       clLinks `json:"links"`
+	Slug        string `json:"slug"`
+	FullName    string `json:"full_name"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Mainbranch  struct {
+		Name string `json:"name"`
+	} `json:"mainbranch"`
+	Links clLinks `json:"links"`
 }
 
 type clUser struct {
@@ -41,7 +45,9 @@ type clUser struct {
 }
 
 type clBranch struct {
-	Branch struct{ Name string `json:"name"` } `json:"branch"`
+	Branch struct {
+		Name string `json:"name"`
+	} `json:"branch"`
 }
 
 type clParticipant struct {
@@ -76,23 +82,27 @@ type clPipeline struct {
 	BuildNumber int    `json:"build_number"`
 	State       struct {
 		Name   string `json:"name"`
-		Result struct{ Name string `json:"name"` } `json:"result"`
+		Result struct {
+			Name string `json:"name"`
+		} `json:"result"`
 	} `json:"state"`
 	Target struct {
 		RefName string `json:"ref_name"`
-		Commit  struct{ Hash string `json:"hash"` } `json:"commit"`
+		Commit  struct {
+			Hash string `json:"hash"`
+		} `json:"commit"`
 	} `json:"target"`
-	CreatedOn string `json:"created_on"`
+	CreatedOn string  `json:"created_on"`
 	Links     clLinks `json:"links"`
 }
 
 func (r clRepo) toRepo() Repo {
 	out := Repo{
-		Slug:       r.Slug,
-		Name:       r.Name,
+		Slug:        r.Slug,
+		Name:        r.Name,
 		Description: r.Description,
-		DefaultRef: r.Mainbranch.Name,
-		WebURL:     r.Links.HTML.Href,
+		DefaultRef:  r.Mainbranch.Name,
+		WebURL:      r.Links.HTML.Href,
 	}
 	// FullName is "workspace/slug".
 	if i := strings.Index(r.FullName, "/"); i > 0 {
@@ -305,6 +315,11 @@ func (c *cloudService) PRDiff(workspace, slug string, id int) (string, error) {
 
 var errCloudTodo = fmt.Errorf("not yet implemented for Bitbucket Cloud — please open an issue")
 
+func (c *cloudService) UpdatePRTitle(workspace, slug string, id int, title string) error {
+	body := map[string]any{"title": title}
+	return c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d", workspace, slug, id), body, nil)
+}
+
 func (c *cloudService) UpdatePRDescription(workspace, slug string, id int, description string) error {
 	body := map[string]any{"description": description}
 	return c.client.putJSON(fmt.Sprintf("repositories/%s/%s/pullrequests/%d", workspace, slug, id), body, nil)
@@ -329,8 +344,10 @@ func (c *cloudService) NeedsWorkPR(workspace, slug string, id int) error {
 }
 func (c *cloudService) ListComments(workspace, slug string, id int) ([]Comment, error) {
 	type cc struct {
-		ID      int    `json:"id"`
-		Content struct{ Raw string `json:"raw"` } `json:"content"`
+		ID      int `json:"id"`
+		Content struct {
+			Raw string `json:"raw"`
+		} `json:"content"`
 		User    clUser `json:"user"`
 		Created string `json:"created_on"`
 		Updated string `json:"updated_on"`
@@ -372,8 +389,10 @@ func (c *cloudService) AddComment(workspace, slug string, id int, text string) (
 	_ = errCloudTodo
 	body := map[string]any{"content": map[string]string{"raw": text}}
 	type cc struct {
-		ID      int    `json:"id"`
-		Content struct{ Raw string `json:"raw"` } `json:"content"`
+		ID      int `json:"id"`
+		Content struct {
+			Raw string `json:"raw"`
+		} `json:"content"`
 		User    clUser `json:"user"`
 		Created string `json:"created_on"`
 		Updated string `json:"updated_on"`
@@ -389,8 +408,10 @@ func (c *cloudService) AddComment(workspace, slug string, id int, text string) (
 }
 
 type cloudCC struct {
-	ID      int    `json:"id"`
-	Content struct{ Raw string `json:"raw"` } `json:"content"`
+	ID      int `json:"id"`
+	Content struct {
+		Raw string `json:"raw"`
+	} `json:"content"`
 	User    clUser `json:"user"`
 	Created string `json:"created_on"`
 	Updated string `json:"updated_on"`

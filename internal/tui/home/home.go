@@ -697,27 +697,23 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Open):
 			// Best-effort: derive a web URL from whichever pane
 			// has the selection.
-			url := ""
-			switch m.tab {
-			case tabDashboard:
-				if r := m.selectedDashRow(); r != nil {
-					if r.kind == "pr" {
-						url = r.pr.PR.WebURL
-					} else {
-						url = r.repo.WebURL
-					}
-				}
-			case tabFavourites:
-				if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
-					url = it.r.WebURL
-				}
-			case tabBrowse:
-				if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
-					url = it.r.WebURL
-				}
-			}
-			if url != "" {
+			if url := m.selectedItemURL(); url != "" {
 				_ = sysutil.OpenInBrowser(url)
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.CopyLink):
+			// Mirror the PR TUI's "y" yank: copy the highlighted
+			// row's web URL to the clipboard and surface a toast.
+			// Works for any row that has a link (dashboard PRs +
+			// repo rows, favourites and browse results).
+			if url := m.selectedItemURL(); url != "" {
+				if err := sysutil.CopyToClipboard(url); err != nil {
+					m.status = theme.ErrPrefix() + "copy failed: " + err.Error()
+				} else {
+					m.status = theme.OKPrefix() + "link copied: " + url
+				}
+			} else {
+				m.status = theme.ErrPrefix() + "no link available"
 			}
 			return m, nil
 		}
@@ -765,6 +761,33 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// selectedItemURL returns the web URL of the row currently under the
+// active tab's cursor. Returns "" if nothing is selected or the row
+// has no link (e.g. a dashboard PR returned without a WebURL). Shared
+// by the "o" (open in browser) and "y" (copy to clipboard) handlers
+// so both keys behave consistently across the dashboard PR/repo rows,
+// favourites and browse results.
+func (m *homeModel) selectedItemURL() string {
+	switch m.tab {
+	case tabDashboard:
+		if r := m.selectedDashRow(); r != nil {
+			if r.kind == "pr" {
+				return r.pr.PR.WebURL
+			}
+			return r.repo.WebURL
+		}
+	case tabFavourites:
+		if it, ok := m.favs.SelectedItem().(repoBrowseItem); ok {
+			return it.r.WebURL
+		}
+	case tabBrowse:
+		if it, ok := m.browse.SelectedItem().(repoBrowseItem); ok {
+			return it.r.WebURL
+		}
+	}
+	return ""
 }
 
 func (m *homeModel) selectedRepoContext() (string, string) {

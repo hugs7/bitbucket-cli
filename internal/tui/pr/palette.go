@@ -16,7 +16,6 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
-
 // paletteItem is one entry in the command palette. `run` mutates the
 // model and returns a tea.Cmd to fire (or nil for pure state changes).
 type paletteItem struct {
@@ -127,6 +126,12 @@ func buildPaletteItems(mode viewMode) []list.Item {
 				if it, ok := m.list.SelectedItem().(prItem); ok {
 					return editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", it.pr.ID), it.pr.ID, 0, it.pr.Description)
+				}
+				return nil
+			}},
+			paletteItem{label: "Edit title", hint: "E", run: func(m *model) tea.Cmd {
+				if it, ok := m.list.SelectedItem().(prItem); ok {
+					return m.startEditTitle(it.pr.ID, it.pr.Title)
 				}
 				return nil
 			}},
