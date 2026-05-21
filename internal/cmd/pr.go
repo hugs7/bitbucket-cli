@@ -236,6 +236,7 @@ func newPRCreateCmd() *cobra.Command {
 			// source/target inputs autocomplete through real branch
 			// names instead of forcing the user to type them blind.
 			branches := remoteBranches()
+			titleHint := prtui.BranchToTitle(source)
 
 			// Rebind tab to "accept suggestion" (the default
 			// ctrl+e is unintuitive for anyone used to a shell);
@@ -255,11 +256,24 @@ func newPRCreateCmd() *cobra.Command {
 					Suggestions(branches).Validate(nonEmpty),
 				huh.NewInput().Title("Target branch").Value(&target).
 					Suggestions(branches).Validate(nonEmpty),
-				huh.NewInput().Title("Title").Value(&title).Validate(nonEmpty),
+				huh.NewInput().Title("Title").Value(&title).
+					PlaceholderFunc(func() string {
+						titleHint = prtui.BranchToTitle(source)
+						return titleHint
+					}, &source).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" && strings.TrimSpace(titleHint) == "" {
+							return fmt.Errorf("required")
+						}
+						return nil
+					}),
 				huh.NewText().Title("Description (optional)").Value(&body),
 			)).WithKeyMap(keymap)
 			if err := form.Run(); err != nil {
 				return err
+			}
+			if strings.TrimSpace(title) == "" {
+				title = titleHint
 			}
 
 			p, err := svc.CreatePR(project, slug, api.CreatePRInput{
