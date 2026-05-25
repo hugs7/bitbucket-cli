@@ -167,6 +167,12 @@ type homeModel struct {
 	settings     settings.Model
 	settingsOpen bool
 
+	// Confirmation prompt for direct PR actions from the dashboard
+	// (merge / decline / delete). Empty pendingAction means no prompt.
+	pendingAction      string
+	pendingActionPR    api.ReviewPR
+	pendingActionLabel string
+
 	next *Action
 }
 
@@ -531,6 +537,41 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.pendingAction != "" {
+			rp := m.pendingActionPR
+			prID := rp.PR.ID
+			action := m.pendingAction
+			label := m.pendingActionLabel
+			switch {
+			case key.Matches(msg, m.keys.ConfirmNo):
+				m.pendingAction = ""
+				m.pendingActionPR = api.ReviewPR{}
+				m.pendingActionLabel = ""
+				m.status = action + " cancelled"
+				return m, nil
+			case key.Matches(msg, m.keys.ConfirmYes):
+				m.pendingAction = ""
+				m.pendingActionPR = api.ReviewPR{}
+				m.pendingActionLabel = ""
+				m.loading = true
+				switch action {
+				case "merge":
+					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
+						return m.svc.MergePR(rp.Project, rp.Slug, prID, "")
+					}))
+				case "decline":
+					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
+						return m.svc.DeclinePR(rp.Project, rp.Slug, prID)
+					}))
+				case "delete":
+					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
+						return m.svc.DeletePR(rp.Project, rp.Slug, prID)
+					}))
+				}
+			}
+			return m, nil
+		}
+
 		// If the search input is focused, route most keys there until
 		// the user hits enter or esc. Arrow keys / PgUp / PgDn /
 		// Home / End fall through to the browse list so users can
@@ -768,6 +809,36 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.spinner.Tick, m.doPRAction(fmt.Sprintf("#%d needs work", id), func() error {
 					return m.svc.NeedsWorkPR(rp.Project, rp.Slug, id)
 				}))
+			}
+			m.status = "select a dashboard PR first"
+			return m, nil
+		case key.Matches(msg, m.keys.Merge):
+			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
+				m.pendingAction = "merge"
+				m.pendingActionPR = rp
+				m.pendingActionLabel = fmt.Sprintf("merged #%d", rp.PR.ID)
+				m.status = fmt.Sprintf("merge PR #%d? y/n", rp.PR.ID)
+				return m, nil
+			}
+			m.status = "select a dashboard PR first"
+			return m, nil
+		case key.Matches(msg, m.keys.DeclinePR):
+			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
+				m.pendingAction = "decline"
+				m.pendingActionPR = rp
+				m.pendingActionLabel = fmt.Sprintf("declined #%d", rp.PR.ID)
+				m.status = fmt.Sprintf("decline PR #%d? y/n", rp.PR.ID)
+				return m, nil
+			}
+			m.status = "select a dashboard PR first"
+			return m, nil
+		case key.Matches(msg, m.keys.DeletePR):
+			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
+				m.pendingAction = "delete"
+				m.pendingActionPR = rp
+				m.pendingActionLabel = fmt.Sprintf("deleted #%d", rp.PR.ID)
+				m.status = fmt.Sprintf("delete PR #%d? y/n", rp.PR.ID)
+				return m, nil
 			}
 			m.status = "select a dashboard PR first"
 			return m, nil
