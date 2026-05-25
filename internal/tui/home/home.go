@@ -170,7 +170,6 @@ type homeModel struct {
 	next *Action
 }
 
-
 func accentDelegate() list.DefaultDelegate {
 	d := list.NewDefaultDelegate()
 	d.Styles.SelectedTitle = d.Styles.SelectedTitle.
@@ -460,6 +459,16 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = theme.ErrPrefix() + msg.err.Error()
 		return m, nil
 
+	case homeActionDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status = theme.ErrPrefix() + msg.text + ": " + msg.err.Error()
+			return m, nil
+		}
+		m.status = theme.OKPrefix() + msg.text
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.refreshDashboardFeeds())
+
 	case tea.MouseMsg:
 		// Wheel events (and any future click handling) flow to the
 		// component that owns the active tab's body. The viewport
@@ -715,6 +724,52 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.status = theme.ErrPrefix() + "no link available"
 			}
+			return m, nil
+		case key.Matches(msg, m.keys.Approve):
+			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
+				if m.isOwnPR(rp.PR) {
+					m.status = theme.ErrPrefix() + "can't approve your own PR"
+					return m, nil
+				}
+				if m.myReviewerStatus(rp.PR) == "APPROVED" {
+					m.status = theme.OKPrefix() + "already approved — press A to unapprove"
+					return m, nil
+				}
+				id := rp.PR.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doPRAction(fmt.Sprintf("approved #%d", id), func() error {
+					return m.svc.ApprovePR(rp.Project, rp.Slug, id)
+				}))
+			}
+			m.status = "select a dashboard PR first"
+			return m, nil
+		case key.Matches(msg, m.keys.Unapprove):
+			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
+				id := rp.PR.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doPRAction(fmt.Sprintf("unapproved #%d", id), func() error {
+					return m.svc.UnapprovePR(rp.Project, rp.Slug, id)
+				}))
+			}
+			m.status = "select a dashboard PR first"
+			return m, nil
+		case key.Matches(msg, m.keys.NeedsWork):
+			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
+				if m.isOwnPR(rp.PR) {
+					m.status = theme.ErrPrefix() + "can't mark your own PR as needs work"
+					return m, nil
+				}
+				if m.myReviewerStatus(rp.PR) == "NEEDS_WORK" {
+					m.status = theme.OKPrefix() + "already marked needs work — press A to clear"
+					return m, nil
+				}
+				id := rp.PR.ID
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doPRAction(fmt.Sprintf("#%d needs work", id), func() error {
+					return m.svc.NeedsWorkPR(rp.Project, rp.Slug, id)
+				}))
+			}
+			m.status = "select a dashboard PR first"
 			return m, nil
 		}
 

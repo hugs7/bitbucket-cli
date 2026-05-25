@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
@@ -102,6 +102,56 @@ func (m *homeModel) selectedDashRow() *dashRow {
 	}
 	r := rows[m.dashCursor]
 	return &r
+}
+
+func (m *homeModel) selectedDashPR() (api.ReviewPR, bool) {
+	r := m.selectedDashRow()
+	if r == nil || r.kind != "pr" {
+		return api.ReviewPR{}, false
+	}
+	return r.pr, true
+}
+
+// isOwnPR reports whether the PR was opened by the configured user.
+// Bitbucket rejects self-approval, so dashboard shortcuts mirror the
+// PR TUI and gate review actions before hitting the API.
+func (m *homeModel) isOwnPR(pr api.PullRequest) bool {
+	me := strings.ToLower(strings.TrimSpace(m.svc.Me()))
+	if me == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(pr.Author), me)
+}
+
+func (m *homeModel) myReviewerStatus(pr api.PullRequest) string {
+	me := strings.ToLower(strings.TrimSpace(m.svc.Me()))
+	if me == "" {
+		return ""
+	}
+	for _, r := range pr.Reviewers {
+		if strings.EqualFold(strings.TrimSpace(r.Username), me) {
+			if r.Status != "" {
+				return strings.ToUpper(r.Status)
+			}
+			if r.Approved {
+				return "APPROVED"
+			}
+			return "UNAPPROVED"
+		}
+	}
+	return ""
+}
+
+func (m *homeModel) doPRAction(label string, fn func() error) tea.Cmd {
+	return func() tea.Msg {
+		err := fn()
+		return homeActionDoneMsg{text: label, err: err}
+	}
+}
+
+func (m *homeModel) refreshDashboardFeeds() tea.Cmd {
+	m.prevDashRow = ""
+	return tea.Batch(m.fetchReviews(), m.fetchAuthored(), m.fetchClosed())
 }
 
 // accentDelegate returns a default list delegate with the selected-row
@@ -271,7 +321,6 @@ func (m *homeModel) renderPRDetail(rp api.ReviewPR) string {
 	return sb.String()
 }
 
-
 // dashboard rendering ---------------------------------------------
 
 var (
@@ -398,4 +447,3 @@ func (m *homeModel) renderDashRow(r dashRow, selected bool, innerW int) string {
 	return dashRowIdle.Render(title) + "\n" +
 		dashRowMeta.PaddingLeft(3).Render(meta)
 }
-
