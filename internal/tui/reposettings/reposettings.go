@@ -103,6 +103,7 @@ type model struct {
 
 	repo     *api.Repo
 	hooks    []api.Webhook
+	settings *api.RepoSettings
 	loading  int
 	status   string
 	err      error
@@ -123,6 +124,7 @@ type model struct {
 
 type repoLoadedMsg struct{ repo *api.Repo }
 type webhooksLoadedMsg struct{ hooks []api.Webhook }
+type settingsLoadedMsg struct{ settings *api.RepoSettings }
 type actionDoneMsg struct {
 	text string
 	err  error
@@ -149,12 +151,12 @@ func newModel(svc api.Service, project, slug string) model {
 		help:    help.New(),
 		keys:    defaultKeys(),
 		input:   ti,
-		loading: 2,
+		loading: 3,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks())
+	return tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks(), m.fetchSettings())
 }
 
 func (m model) fetchRepo() tea.Cmd {
@@ -174,6 +176,16 @@ func (m model) fetchWebhooks() tea.Cmd {
 			return errMsg{fmt.Errorf("load webhooks: %w", err)}
 		}
 		return webhooksLoadedMsg{hooks}
+	}
+}
+
+func (m model) fetchSettings() tea.Cmd {
+	return func() tea.Msg {
+		settings, err := m.svc.RepoSettings(m.project, m.slug)
+		if err != nil {
+			return errMsg{fmt.Errorf("load repository settings: %w", err)}
+		}
+		return settingsLoadedMsg{settings}
 	}
 }
 
@@ -232,8 +244,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case settingsLoadedMsg:
+		m.settings = msg.settings
+		m.loading--
+		return m, nil
+
 	case actionDoneMsg:
-		m.loading = 1
+		m.loading = 2
 		m.mode = modePanel
 		m.clearAddState()
 		if msg.err != nil {
@@ -242,7 +259,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = theme.OKPrefix() + msg.text
-		return m, tea.Batch(m.spinner.Tick, m.fetchWebhooks())
+		return m, tea.Batch(m.spinner.Tick, m.fetchWebhooks(), m.fetchSettings())
 
 	case errMsg:
 		m.loading = 0
@@ -277,9 +294,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help.ShowAll = !m.help.ShowAll
 		return m, nil
 	case key.Matches(msg, m.keys.Refresh):
-		m.loading = 2
+		m.loading = 3
 		m.status = "refreshing settings"
-		return m, tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks())
+		return m, tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks(), m.fetchSettings())
 	}
 
 	if m.mode == modePanels {
@@ -461,7 +478,7 @@ func (m model) renderActivePanel() string {
 	case "Webhooks":
 		body = m.renderWebhooks(w)
 	default:
-		body = m.renderPlaceholder(p, w)
+		body = m.renderSettingsPanel(p, w)
 	}
 	return style.Render(body)
 }
@@ -562,14 +579,51 @@ func (m model) renderAddForm() string {
 	return theme.TitleBadge.Render(" ADD WEBHOOK ") + "\n" + title + "\n" + m.input.View()
 }
 
-func (m model) renderPlaceholder(p panel, w int) string {
+func (m model) renderSettingsPanel(p panel, w int) string {
 	var sb strings.Builder
 	sb.WriteString(theme.TitleBadge.Render(" " + strings.ToUpper(p.title) + " "))
 	sb.WriteString("\n\n")
-	sb.WriteString("This settings panel is not wired up yet.\n\n")
-	sb.WriteString("The repo-settings TUI is panel-based so this can be added without changing the entry point. ")
-	sb.WriteString("For this panel we still need the Bitbucket Server/Data Center and Cloud REST endpoints plus field semantics.\n\n")
-	sb.WriteString(theme.TitleChipDim.Render(strutil.Truncate("Press ←/h or esc to return to the panel list.", w-4)))
+	if m.settings == nil {
+		sb.WriteString("Loading repository settings…")
+		return sb.String()
+	}
+	panel, ok := m.settings.Panels[p.title]
+	if !ok {
+		sb.WriteString(theme.StatusInfo.Render("This panel did not return settings data."))
+		return sb.String()
+	}
+	if panel.Hint != "" {
+		sb.WriteString(theme.TitleChipDim.Render(strutil.Truncate(panel.Hint, w-4)))
+		sb.WriteString("\n\n")
+	}
+	if panel.Error != "" {
+		sb.WriteString(theme.StatusErr.Render(strutil.Truncate(panel.Error, w-4)))
+		sb.WriteString("\n")
+		return sb.String()
+	}
+	if len(panel.Items) == 0 {
+		sb.WriteString(theme.TitleChipDim.Render("No settings returned."))
+		return sb.String()
+	}
+	for _, item := range panel.Items {
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = "setting"
+		}
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Render(strutil.Truncate(title, w-4)))
+		sb.WriteString("\n")
+		for _, field := range item.Fields {
+			if strings.EqualFold(field.Value, title) {
+				continue
+			}
+			sb.WriteString("  ")
+			sb.WriteString(theme.TitleChipDim.Render(field.Name + ":"))
+			sb.WriteString(" ")
+			sb.WriteString(strutil.Truncate(field.Value, w-len(field.Name)-8))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
 	return sb.String()
 }
 

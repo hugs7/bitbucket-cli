@@ -121,8 +121,9 @@ func newRepoSettingsCmd() *cobra.Command {
 		Long: `Open the repository settings TUI.
 
 The settings TUI exposes the Bitbucket settings panels from the web UI.
-Webhooks are editable now; the remaining panels are visible placeholders
-that can be wired up independently as their REST endpoints are added.`,
+Webhooks are editable now; each panel loads its backing REST resources and
+shows permission/version errors inline when Bitbucket does not expose that
+panel for the configured host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
 			if err != nil {
