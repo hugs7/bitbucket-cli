@@ -29,20 +29,20 @@ func currentGitBranch() string {
 	return strings.TrimSpace(string(out))
 }
 
-// branchToTitle turns a git branch name into a sensible default PR
+// BranchToTitle turns a git branch name into a sensible default PR
 // title. Examples:
 //
 //	feature/some-feature       → "Feature: Some feature"
 //	bugfix/fix_the_thing       → "Bugfix: Fix the thing"
-//	hotfix/JIRA-123-broken     → "Hotfix: JIRA-123 broken"
+//	hotfix/JIRA-123-broken     → "Hotfix: JIRA 123 broken"
 //	some-feature               → "Some feature"
 //
 // The first path segment becomes the prefix (capitalised, followed by
 // ": "). Remaining segments are merged into a single sentence with
-// '-' / '_' / '/' treated as word separators. Existing capitalisation
-// inside tokens (e.g. "JIRA-123") is preserved — we only force the
+// '-' / '_' / '/' treated as word separators. Existing letter capitalisation
+// inside tokens (e.g. "JIRA") is preserved — we only force the
 // first character of the prefix and the body to uppercase.
-func branchToTitle(branch string) string {
+func BranchToTitle(branch string) string {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		return ""
@@ -192,7 +192,7 @@ func (f *createPRForm) Run() error {
 		// *some* title (hint or typed).
 		huh.NewInput().Title("Title").Value(&f.title).
 			PlaceholderFunc(func() string {
-				f.titleHint = branchToTitle(f.source)
+				f.titleHint = BranchToTitle(f.source)
 				return f.titleHint
 			}, &f.source).
 			Validate(func(s string) error {
@@ -371,7 +371,7 @@ func (m *model) startCreatePR() tea.Cmd {
 	form := &createPRForm{
 		source:    source,
 		target:    target,
-		titleHint: branchToTitle(source),
+		titleHint: BranchToTitle(source),
 		branches:  remoteBranches(),
 	}
 	return tea.Exec(form, func(err error) tea.Msg {

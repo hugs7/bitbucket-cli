@@ -20,3 +20,7 @@ type searchTickMsg struct {
 	version int
 }
 type homeErrMsg struct{ err error }
+type homeActionDoneMsg struct {
+	text string
+	err  error
+}
