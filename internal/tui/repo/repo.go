@@ -5,7 +5,8 @@
 // default branch, web URL), a scrollable README on the left, a quick
 // summary on the right with the most recent open PRs and the latest
 // builds for the default branch. Useful keys: p jumps into the full
-// PR TUI, o opens the repo in a browser, c clones via git.
+// PR TUI, S opens repository settings, o opens the repo in a browser,
+// c clones via git.
 package repo
 
 import (
@@ -31,7 +32,7 @@ import (
 // RepoAction mirrors HomeAction: returned to the caller when the user
 // wants to launch a different sub-TUI. Nil means a clean quit.
 type RepoAction struct {
-	Kind    string // "prs"
+	Kind    string // "prs" or "settings"
 	Project string
 	Slug    string
 }
@@ -50,29 +51,30 @@ func Repo(svc api.Service, project, slug string) (*RepoAction, error) {
 }
 
 type repoKeys struct {
-	Up, Down, OpenPRs, Open, Clone, Settings, Help, Quit, Back key.Binding
+	Up, Down, OpenPRs, RepoSettings, Open, Clone, Settings, Help, Quit, Back key.Binding
 }
 
 func defaultRepoKeys() repoKeys {
 	return repoKeys{
-		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "scroll up")),
-		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "scroll down")),
-		OpenPRs:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "PRs")),
-		Open:     key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
-		Clone:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clone")),
-		Settings: key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
-		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Up:           key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "scroll up")),
+		Down:         key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "scroll down")),
+		OpenPRs:      key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "PRs")),
+		RepoSettings: key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "repo settings")),
+		Open:         key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "browser")),
+		Clone:        key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clone")),
+		Settings:     key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
+		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Back:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	}
 }
 
 func (k repoKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.OpenPRs, k.Open, k.Clone, k.Settings, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.OpenPRs, k.RepoSettings, k.Open, k.Clone, k.Settings, k.Help, k.Quit}
 }
 func (k repoKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.OpenPRs},
+		{k.Up, k.Down, k.OpenPRs, k.RepoSettings},
 		{k.Open, k.Clone, k.Settings, k.Help, k.Back, k.Quit},
 	}
 }
@@ -250,6 +252,9 @@ func (m repoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.OpenPRs):
 			m.next = &RepoAction{Kind: "prs", Project: m.project, Slug: m.slug}
+			return m, tea.Quit
+		case key.Matches(msg, m.keys.RepoSettings):
+			m.next = &RepoAction{Kind: "settings", Project: m.project, Slug: m.slug}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Open):
 			if m.repo != nil && m.repo.WebURL != "" {
