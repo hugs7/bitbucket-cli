@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -119,6 +120,7 @@ type model struct {
 	width, height int
 	spinner       spinner.Model
 	help          help.Model
+	content       viewport.Model
 	keys          keys
 }
 
@@ -151,6 +153,7 @@ func newModel(svc api.Service, project, slug string) model {
 		help:    help.New(),
 		keys:    defaultKeys(),
 		input:   ti,
+		content: viewport.New(0, 0),
 		loading: 3,
 	}
 }
@@ -218,6 +221,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.content.Width = m.contentWidth() - 2
+		m.content.Height = m.bodyHeight()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -303,10 +308,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, m.keys.Up):
 			m.panelIdx = (m.panelIdx + len(panels) - 1) % len(panels)
+			m.content.GotoTop()
 		case key.Matches(msg, m.keys.Down):
 			m.panelIdx = (m.panelIdx + 1) % len(panels)
+			m.content.GotoTop()
 		case key.Matches(msg, m.keys.Right), key.Matches(msg, m.keys.Enter):
 			m.mode = modePanel
+			m.content.GotoTop()
 		}
 		return m, nil
 	}
@@ -343,8 +351,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if key.Matches(msg, m.keys.Left) {
 		m.mode = modePanels
+		m.content.GotoTop()
+		return m, nil
 	}
-	return m, nil
+	var cmd tea.Cmd
+	m.content, cmd = m.content.Update(msg)
+	return m, cmd
 }
 
 func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -464,7 +476,7 @@ func (m model) renderPanels() string {
 		sb.WriteString(marker)
 		sb.WriteString("\n")
 	}
-	return style.Render(sb.String())
+	return style.Height(m.bodyHeight()).Render(clampLines(sb.String(), m.bodyHeight()))
 }
 
 func (m model) renderActivePanel() string {
@@ -480,7 +492,10 @@ func (m model) renderActivePanel() string {
 	default:
 		body = m.renderSettingsPanel(p, w)
 	}
-	return style.Render(body)
+	m.content.Width = w - 2
+	m.content.Height = m.bodyHeight()
+	m.content.SetContent(body)
+	return style.Height(m.bodyHeight()).Render(m.content.View())
 }
 
 func (m model) renderRepoDetails(w int) string {
@@ -657,6 +672,32 @@ func (m model) contentWidth() int {
 		w = 40
 	}
 	return w
+}
+
+func (m model) bodyHeight() int {
+	if m.height == 0 {
+		return 20
+	}
+	footerH := lipgloss.Height(m.help.View(m.keys))
+	// Header + newline above body + footer/status line. Keep at least a
+	// small viewport so long panels scroll instead of pushing the menu
+	// and header out of the terminal.
+	h := m.height - footerH - 3
+	if h < 5 {
+		return 5
+	}
+	return h
+}
+
+func clampLines(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	return strings.Join(lines[:max], "\n")
 }
 
 func splitCSV(s string) []string {
