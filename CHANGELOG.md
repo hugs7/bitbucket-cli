@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0](https://github.com/hugs7/bitbucket-cli/compare/v0.8.0...v0.9.0) (2026-05-25)
+
+
+### Features
+
+* **home:** add dashboard review shortcuts ([ab7a3cf](https://github.com/hugs7/bitbucket-cli/commit/ab7a3cf30f3a05f454c8856d86325bb5125a7def))
+* **home:** confirm dashboard PR mutations ([5550e46](https://github.com/hugs7/bitbucket-cli/commit/5550e464436eaa57c6e1c0278c70c5ad2abec0ba))
+* **home:** confirm dashboard PR mutations ([779338f](https://github.com/hugs7/bitbucket-cli/commit/779338fa1779b6589c94aaebc1cbdf2f1eae0618))
+
+
+### Bug Fixes
+
+* combine logic create pr ([c992da4](https://github.com/hugs7/bitbucket-cli/commit/c992da412da9a110435e451b1264c8ef3d5dce39))
+
 ## [0.8.0](https://github.com/hugs7/bitbucket-cli/compare/v0.7.0...v0.8.0) (2026-05-18)
 
 
