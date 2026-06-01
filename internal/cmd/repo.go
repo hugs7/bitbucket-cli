@@ -15,6 +15,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 	"github.com/hugs7/bitbucket-cli/internal/tui/pr"
 	"github.com/hugs7/bitbucket-cli/internal/tui/repo"
+	"github.com/hugs7/bitbucket-cli/internal/tui/reposettings"
 )
 
 func newRepoCmd() *cobra.Command {
@@ -35,7 +36,7 @@ current repository (auto-detected from the cwd's git remote). Use
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
-	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd(), newRepoWebhookCmd())
+	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd(), newRepoSettingsCmd(), newRepoWebhookCmd())
 	return c
 }
 
@@ -101,10 +102,48 @@ func runRepoTUI(svc api.Service, project, slug string) error {
 			if err := pr.Run(svc, action.Project, action.Slug); err != nil {
 				return err
 			}
+		case "settings":
+			if err := reposettings.Run(svc, action.Project, action.Slug); err != nil {
+				return err
+			}
 		default:
 			return nil
 		}
 	}
+}
+
+func newRepoSettingsCmd() *cobra.Command {
+	var repoFlag, hostFlag string
+	c := &cobra.Command{
+		Use:     "settings",
+		Aliases: []string{"setting", "admin"},
+		Short:   "Open repository settings",
+		Long: `Open the repository settings TUI.
+
+The settings TUI exposes the Bitbucket settings panels from the web UI.
+Webhooks are editable now; each panel loads its backing REST resources and
+shows permission/version errors inline when Bitbucket does not expose that
+panel for the configured host.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
+			if err != nil {
+				return err
+			}
+			return reposettings.Run(svc, project, slug)
+		},
+	}
+	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
+	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
+	c.AddCommand(newRepoSettingsWebhookCmd())
+	return c
+}
+
+func newRepoSettingsWebhookCmd() *cobra.Command {
+	c := newRepoWebhookCmd()
+	c.Use = "webhook"
+	c.Aliases = []string{"webhooks", "hooks"}
+	c.Short = "Manage repository webhooks from settings"
+	return c
 }
 
 // browseCurrentRepo resolves the repo from cwd / flags and opens its

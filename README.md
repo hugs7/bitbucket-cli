@@ -9,7 +9,7 @@ and [`glab`](https://gitlab.com/gitlab-org/cli).
 ## Features (planned)
 
 - `bb auth` — log in with app password / HTTP access token / OAuth
-- `bb repo` — clone, view, create, fork, list
+- `bb repo` — clone, view, create, fork, list, settings / webhooks
 - `bb pr` — list, view, create, checkout, diff, review, merge
 - `bb pipelines` — list, view, logs, run, cancel (Bitbucket Pipelines & Bamboo)
 - `bb issue` — list, view, create, comment

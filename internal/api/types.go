@@ -106,6 +106,36 @@ type MergeStrategy struct {
 	Default bool
 }
 
+// RepoSettings is a best-effort snapshot of repository administration
+// panels. Bitbucket Cloud and Server expose different settings through
+// different APIs; unsupported or permission-denied panels are returned
+// with Error populated so callers can show an inline status without
+// failing the whole settings screen.
+type RepoSettings struct {
+	Panels map[string]RepoSettingsPanel
+}
+
+// RepoSettingsPanel contains display-ready rows for one settings panel.
+// Name matches the TUI panel title (for example "Branch permissions").
+type RepoSettingsPanel struct {
+	Name  string
+	Hint  string
+	Items []RepoSettingsItem
+	Error string
+}
+
+// RepoSettingsItem is one row within a settings panel.
+type RepoSettingsItem struct {
+	Title  string
+	Fields []RepoSettingsField
+}
+
+// RepoSettingsField is one key/value pair within a settings row.
+type RepoSettingsField struct {
+	Name  string
+	Value string
+}
+
 // Build represents a build/pipeline run associated with a repo or commit.
 type Build struct {
 	ID        string
