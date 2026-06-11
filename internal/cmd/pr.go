@@ -335,7 +335,7 @@ func newPRCheckoutCmd() *cobra.Command {
 
 func newPRMergeCmd() *cobra.Command {
 	var repoFlag, hostFlag string
-	var deleteBranch, deleteSet bool
+	var deleteBranch, deleteSet, yes bool
 	c := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Merge a pull request",
@@ -357,22 +357,24 @@ func newPRMergeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var confirm bool
-			fields := []huh.Field{
-				huh.NewConfirm().
-					Title(fmt.Sprintf("Merge PR #%d (%s → %s)?", id, pr.SourceRef, pr.TargetRef)).
-					Value(&confirm),
-			}
-			if !deleteSet {
-				fields = append(fields, huh.NewConfirm().
-					Title(fmt.Sprintf("Delete source branch %q after merge?", pr.SourceRef)).
-					Value(&deleteBranch))
-			}
-			if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
-				return err
-			}
-			if !confirm {
-				return nil
+			if !yes {
+				var confirm bool
+				fields := []huh.Field{
+					huh.NewConfirm().
+						Title(fmt.Sprintf("Merge PR #%d (%s → %s)?", id, pr.SourceRef, pr.TargetRef)).
+						Value(&confirm),
+				}
+				if !deleteSet {
+					fields = append(fields, huh.NewConfirm().
+						Title(fmt.Sprintf("Delete source branch %q after merge?", pr.SourceRef)).
+						Value(&deleteBranch))
+				}
+				if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
+					return err
+				}
+				if !confirm {
+					return nil
+				}
 			}
 			// Empty strategy → use the repo's configured default
 			// merge mode. The TUI exposes per-merge picking; the
@@ -394,6 +396,7 @@ func newPRMergeCmd() *cobra.Command {
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().BoolVar(&deleteBranch, "delete-branch", false, "delete the source branch after a successful merge")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation prompts")
 	return c
 }
 
