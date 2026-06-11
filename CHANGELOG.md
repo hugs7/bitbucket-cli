@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/hugs7/bitbucket-cli/compare/v0.9.0...v0.10.0) (2026-06-11)
+
+
+### Features
+
+* **repo:** add repository settings TUI ([574bc07](https://github.com/hugs7/bitbucket-cli/commit/574bc0700244c9a02f0a0e17c90df93e586a7792))
+* **repo:** load repository settings panels ([a3fbc9b](https://github.com/hugs7/bitbucket-cli/commit/a3fbc9b71333f293b79cb77813d3e98810813625))
+
+
+### Bug Fixes
+
+* **repo:** keep settings menu visible for long panels ([bdfd4ec](https://github.com/hugs7/bitbucket-cli/commit/bdfd4ec2485c50b71737c866f91962cd52a21a3c))
+
 ## [0.9.0](https://github.com/hugs7/bitbucket-cli/compare/v0.8.0...v0.9.0) (2026-05-25)
 
 
