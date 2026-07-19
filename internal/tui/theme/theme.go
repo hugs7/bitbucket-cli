@@ -92,9 +92,8 @@ var builtinThemes = []Theme{
 		// IBM 3270 / Reflection green-screen tribute. Bright cyan
 		// for protected fields, bright green for the operator
 		// status line, bright red for errors, bright yellow for
-		// attention/warnings — same palette every Westpac mainframe
-		// terminal has shipped since the 80s. Pair with a black
-		// terminal background and a monospaced font for full effect.
+		// attention/warnings. Pair with a black terminal background
+		// and a monospaced font for full effect.
 		Name:          "3270",
 		StatusOK:      lipgloss.Color("10"), // bright green (operator status)
 		StatusErr:     lipgloss.Color("9"),  // bright red (X SYSTEM error)
