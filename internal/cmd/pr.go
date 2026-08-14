@@ -272,6 +272,8 @@ func newPRCreateCmd() *cobra.Command {
 			if err := form.Run(); err != nil {
 				return err
 			}
+			source = gitctx.CanonicalBranchName(source, branches)
+			target = gitctx.CanonicalBranchName(target, branches)
 			if strings.TrimSpace(title) == "" {
 				title = titleHint
 			}

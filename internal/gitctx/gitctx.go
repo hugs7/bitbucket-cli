@@ -17,6 +17,22 @@ type Repo struct {
 	Remote  string // raw remote URL
 }
 
+// CanonicalBranchName trims a branch name and, when it matches a known
+// branch case-insensitively, returns the known branch's exact spelling.
+// This repairs autocomplete's typed prefix because it preserves the user's
+// casing while appending the matched suffix, even though Git refs are
+// case-sensitive.
+func CanonicalBranchName(branch string, known []string) string {
+	branch = strings.TrimSpace(branch)
+	for _, candidate := range known {
+		candidate = strings.TrimSpace(candidate)
+		if strings.EqualFold(branch, candidate) {
+			return candidate
+		}
+	}
+	return branch
+}
+
 // Current returns the Repo represented by the given git remote (defaults
 // to "origin") in the current working directory.
 func Current(remote string) (*Repo, error) {

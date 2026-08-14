@@ -17,6 +17,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+
+	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 )
 
 // currentGitBranch returns the current local git branch name (or "" on
@@ -216,6 +218,8 @@ func (f *createPRForm) Run() error {
 		return nil
 	}
 
+	f.source = gitctx.CanonicalBranchName(f.source, f.branches)
+	f.target = gitctx.CanonicalBranchName(f.target, f.branches)
 	// Adopt the placeholder title when the user accepted it by
 	// hitting enter without typing — the placeholder is purely
 	// visual in huh, so f.title is still empty at this point.
