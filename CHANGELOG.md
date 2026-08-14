@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.1](https://github.com/hugs7/bitbucket-cli/compare/v0.10.0...v0.10.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* preserve branch case in autocomplete ([78913a3](https://github.com/hugs7/bitbucket-cli/commit/78913a3c85435e7ac9eb519909273dec2f772177))
+* preserve branch case in autocomplete ([aa2e577](https://github.com/hugs7/bitbucket-cli/commit/aa2e577cc1354176364ef7585a55e4dae33fc739))
+
 ## [0.10.0](https://github.com/hugs7/bitbucket-cli/compare/v0.9.0...v0.10.0) (2026-06-11)
 
 
