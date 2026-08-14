@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+
+	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 )
 
 // editTargetMsg is posted after the huh form closes (success or
@@ -141,7 +143,7 @@ func (m *model) startEditTarget(prID int, currentTarget string) tea.Cmd {
 		}
 		return editTargetMsg{
 			prID:      prID,
-			target:    strings.TrimSpace(form.target),
+			target:    gitctx.CanonicalBranchName(form.target, form.branches),
 			cancelled: form.cancelled,
 			err:       form.err,
 		}
