@@ -924,7 +924,16 @@ func newPRCommentListCmd() *cobra.Command {
 				if !c.CreatedAt.IsZero() {
 					when = c.CreatedAt.Format("2006-01-02 15:04")
 				}
-				fmt.Fprintf(w, "%s  %s\n", b.Render(c.Author), muted.Render(when))
+				anchor := ""
+				if c.Inline != nil {
+					anchor = "  · " + c.Inline.Path
+					if c.Inline.Line > 0 {
+						anchor = fmt.Sprintf("  · %s:%d (%s)", c.Inline.Path, c.Inline.Line, c.Inline.Side)
+					}
+				}
+				fmt.Fprintf(w, "%s  %s%s\n",
+					b.Render(fmt.Sprintf("%s  #%d", c.Author, c.ID)),
+					muted.Render(when), muted.Render(anchor))
 				fmt.Fprintln(w, c.Text)
 			}
 			return nil
