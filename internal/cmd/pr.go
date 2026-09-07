@@ -337,7 +337,7 @@ func newPRCheckoutCmd() *cobra.Command {
 
 func newPRMergeCmd() *cobra.Command {
 	var repoFlag, hostFlag string
-	var deleteBranch, deleteSet, yes bool
+	var deleteBranch, deleteSet, retargetDependents, yes bool
 	c := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Merge a pull request",
@@ -381,10 +381,16 @@ func newPRMergeCmd() *cobra.Command {
 			// Empty strategy → use the repo's configured default
 			// merge mode. The TUI exposes per-merge picking; the
 			// CLI keeps the simpler "honour repo default" behaviour.
-			if err := svc.MergePR(project, slug, id, ""); err != nil {
+			result, err := api.MergePullRequest(svc, project, slug, id, api.MergeOptions{
+				RetargetDependents: retargetDependents,
+			})
+			if err != nil {
 				return err
 			}
 			fmt.Printf("✓ Merged PR #%d\n", id)
+			for _, dependent := range result.Retargeted {
+				fmt.Printf("✓ Retargeted PR #%d to %s\n", dependent.ID, pr.TargetRef)
+			}
 			if deleteBranch && pr.SourceRef != "" {
 				if err := svc.DeleteBranch(project, slug, pr.SourceRef); err != nil {
 					fmt.Fprintf(os.Stderr, "warn: deleted PR but failed to remove branch %q: %v\n", pr.SourceRef, err)
@@ -398,6 +404,7 @@ func newPRMergeCmd() *cobra.Command {
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().BoolVar(&deleteBranch, "delete-branch", false, "delete the source branch after a successful merge")
+	c.Flags().BoolVar(&retargetDependents, "retarget-dependents", true, "retarget open PRs targeting the merged branch to its base branch")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation prompts")
 	return c
 }
