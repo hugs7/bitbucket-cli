@@ -1,7 +1,11 @@
-.PHONY: build test lint tidy run snapshot
+.PHONY: build install test lint tidy run snapshot
 
 build:
 	go build -o bb ./cmd/bb
+
+install:
+	mkdir -p $(HOME)/.local/bin
+	go build -o $(HOME)/.local/bin/bb ./cmd/bb
 
 test:
 	go test ./...

@@ -53,6 +53,9 @@ type Service interface {
 	// MergePR to clean up the source branch when the user opted into
 	// "delete branch on merge".
 	DeleteBranch(project, slug, branch string) error
+	// ForceDeleteBranches temporarily removes matching no-delete branch
+	// restrictions, deletes the branches, then restores the restrictions.
+	ForceDeleteBranches(project, slug string, branches []string) error
 	PRDiff(project, slug string, id int) (string, error)
 
 	UpdatePRTitle(project, slug string, id int, title string) error
