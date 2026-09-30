@@ -2,6 +2,13 @@ package cmd
 
 import "testing"
 
+func TestPRCreateHasNonInteractiveFlag(t *testing.T) {
+	flag := newPRCreateCmd().Flags().ShorthandLookup("y")
+	if flag == nil || flag.Name != "yes" {
+		t.Fatal("pr create is missing the -y/--yes flag")
+	}
+}
+
 func TestPRMergeRetargetsDependentsByDefault(t *testing.T) {
 	flag := newPRMergeCmd().Flags().Lookup("retarget-dependents")
 	if flag == nil {
