@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
@@ -207,6 +208,7 @@ func reviewerStatusLabel(r api.Reviewer) string {
 
 func newPRCreateCmd() *cobra.Command {
 	var repoFlag, hostFlag, title, body, bodyFile, source, target string
+	var yes bool
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Create a pull request",
@@ -232,50 +234,61 @@ func newPRCreateCmd() *cobra.Command {
 				}
 			}
 
-			// Pre-load remote branches from local git so the
-			// source/target inputs autocomplete through real branch
-			// names instead of forcing the user to type them blind.
-			branches := remoteBranches()
 			titleHint := prtui.BranchToTitle(source)
 
-			// Rebind tab to "accept suggestion" (the default
-			// ctrl+e is unintuitive for anyone used to a shell);
-			// enter still moves to the next field / submits.
-			keymap := huh.NewDefaultKeyMap()
-			keymap.Input.AcceptSuggestion = key.NewBinding(
-				key.WithKeys("tab"),
-				key.WithHelp("tab", "complete"),
-			)
-			keymap.Input.Next = key.NewBinding(
-				key.WithKeys("enter"),
-				key.WithHelp("enter", "next"),
-			)
+			// Skip the form with --yes or when stdin is not a
+			// terminal (scripts, pipes, `--body-file -`), using the
+			// flags and inferred defaults as-is.
+			if !yes && isatty.IsTerminal(os.Stdin.Fd()) {
+				// Pre-load remote branches from local git so the
+				// source/target inputs autocomplete through real branch
+				// names instead of forcing the user to type them blind.
+				branches := remoteBranches()
 
-			form := huh.NewForm(huh.NewGroup(
-				huh.NewInput().Title("Source branch").Value(&source).
-					Suggestions(branches).Validate(nonEmpty),
-				huh.NewInput().Title("Target branch").Value(&target).
-					Suggestions(branches).Validate(nonEmpty),
-				huh.NewInput().Title("Title").Value(&title).
-					PlaceholderFunc(func() string {
-						titleHint = prtui.BranchToTitle(source)
-						return titleHint
-					}, &source).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" && strings.TrimSpace(titleHint) == "" {
-							return fmt.Errorf("required")
-						}
-						return nil
-					}),
-				huh.NewText().Title("Description (optional)").Value(&body),
-			)).WithKeyMap(keymap)
-			if err := form.Run(); err != nil {
-				return err
+				// Rebind tab to "accept suggestion" (the default
+				// ctrl+e is unintuitive for anyone used to a shell);
+				// enter still moves to the next field / submits.
+				keymap := huh.NewDefaultKeyMap()
+				keymap.Input.AcceptSuggestion = key.NewBinding(
+					key.WithKeys("tab"),
+					key.WithHelp("tab", "complete"),
+				)
+				keymap.Input.Next = key.NewBinding(
+					key.WithKeys("enter"),
+					key.WithHelp("enter", "next"),
+				)
+
+				form := huh.NewForm(huh.NewGroup(
+					huh.NewInput().Title("Source branch").Value(&source).
+						Suggestions(branches).Validate(nonEmpty),
+					huh.NewInput().Title("Target branch").Value(&target).
+						Suggestions(branches).Validate(nonEmpty),
+					huh.NewInput().Title("Title").Value(&title).
+						PlaceholderFunc(func() string {
+							titleHint = prtui.BranchToTitle(source)
+							return titleHint
+						}, &source).
+						Validate(func(s string) error {
+							if strings.TrimSpace(s) == "" && strings.TrimSpace(titleHint) == "" {
+								return fmt.Errorf("required")
+							}
+							return nil
+						}),
+					huh.NewText().Title("Description (optional)").Value(&body),
+				)).WithKeyMap(keymap)
+				if err := form.Run(); err != nil {
+					return err
+				}
+				source = gitctx.CanonicalBranchName(source, branches)
+				target = gitctx.CanonicalBranchName(target, branches)
+			} else if source == "" || target == "" {
+				return fmt.Errorf("could not infer source or target branch; pass --source and --target")
 			}
-			source = gitctx.CanonicalBranchName(source, branches)
-			target = gitctx.CanonicalBranchName(target, branches)
 			if strings.TrimSpace(title) == "" {
 				title = titleHint
+			}
+			if strings.TrimSpace(title) == "" {
+				return fmt.Errorf("pull request title is required; pass --title")
 			}
 
 			p, err := svc.CreatePR(project, slug, api.CreatePRInput{
@@ -298,6 +311,7 @@ func newPRCreateCmd() *cobra.Command {
 	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read PR description from file (use "-" for stdin)`)
 	c.Flags().StringVarP(&source, "source", "s", "", "source branch (default: current branch)")
 	c.Flags().StringVarP(&target, "target", "T", "", "target branch (default: repo default branch)")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the interactive form (automatic when stdin is not a terminal)")
 	return c
 }
 
@@ -337,7 +351,7 @@ func newPRCheckoutCmd() *cobra.Command {
 
 func newPRMergeCmd() *cobra.Command {
 	var repoFlag, hostFlag string
-	var deleteBranch, deleteSet, yes bool
+	var deleteBranch, deleteSet, retargetDependents, yes bool
 	c := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Merge a pull request",
@@ -381,10 +395,16 @@ func newPRMergeCmd() *cobra.Command {
 			// Empty strategy → use the repo's configured default
 			// merge mode. The TUI exposes per-merge picking; the
 			// CLI keeps the simpler "honour repo default" behaviour.
-			if err := svc.MergePR(project, slug, id, ""); err != nil {
+			result, err := api.MergePullRequest(svc, project, slug, id, api.MergeOptions{
+				RetargetDependents: retargetDependents,
+			})
+			if err != nil {
 				return err
 			}
 			fmt.Printf("✓ Merged PR #%d\n", id)
+			for _, dependent := range result.Retargeted {
+				fmt.Printf("✓ Retargeted PR #%d to %s\n", dependent.ID, pr.TargetRef)
+			}
 			if deleteBranch && pr.SourceRef != "" {
 				if err := svc.DeleteBranch(project, slug, pr.SourceRef); err != nil {
 					fmt.Fprintf(os.Stderr, "warn: deleted PR but failed to remove branch %q: %v\n", pr.SourceRef, err)
@@ -398,6 +418,7 @@ func newPRMergeCmd() *cobra.Command {
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().BoolVar(&deleteBranch, "delete-branch", false, "delete the source branch after a successful merge")
+	c.Flags().BoolVar(&retargetDependents, "retarget-dependents", true, "retarget open PRs targeting the merged branch to its base branch")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation prompts")
 	return c
 }
@@ -924,7 +945,16 @@ func newPRCommentListCmd() *cobra.Command {
 				if !c.CreatedAt.IsZero() {
 					when = c.CreatedAt.Format("2006-01-02 15:04")
 				}
-				fmt.Fprintf(w, "%s  %s\n", b.Render(c.Author), muted.Render(when))
+				anchor := ""
+				if c.Inline != nil {
+					anchor = "  · " + c.Inline.Path
+					if c.Inline.Line > 0 {
+						anchor = fmt.Sprintf("  · %s:%d (%s)", c.Inline.Path, c.Inline.Line, c.Inline.Side)
+					}
+				}
+				fmt.Fprintf(w, "%s  %s%s\n",
+					b.Render(fmt.Sprintf("%s  #%d", c.Author, c.ID)),
+					muted.Render(when), muted.Render(anchor))
 				fmt.Fprintln(w, c.Text)
 			}
 			return nil

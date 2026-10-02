@@ -123,16 +123,18 @@ type model struct {
 
 	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
 	// whether to remove the source branch after a successful merge;
-	// the user flips it with 'd' on the confirm screen.
+	// pendingMergeRetargetDependents controls whether stacked PRs are
+	// moved to the merged PR's base branch.
 	// pendingMergeStrategies is the list of strategies the repo
 	// allows (fetched lazily before the dialog opens); the user
 	// cycles through them with ←/→ and the chosen one is sent
 	// to MergePR.
-	pendingMergePRID         int
-	pendingMergeSourceRef    string
-	pendingMergeDeleteBranch bool
-	pendingMergeStrategies   []api.MergeStrategy
-	pendingMergeStrategyIdx  int
+	pendingMergePRID               int
+	pendingMergeSourceRef          string
+	pendingMergeDeleteBranch       bool
+	pendingMergeRetargetDependents bool
+	pendingMergeStrategies         []api.MergeStrategy
+	pendingMergeStrategyIdx        int
 
 	// pendingMergeTasks is the open-tasks list fetched in the
 	// background after the dialog opens — used to show "Open
@@ -1086,6 +1088,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingMergePRID = msg.prID
 		m.pendingMergeSourceRef = msg.sourceRef
 		m.pendingMergeDeleteBranch = false
+		m.pendingMergeRetargetDependents = true
 		m.pendingMergeStrategies = msg.strategies
 		m.pendingMergeStrategyIdx = 0
 		for i, st := range msg.strategies {
@@ -2087,6 +2090,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// their mind before pressing y.
 				m.pendingMergeDeleteBranch = !m.pendingMergeDeleteBranch
 				return m, nil
+			case "r":
+				m.pendingMergeRetargetDependents = !m.pendingMergeRetargetDependents
+				return m, nil
 			case "t":
 				// Toggle "resolve all open tasks before merging".
 				// Only meaningful when there are tasks to resolve;
@@ -2115,6 +2121,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				prID := m.pendingMergePRID
 				src := m.pendingMergeSourceRef
 				del := m.pendingMergeDeleteBranch
+				retargetDependents := m.pendingMergeRetargetDependents
 				resolveTasks := m.pendingMergeResolveTasks
 				tasks := append([]api.Task(nil), m.pendingMergeTasks...)
 				strategyID := ""
@@ -2126,6 +2133,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
 				m.pendingMergeDeleteBranch = false
+				m.pendingMergeRetargetDependents = false
 				m.pendingMergeStrategies = nil
 				m.pendingMergeStrategyIdx = 0
 				m.pendingMergeTasks = nil
@@ -2157,7 +2165,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
-					if err := m.svc.MergePR(m.project, m.slug, prID, strategyID); err != nil {
+					_, err := api.MergePullRequest(m.svc, m.project, m.slug, prID, api.MergeOptions{
+						StrategyID:         strategyID,
+						RetargetDependents: retargetDependents,
+					})
+					if err != nil {
 						return err
 					}
 					if del && src != "" {
@@ -2174,6 +2186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
 				m.pendingMergeDeleteBranch = false
+				m.pendingMergeRetargetDependents = false
 				m.pendingMergeStrategies = nil
 				m.pendingMergeStrategyIdx = 0
 				m.pendingMergeTasks = nil

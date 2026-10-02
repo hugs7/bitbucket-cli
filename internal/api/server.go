@@ -1,9 +1,11 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -348,6 +350,115 @@ func (s *serverService) DeleteBranch(project, slug, branch string) error {
 		s.client.HostRoot(), project, slug)
 	body := map[string]any{"name": branch, "dryRun": false}
 	return s.client.bodyJSON("DELETE", endpoint, body, nil)
+}
+
+type serverBranchRestriction struct {
+	ID      int    `json:"id"`
+	Type    string `json:"type"`
+	Matcher struct {
+		ID   string `json:"id"`
+		Type struct {
+			ID string `json:"id"`
+		} `json:"type"`
+	} `json:"matcher"`
+	Users []struct {
+		Name string `json:"name"`
+	} `json:"users"`
+	Groups []struct {
+		Name string `json:"name"`
+	} `json:"groups"`
+	AccessKeys []struct {
+		Key struct {
+			ID int `json:"id"`
+		} `json:"key"`
+	} `json:"accessKeys"`
+}
+
+type serverBranchRestrictionInput struct {
+	Type    string `json:"type"`
+	Matcher struct {
+		ID   string `json:"id"`
+		Type struct {
+			ID string `json:"id"`
+		} `json:"type"`
+	} `json:"matcher"`
+	Users      []string `json:"users"`
+	Groups     []string `json:"groups"`
+	AccessKeys []int    `json:"accessKeys"`
+}
+
+func (r serverBranchRestriction) input() serverBranchRestrictionInput {
+	in := serverBranchRestrictionInput{Type: r.Type, Users: []string{}, Groups: []string{}, AccessKeys: []int{}}
+	in.Matcher.ID = r.Matcher.ID
+	in.Matcher.Type.ID = r.Matcher.Type.ID
+	for _, user := range r.Users {
+		in.Users = append(in.Users, user.Name)
+	}
+	for _, group := range r.Groups {
+		in.Groups = append(in.Groups, group.Name)
+	}
+	for _, accessKey := range r.AccessKeys {
+		in.AccessKeys = append(in.AccessKeys, accessKey.Key.ID)
+	}
+	return in
+}
+
+func (r serverBranchRestriction) matches(branch string) bool {
+	switch r.Matcher.Type.ID {
+	case "BRANCH":
+		return strings.TrimPrefix(r.Matcher.ID, "refs/heads/") == branch
+	case "PATTERN":
+		matched, _ := path.Match(r.Matcher.ID, branch)
+		return matched
+	default:
+		return false
+	}
+}
+
+// ForceDeleteBranches removes only no-delete restrictions that match the
+// requested branches. Restrictions are restored even if a deletion fails.
+func (s *serverService) ForceDeleteBranches(project, slug string, branches []string) (err error) {
+	endpoint := fmt.Sprintf("%s/rest/branch-permissions/2.0/projects/%s/repos/%s/restrictions",
+		s.client.HostRoot(), project, slug)
+	var page struct {
+		Values []serverBranchRestriction `json:"values"`
+	}
+	if err := s.client.getJSON(endpoint+"?limit=1000", &page); err != nil {
+		return err
+	}
+
+	var removed []serverBranchRestriction
+	defer func() {
+		for _, restriction := range removed {
+			restoreErr := s.client.postJSON(endpoint, restriction.input(), nil)
+			if restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore branch restriction %d: %w", restriction.ID, restoreErr))
+			}
+		}
+	}()
+
+	for _, restriction := range page.Values {
+		if restriction.Type != "no-deletes" {
+			continue
+		}
+		for _, branch := range branches {
+			if !restriction.matches(branch) {
+				continue
+			}
+			if err := s.client.deleteJSON(fmt.Sprintf("%s/%d", endpoint, restriction.ID)); err != nil {
+				return fmt.Errorf("remove branch restriction %d: %w", restriction.ID, err)
+			}
+			removed = append(removed, restriction)
+			break
+		}
+	}
+
+	for _, branch := range branches {
+		if err := s.DeleteBranch(project, slug, branch); err != nil {
+			return fmt.Errorf("delete branch %q: %w", branch, err)
+		}
+	}
+	return nil
 }
 
 func (s *serverService) PRDiff(project, slug string, id int) (string, error) {

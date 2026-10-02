@@ -557,7 +557,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch action {
 				case "merge":
 					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
-						return m.svc.MergePR(rp.Project, rp.Slug, prID, "")
+						_, err := api.MergePullRequest(m.svc, rp.Project, rp.Slug, prID, api.MergeOptions{
+							RetargetDependents: true,
+						})
+						return err
 					}))
 				case "decline":
 					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
