@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.0](https://github.com/hugs7/bitbucket-cli/compare/v0.10.1...v0.11.0) (2026-10-02)
+
+
+### Features
+
+* ✨ cobra version flag ([fa59b5b](https://github.com/hugs7/bitbucket-cli/commit/fa59b5bf836f2801c7cce2354219ba3dc5a905e0))
+* **pr:** ✨ create pull requests without the interactive form ([bb0ec34](https://github.com/hugs7/bitbucket-cli/commit/bb0ec34d9069c69c2406c47fe89d2ac5136d98f5))
+* **pr:** ✨ retarget dependent pull requests ([eb02127](https://github.com/hugs7/bitbucket-cli/commit/eb02127c0ff9cefb012c44205d5b6ec7132040fc))
+* **repo:** ✨ delete protected branches safely ([06f7cc8](https://github.com/hugs7/bitbucket-cli/commit/06f7cc8231a925ac1259cacf62690006f816c4f5))
+* **repo:** ✨ delete protected branches safely ([14776ea](https://github.com/hugs7/bitbucket-cli/commit/14776eaae361b819162fa2a3c103f319111fe7a3))
+
+
+### Bug Fixes
+
+* **pr comment list:** show comment IDs and inline file anchors ([39ea187](https://github.com/hugs7/bitbucket-cli/commit/39ea1878b86399452b94736d84d3f5284f51291b))
+* **pr comment list:** show comment IDs and inline file anchors ([40fdfb7](https://github.com/hugs7/bitbucket-cli/commit/40fdfb79193dc12f901242b8d91b03b46918b48d))
+
 ## [0.10.1](https://github.com/hugs7/bitbucket-cli/compare/v0.10.0...v0.10.1) (2026-08-14)
 
 
