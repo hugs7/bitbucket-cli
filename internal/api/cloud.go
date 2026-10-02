@@ -290,6 +290,10 @@ func (c *cloudService) DeleteBranch(workspace, slug, branch string) error {
 		workspace, slug, url.PathEscape(branch)))
 }
 
+func (c *cloudService) ForceDeleteBranches(workspace, slug string, branches []string) error {
+	return fmt.Errorf("force-deleting protected branches is not supported on Bitbucket Cloud")
+}
+
 func (c *cloudService) PRDiff(workspace, slug string, id int) (string, error) {
 	req, err := c.client.NewRequest("GET", fmt.Sprintf("repositories/%s/%s/pullrequests/%d/diff", workspace, slug, id), nil)
 	if err != nil {

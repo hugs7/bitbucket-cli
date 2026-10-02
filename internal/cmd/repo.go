@@ -36,7 +36,7 @@ current repository (auto-detected from the cwd's git remote). Use
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
-	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd(), newRepoSettingsCmd(), newRepoWebhookCmd())
+	c.AddCommand(newRepoListCmd(), newRepoViewCmd(), newRepoCloneCmd(), newRepoBrowseCmd(), newRepoCreateCmd(), newRepoSettingsCmd(), newRepoWebhookCmd(), newRepoBranchCmd())
 	return c
 }
 
