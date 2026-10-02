@@ -346,10 +346,12 @@ func (m model) renderMergeConfirm() string {
 		}
 	}
 
-	// Options pane: delete branch + resolve tasks toggles.
+	// Options pane: post-merge handling + resolve tasks toggles.
 	parts = append(parts, "", theme.TitleChip.Render("Options"))
 	parts = append(parts, "  "+renderToggle(m.pendingMergeDeleteBranch, "d",
 		fmt.Sprintf("delete source branch %q after merge", m.pendingMergeSourceRef)))
+	parts = append(parts, "  "+renderToggle(m.pendingMergeRetargetDependents, "r",
+		"retarget dependent PRs to this PR's base branch"))
 
 	hasTasks := len(m.pendingMergeTasks) > 0
 	taskLabel := "resolve all open tasks before merging"

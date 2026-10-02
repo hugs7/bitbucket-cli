@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/hugs7/bitbucket-cli/internal/config"
@@ -85,6 +87,10 @@ working tree at that path.`,
 	}
 
 	root.PersistentFlags().StringVar(&cfgPath, "config", "", "path to config file (default: $XDG_CONFIG_HOME/bb/config.yml)")
+
+	// Setting Version makes cobra add -v/--version; match `bb version`.
+	root.Version = info.Version
+	root.SetVersionTemplate(fmt.Sprintf("bb %s (commit %s, built %s)\n", info.Version, info.Commit, info.Date))
 
 	root.AddCommand(
 		newVersionCmd(info),
