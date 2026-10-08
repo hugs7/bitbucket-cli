@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Repo is the unified repository representation used by bb commands.
 type Repo struct {
@@ -145,4 +148,17 @@ type Build struct {
 	Ref       string
 	Commit    string
 	CreatedAt time.Time
+}
+
+// WithoutSnykBuilds drops Snyk security-scan statuses (e.g.
+// "code/snyk (my-project)") so callers only see the real app builds.
+func WithoutSnykBuilds(builds []Build) []Build {
+	out := make([]Build, 0, len(builds))
+	for _, b := range builds {
+		if strings.Contains(strings.ToLower(b.Name+" "+b.ID), "snyk") {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
