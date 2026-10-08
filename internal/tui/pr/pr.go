@@ -446,6 +446,7 @@ func (m *model) fetchBuildForPR(pr api.PullRequest) tea.Cmd {
 			return prBuildLoadedMsg{prID: prID}
 		}
 		builds, err := m.svc.ListBuildsForRef(m.project, m.slug, ref, 5)
+		builds = api.WithoutSnykBuilds(builds)
 		if err != nil || len(builds) == 0 {
 			return prBuildLoadedMsg{prID: prID}
 		}

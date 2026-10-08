@@ -170,7 +170,7 @@ func (m *repoModel) fetchBuilds(ref string) tea.Cmd {
 			return repoBuildsMsg{}
 		}
 		b, _ := m.svc.ListBuildsForRef(m.project, m.slug, ref, 5)
-		return repoBuildsMsg{b}
+		return repoBuildsMsg{api.WithoutSnykBuilds(b)}
 	}
 }
 
