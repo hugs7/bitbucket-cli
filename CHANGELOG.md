@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.1](https://github.com/hugs7/bitbucket-cli/compare/v0.11.0...v0.11.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **tui:** 🐛 ignore snyk scans in build status ([67b1152](https://github.com/hugs7/bitbucket-cli/commit/67b115255fc91acb52e3bff154a5cd0b48210325))
+* **tui:** 🐛 ignore snyk scans in build status ([673c6c1](https://github.com/hugs7/bitbucket-cli/commit/673c6c1638cc1fca0bc74aa7e88b720e5d4815fd))
+
 ## [0.11.0](https://github.com/hugs7/bitbucket-cli/compare/v0.10.1...v0.11.0) (2026-10-02)
 
 
