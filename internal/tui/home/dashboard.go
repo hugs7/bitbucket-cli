@@ -2,7 +2,8 @@
 //
 // The Dashboard tab stacks four data sources (review queue, your
 // authored PRs, recently closed PRs, recently viewed repos) and
-// drives a single cursor across them. All dashboard-only state and
+// drives a single cursor across them. Long sections show their first
+// dashSectionRows rows until expanded with "e". All dashboard-only state and
 // rendering lives in this file.
 package home
 
@@ -45,11 +46,25 @@ func (r dashRow) identity() string {
 	return r.kind + ":" + r.project() + "/" + r.slug() + ":" + fmt.Sprint(r.pr.PR.ID)
 }
 
-// dashSection is one labelled block in the dashboard.
+// dashSectionRows is how many rows a section shows until it is
+// expanded with the ShowAll key.
+const dashSectionRows = 10
+
+// dashOpenPRLimit caps the open-PR feeds (review queue and your PRs),
+// which are fetched in full so section headers can show real totals.
+const dashOpenPRLimit = 200
+
+// dashSection is one labelled block in the dashboard. rows holds only
+// the visible rows; hidden counts the rows collapsed behind the
+// ShowAll key.
 type dashSection struct {
-	title string
-	rows  []dashRow
+	title  string
+	rows   []dashRow
+	hidden int
 }
+
+// total is every row the section has, visible or not.
+func (s dashSection) total() int { return len(s.rows) + s.hidden }
 
 // dashboardSections returns the four sections in the order they're
 // rendered. Sections with no rows still appear so the user can see
@@ -69,12 +84,53 @@ func (m *homeModel) dashboardSections() []dashSection {
 		}
 		return rows
 	}
-	return []dashSection{
+	sections := []dashSection{
 		{title: "Pull requests to review", rows: prRows(m.reviewPRs, "Pull requests to review")},
 		{title: "Your pull requests", rows: prRows(m.authoredPRs, "Your pull requests")},
 		{title: "Recently closed pull requests", rows: prRows(m.closedPRs, "Recently closed pull requests")},
 		{title: "Recently viewed repositories", rows: repoRows(m.recentRepos, "Recently viewed repositories")},
 	}
+	for i := range sections {
+		sec := &sections[i]
+		if !m.dashExpanded[sec.title] && len(sec.rows) > dashSectionRows {
+			sec.hidden = len(sec.rows) - dashSectionRows
+			sec.rows = sec.rows[:dashSectionRows]
+		}
+	}
+	return sections
+}
+
+// toggleDashSection expands or collapses the section under the
+// cursor. Collapsing keeps the cursor inside the section, on its last
+// visible row if the cursor was on a row that is now hidden.
+func (m *homeModel) toggleDashSection() tea.Cmd {
+	start := 0
+	for _, sec := range m.dashboardSections() {
+		if m.dashCursor >= start+len(sec.rows) {
+			start += len(sec.rows)
+			continue
+		}
+		if sec.total() <= dashSectionRows {
+			m.status = fmt.Sprintf("all %d shown", sec.total())
+			return nil
+		}
+		if m.dashExpanded == nil {
+			m.dashExpanded = map[string]bool{}
+		}
+		expand := !m.dashExpanded[sec.title]
+		m.dashExpanded[sec.title] = expand
+		if !expand && m.dashCursor >= start+dashSectionRows {
+			m.dashCursor = start + dashSectionRows - 1
+		}
+		innerW := m.dashVP.Width
+		if innerW == 0 {
+			innerW = m.width
+		}
+		m.refreshDashContent(innerW)
+		m.snapDashViewport()
+		return m.refreshDashboardPreview(false)
+	}
+	return nil
 }
 
 // dashFlatRows returns every selectable row across all sections in
@@ -226,6 +282,9 @@ func (m *homeModel) dashCursorLine() (line, height int) {
 			}
 			currentLine += 2
 			globalIdx++
+		}
+		if sec.hidden > 0 {
+			currentLine++ // "… n more" hint
 		}
 	}
 	return -1, 0
@@ -390,6 +449,10 @@ func (m *homeModel) refreshDashContent(innerW int) {
 			sb.WriteString("\n")
 		}
 		count := len(sec.rows)
+		countLabel := fmt.Sprintf("(%d)", count)
+		if sec.hidden > 0 {
+			countLabel = fmt.Sprintf("(%d of %d)", count, sec.total())
+		}
 		var header string
 		if theme.Mainframe() {
 			// CICS-panel style: bright bold uppercase title flanked
@@ -400,10 +463,10 @@ func (m *homeModel) refreshDashContent(innerW int) {
 				Foreground(lipgloss.Color("14")).
 				Render(rule + " " + title + " " + rule)
 			header = titleLine + " " +
-				dashSecCount.Render(fmt.Sprintf("(%d)", count))
+				dashSecCount.Render(countLabel)
 		} else {
 			header = dashSecHeader.Render(" "+sec.title+" ") + " " +
-				dashSecCount.Render(fmt.Sprintf("(%d)", count))
+				dashSecCount.Render(countLabel)
 		}
 		sb.WriteString(header)
 		sb.WriteString("\n")
@@ -417,6 +480,10 @@ func (m *homeModel) refreshDashContent(innerW int) {
 			sb.WriteString(m.renderDashRow(r, selected, innerW))
 			sb.WriteString("\n")
 			globalIdx++
+		}
+		if sec.hidden > 0 {
+			sb.WriteString(dashRowMeta.Render(fmt.Sprintf("   … %d more · e to show all", sec.hidden)))
+			sb.WriteString("\n")
 		}
 	}
 	m.dashVP.SetContent(sb.String())
