@@ -19,17 +19,20 @@ type Repo struct {
 
 // PullRequest is the unified PR representation.
 type PullRequest struct {
-	ID          int
-	Title       string
-	State       string // OPEN / MERGED / DECLINED / SUPERSEDED
-	Author      string
-	SourceRef   string
-	TargetRef   string
-	WebURL      string
-	Description string
-	Reviewers   []Reviewer
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID        int
+	Title     string
+	State     string // OPEN / MERGED / DECLINED / SUPERSEDED
+	Author    string
+	SourceRef string
+	// SourceCommit is the latest commit on the source branch, which is
+	// the commit Bitbucket reports PR build status against.
+	SourceCommit string
+	TargetRef    string
+	WebURL       string
+	Description  string
+	Reviewers    []Reviewer
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Reviewer represents a PR reviewer and their current review status.
@@ -161,4 +164,40 @@ func WithoutSnykBuilds(builds []Build) []Build {
 		out = append(out, b)
 	}
 	return out
+}
+
+// buildStateRank orders build states so the most severe one wins when
+// several builds report on the same commit.
+func buildStateRank(state string) int {
+	switch strings.ToUpper(state) {
+	case "FAILED", "STOPPED", "CANCELLED", "ERROR":
+		return 3
+	case "INPROGRESS", "IN_PROGRESS", "PENDING", "RUNNING":
+		return 2
+	case "SUCCESSFUL":
+		return 1
+	}
+	return 0
+}
+
+// SummarizeBuilds reduces a commit's build statuses to the one that
+// decides its overall state, the way Bitbucket's PR page does: Snyk
+// scans are ignored, only the latest status per build key counts, and
+// any failure outranks running builds, which outrank passing ones. It
+// returns a zero Build when nothing is left.
+func SummarizeBuilds(builds []Build) Build {
+	latest := map[string]Build{}
+	for _, b := range WithoutSnykBuilds(builds) {
+		if prev, ok := latest[b.ID]; !ok || b.CreatedAt.After(prev.CreatedAt) {
+			latest[b.ID] = b
+		}
+	}
+	var worst Build
+	for _, b := range latest {
+		rank, worstRank := buildStateRank(b.State), buildStateRank(worst.State)
+		if worst.ID == "" || rank > worstRank || (rank == worstRank && b.CreatedAt.After(worst.CreatedAt)) {
+			worst = b
+		}
+	}
+	return worst
 }

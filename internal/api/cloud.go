@@ -48,6 +48,20 @@ type clBranch struct {
 	Branch struct {
 		Name string `json:"name"`
 	} `json:"branch"`
+	Commit struct {
+		Hash string `json:"hash"`
+	} `json:"commit"`
+}
+
+type clCommitStatus struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	URL       string `json:"url"`
+	CreatedOn string `json:"created_on"`
+	Commit    struct {
+		Hash string `json:"hash"`
+	} `json:"commit"`
 }
 
 type clParticipant struct {
@@ -126,16 +140,17 @@ func parseTime(s string) time.Time {
 
 func (p clPR) toPR() PullRequest {
 	out := PullRequest{
-		ID:          p.ID,
-		Title:       p.Title,
-		Description: p.Description,
-		State:       p.State,
-		Author:      p.Author.DisplayName,
-		SourceRef:   p.Source.Branch.Name,
-		TargetRef:   p.Destination.Branch.Name,
-		CreatedAt:   parseTime(p.CreatedOn),
-		UpdatedAt:   parseTime(p.UpdatedOn),
-		WebURL:      p.Links.HTML.Href,
+		ID:           p.ID,
+		Title:        p.Title,
+		Description:  p.Description,
+		State:        p.State,
+		Author:       p.Author.DisplayName,
+		SourceRef:    p.Source.Branch.Name,
+		SourceCommit: p.Source.Commit.Hash,
+		TargetRef:    p.Destination.Branch.Name,
+		CreatedAt:    parseTime(p.CreatedOn),
+		UpdatedAt:    parseTime(p.UpdatedOn),
+		WebURL:       p.Links.HTML.Href,
 	}
 	// Map participants for approval state when present, else fall back
 	// to the bare reviewers list. Cloud's "Username" identity is the
@@ -915,6 +930,36 @@ func (c *cloudService) ListBuildsForRef(workspace, slug, ref string, limit int) 
 			Ref:       p.Target.RefName,
 			Commit:    p.Target.Commit.Hash,
 			CreatedAt: parseTime(p.CreatedOn),
+		})
+	}
+	return out, nil
+}
+
+// ListPRBuilds returns the commit statuses Bitbucket shows on the PR for
+// its latest commit. Cloud PR responses carry an abbreviated source hash,
+// so statuses are matched by prefix.
+func (c *cloudService) ListPRBuilds(workspace, slug string, pr PullRequest) ([]Build, error) {
+	endpoint := fmt.Sprintf("repositories/%s/%s/pullrequests/%d/statuses%s",
+		workspace, slug, pr.ID,
+		queryString(map[string]string{"sort": "-created_on", "pagelen": "50"}),
+	)
+	var page clPaged[clCommitStatus]
+	if err := c.client.getJSON(endpoint, &page); err != nil {
+		return nil, err
+	}
+	out := []Build{}
+	for _, s := range page.Values {
+		if pr.SourceCommit == "" || !strings.HasPrefix(s.Commit.Hash, pr.SourceCommit) {
+			continue
+		}
+		out = append(out, Build{
+			ID:        s.Key,
+			Name:      s.Name,
+			State:     s.State,
+			URL:       s.URL,
+			Ref:       pr.SourceRef,
+			Commit:    s.Commit.Hash,
+			CreatedAt: parseTime(s.CreatedOn),
 		})
 	}
 	return out, nil

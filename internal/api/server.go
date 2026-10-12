@@ -47,8 +47,9 @@ type srvUser struct {
 }
 
 type srvRef struct {
-	ID        string `json:"id"`
-	DisplayID string `json:"displayId"`
+	ID           string `json:"id"`
+	DisplayID    string `json:"displayId"`
+	LatestCommit string `json:"latestCommit"`
 }
 
 type srvParticipant struct {
@@ -86,6 +87,17 @@ type srvBuild struct {
 	DateAdded int64  `json:"dateAdded"`
 }
 
+// srvPRBuild is one row of the PR builds list, which (unlike the
+// commit-wide build-status API) only includes statuses that belong to
+// the PR's branch.
+type srvPRBuild struct {
+	srvBuild
+	Ref    string `json:"ref"`
+	Commit struct {
+		ID string `json:"id"`
+	} `json:"commit"`
+}
+
 // --- conversions ---
 
 func (r srvRepo) toRepo() Repo {
@@ -112,15 +124,16 @@ func (r srvRepo) toRepo() Repo {
 
 func (p srvPR) toPR() PullRequest {
 	out := PullRequest{
-		ID:          p.ID,
-		Title:       p.Title,
-		Description: p.Description,
-		State:       p.State,
-		Author:      p.Author.User.DisplayName,
-		SourceRef:   p.FromRef.DisplayID,
-		TargetRef:   p.ToRef.DisplayID,
-		CreatedAt:   time.UnixMilli(p.CreatedDate),
-		UpdatedAt:   time.UnixMilli(p.UpdatedDate),
+		ID:           p.ID,
+		Title:        p.Title,
+		Description:  p.Description,
+		State:        p.State,
+		Author:       p.Author.User.DisplayName,
+		SourceRef:    p.FromRef.DisplayID,
+		SourceCommit: p.FromRef.LatestCommit,
+		TargetRef:    p.ToRef.DisplayID,
+		CreatedAt:    time.UnixMilli(p.CreatedDate),
+		UpdatedAt:    time.UnixMilli(p.UpdatedDate),
 	}
 	for _, r := range p.Reviewers {
 		out.Reviewers = append(out.Reviewers, Reviewer{
@@ -1296,6 +1309,38 @@ func (s *serverService) ListBuildsForRef(project, slug, ref string, limit int) (
 			URL:       b.URL,
 			Ref:       ref,
 			Commit:    commit,
+			CreatedAt: time.UnixMilli(b.DateAdded),
+		})
+	}
+	return out, nil
+}
+
+// ListPRBuilds returns the build statuses Bitbucket shows on the PR for
+// its latest commit. It reads the same PR builds list as the web UI, so
+// statuses posted against the commit from other branches' plans (which
+// the commit-wide build-status API includes) are left out.
+func (s *serverService) ListPRBuilds(project, slug string, pr PullRequest) ([]Build, error) {
+	base := strings.Replace(strings.TrimRight(s.client.cfg.APIBase, "/"), "/rest/api/1.0", "", 1)
+	url := fmt.Sprintf("%s/rest/ui/latest/projects/%s/repos/%s/pull-requests/%d/builds%s",
+		base, project, slug, pr.ID, queryString(map[string]string{"limit": "100"}))
+	var resp struct {
+		Page srvPaged[srvPRBuild] `json:"page"`
+	}
+	if err := s.client.getJSON(url, &resp); err != nil {
+		return nil, err
+	}
+	out := []Build{}
+	for _, b := range resp.Page.Values {
+		if b.Commit.ID != pr.SourceCommit {
+			continue
+		}
+		out = append(out, Build{
+			ID:        b.Key,
+			Name:      b.Name,
+			State:     b.State,
+			URL:       b.URL,
+			Ref:       b.Ref,
+			Commit:    b.Commit.ID,
 			CreatedAt: time.UnixMilli(b.DateAdded),
 		})
 	}
