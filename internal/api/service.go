@@ -114,6 +114,9 @@ type Service interface {
 	RepoSettings(project, slug string) (*RepoSettings, error)
 
 	ListBuildsForRef(project, slug, ref string, limit int) ([]Build, error)
+	// ListPRBuilds returns the build statuses Bitbucket shows on the PR
+	// for its latest commit (pr.SourceCommit).
+	ListPRBuilds(project, slug string, pr PullRequest) ([]Build, error)
 	TriggerPipeline(project, slug, ref string) (*Build, error)
 	CancelPipeline(project, slug, idOrUUID string) error
 	PipelineLogs(project, slug, idOrUUID string) (string, error)

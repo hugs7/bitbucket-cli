@@ -435,22 +435,19 @@ func (m *model) fetchPRs() tea.Cmd {
 	}
 }
 
-// fetchBuildForPR queries the latest build for a PR's source ref and
-// returns the resulting state via prBuildLoadedMsg. Failures are
+// fetchBuildForPR loads the build statuses Bitbucket shows on the PR
+// and returns their combined state via prBuildLoadedMsg. Failures are
 // silently swallowed (the PR list still works without a status dot).
 func (m *model) fetchBuildForPR(pr api.PullRequest) tea.Cmd {
-	prID := pr.ID
-	ref := pr.SourceRef
 	return func() tea.Msg {
-		if ref == "" {
-			return prBuildLoadedMsg{prID: prID}
+		if pr.SourceCommit == "" {
+			return prBuildLoadedMsg{prID: pr.ID}
 		}
-		builds, err := m.svc.ListBuildsForRef(m.project, m.slug, ref, 5)
-		builds = api.WithoutSnykBuilds(builds)
-		if err != nil || len(builds) == 0 {
-			return prBuildLoadedMsg{prID: prID}
+		builds, err := m.svc.ListPRBuilds(m.project, m.slug, pr)
+		if err != nil {
+			return prBuildLoadedMsg{prID: pr.ID}
 		}
-		return prBuildLoadedMsg{prID: prID, state: builds[0].State}
+		return prBuildLoadedMsg{prID: pr.ID, state: api.SummarizeBuilds(builds).State}
 	}
 }
 func (m *model) fetchDiff(id int) tea.Cmd {

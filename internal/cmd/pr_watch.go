@@ -115,12 +115,12 @@ func pollWatch(svc api.Service, project, slug string, id int) (watchSnapshot, *a
 		state:     pr.State,
 		approvals: formatApprovals(pr),
 	}
-	if pr.SourceRef != "" {
-		builds, berr := svc.ListBuildsForRef(project, slug, pr.SourceRef, 1)
-		if berr == nil && len(builds) > 0 {
-			snap.buildState = builds[0].State
-			snap.buildName = builds[0].Name
-			snap.buildURL = builds[0].URL
+	if pr.SourceCommit != "" {
+		builds, berr := svc.ListPRBuilds(project, slug, *pr)
+		if build := api.SummarizeBuilds(builds); berr == nil && build.ID != "" {
+			snap.buildState = build.State
+			snap.buildName = build.Name
+			snap.buildURL = build.URL
 		}
 	}
 	return snap, pr, nil
