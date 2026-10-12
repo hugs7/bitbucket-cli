@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1](https://github.com/hugs7/bitbucket-cli/compare/v0.12.0...v0.12.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **tui:** 🐛 match PR build status to the Bitbucket PR page ([f2a9a2f](https://github.com/hugs7/bitbucket-cli/commit/f2a9a2fdd5a10808346ddebeedee1fdb63cd2fd1))
+* **tui:** 🐛 match PR build status to the Bitbucket PR page ([3204ff0](https://github.com/hugs7/bitbucket-cli/commit/3204ff0b9ab3bb18f2aad758f37aa7761f213148))
+
 ## [0.12.0](https://github.com/hugs7/bitbucket-cli/compare/v0.11.1...v0.12.0) (2026-10-12)
 
 
