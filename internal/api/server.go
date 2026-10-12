@@ -1098,12 +1098,10 @@ func (s *serverService) ListMyReviewPRs(limit int) ([]ReviewPR, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	endpoint := "inbox/pull-requests" + queryString(map[string]string{
+	return s.fetchDashboardPRs("inbox/pull-requests", map[string]string{
 		"role":  "REVIEWER",
 		"state": "OPEN",
-		"limit": itoa(limit),
-	})
-	return s.fetchDashboardPRs(endpoint)
+	}, limit)
 }
 
 // ListMyAuthoredPRs returns open PRs authored by the current user via
@@ -1113,13 +1111,11 @@ func (s *serverService) ListMyAuthoredPRs(limit int) ([]ReviewPR, error) {
 	if limit <= 0 {
 		limit = 25
 	}
-	endpoint := "dashboard/pull-requests" + queryString(map[string]string{
+	return s.fetchDashboardPRs("dashboard/pull-requests", map[string]string{
 		"role":  "AUTHOR",
 		"state": "OPEN",
-		"limit": itoa(limit),
 		"order": "NEWEST",
-	})
-	return s.fetchDashboardPRs(endpoint)
+	}, limit)
 }
 
 // ListRecentlyClosedPRs returns the user's most recently merged PRs
@@ -1129,17 +1125,18 @@ func (s *serverService) ListRecentlyClosedPRs(limit int) ([]ReviewPR, error) {
 	if limit <= 0 {
 		limit = 25
 	}
-	endpoint := "dashboard/pull-requests" + queryString(map[string]string{
+	return s.fetchDashboardPRs("dashboard/pull-requests", map[string]string{
 		"state": "MERGED",
-		"limit": itoa(limit),
 		"order": "NEWEST",
-	})
-	return s.fetchDashboardPRs(endpoint)
+	}, limit)
 }
 
 // fetchDashboardPRs is the shared decoder for any dashboard / inbox
-// endpoint that returns PRs with their toRef.repository inlined.
-func (s *serverService) fetchDashboardPRs(endpoint string) ([]ReviewPR, error) {
+// endpoint that returns PRs with their toRef.repository inlined. It
+// follows Bitbucket's paging until the last page or until limit PRs
+// have been collected, so callers get every match up to their cap
+// rather than just the first page.
+func (s *serverService) fetchDashboardPRs(path string, params map[string]string, limit int) ([]ReviewPR, error) {
 	type srvDashPR struct {
 		srvPR
 		ToRef struct {
@@ -1147,17 +1144,30 @@ func (s *serverService) fetchDashboardPRs(endpoint string) ([]ReviewPR, error) {
 			Repository srvRepo `json:"repository"`
 		} `json:"toRef"`
 	}
-	var page srvPaged[srvDashPR]
-	if err := s.client.getJSON(endpoint, &page); err != nil {
-		return nil, err
+	out := make([]ReviewPR, 0, limit)
+	for start := 0; len(out) < limit; {
+		query := map[string]string{"start": itoa(start), "limit": itoa(limit - len(out))}
+		for k, v := range params {
+			query[k] = v
+		}
+		var page srvPaged[srvDashPR]
+		if err := s.client.getJSON(path+queryString(query), &page); err != nil {
+			return nil, err
+		}
+		for _, p := range page.Values {
+			out = append(out, ReviewPR{
+				PR:      p.srvPR.toPR(),
+				Project: p.ToRef.Repository.Project.Key,
+				Slug:    p.ToRef.Repository.Slug,
+			})
+		}
+		if page.IsLastPage || len(page.Values) == 0 {
+			break
+		}
+		start += len(page.Values)
 	}
-	out := make([]ReviewPR, 0, len(page.Values))
-	for _, p := range page.Values {
-		out = append(out, ReviewPR{
-			PR:      p.srvPR.toPR(),
-			Project: p.ToRef.Repository.Project.Key,
-			Slug:    p.ToRef.Repository.Slug,
-		})
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

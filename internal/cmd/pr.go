@@ -509,10 +509,10 @@ func newPRBrowseCmd() *cobra.Command {
 }
 
 func newPREditCmd() *cobra.Command {
-	var repoFlag, hostFlag, title, body, bodyFile string
+	var repoFlag, hostFlag, title, body, bodyFile, target string
 	c := &cobra.Command{
 		Use:   "edit <id>",
-		Short: "Edit a pull request's title or description",
+		Short: "Edit a pull request's title, description or target branch",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.Atoi(args[0])
@@ -527,38 +527,37 @@ func newPREditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			updated := []string{}
-			if title != "" {
-				if err := svc.UpdatePRTitle(project, slug, id, title); err != nil {
-					return err
-				}
-				updated = append(updated, "title")
-			}
-			if body == "" {
-				if title != "" {
-					fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(updated, " and "), id)
-					return nil
-				}
+			options := api.EditOptions{Title: title, TargetRef: target}
+			if body != "" {
+				options.Description = &body
+			} else if title == "" && target == "" {
 				p, err := svc.GetPR(project, slug, id)
 				if err != nil {
 					return err
 				}
-				body, err = editText(p.Description, fmt.Sprintf("pr-%d-description", id))
+				edited, err := editText(p.Description, fmt.Sprintf("pr-%d-description", id))
 				if err != nil {
 					return err
 				}
+				options.Description = &edited
 			}
-			if err := svc.UpdatePRDescription(project, slug, id, body); err != nil {
+			result, err := api.EditPullRequest(svc, project, slug, id, options)
+			if err != nil {
 				return err
 			}
-			updated = append(updated, "description")
-			fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(updated, " and "), id)
+			if result.AlreadyTargeted {
+				fmt.Printf("✓ PR #%d already targets %s\n", id, strings.TrimPrefix(target, "refs/heads/"))
+			}
+			if len(result.Updated) > 0 {
+				fmt.Printf("✓ Updated %s for PR #%d\n", strings.Join(result.Updated, " and "), id)
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().StringVarP(&title, "title", "t", "", "new title")
+	c.Flags().StringVarP(&target, "target", "T", "", "new target branch")
 	c.Flags().StringVarP(&body, "body", "b", "", "new description (skips opening editor)")
 	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read new description from file (use "-" for stdin)`)
 	return c

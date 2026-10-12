@@ -133,6 +133,9 @@ type homeModel struct {
 	dashCursor  int
 	dashVP      viewport.Model // scrolls when content exceeds the left pane height
 	prevDashRow string         // previous selected row identity, for preview-refresh detection
+	// dashExpanded marks sections (by title) showing every row
+	// instead of the first dashSectionRows. Toggled with "e".
+	dashExpanded map[string]bool
 
 	// dashFocus picks which pane on the dashboard tab consumes
 	// scroll / arrow-key input: "left" routes to the row list (the
@@ -284,7 +287,7 @@ func (m homeModel) Init() tea.Cmd {
 func (m homeModel) fetchReviews() tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
-		prs, err := svc.ListMyReviewPRs(10)
+		prs, err := svc.ListMyReviewPRs(dashOpenPRLimit)
 		if err != nil {
 			return homeErrMsg{err: err}
 		}
@@ -295,7 +298,7 @@ func (m homeModel) fetchReviews() tea.Cmd {
 func (m homeModel) fetchAuthored() tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
-		prs, err := svc.ListMyAuthoredPRs(10)
+		prs, err := svc.ListMyAuthoredPRs(dashOpenPRLimit)
 		if err != nil {
 			return homeErrMsg{err: err}
 		}
@@ -673,6 +676,11 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.dashFocus = "right"
 				}
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.ShowAll):
+			if m.tab == tabDashboard {
+				return m, m.toggleDashSection()
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.ShiftTab):
