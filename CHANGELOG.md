@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.0](https://github.com/hugs7/bitbucket-cli/compare/v0.11.1...v0.12.0) (2026-10-12)
+
+
+### Features
+
+* **home:** ✨ show section totals and expand long dashboard sections ([0dd045b](https://github.com/hugs7/bitbucket-cli/commit/0dd045b4c23f511e4302da6a59a94e569f19a3ce))
+* **home:** ✨ show section totals and expand long dashboard sections ([e6f071d](https://github.com/hugs7/bitbucket-cli/commit/e6f071d97686fe3bc71768e96ecf82fe89e25ddc))
+* **pr:** ✨ retarget pull requests with pr edit --target ([5f0d21b](https://github.com/hugs7/bitbucket-cli/commit/5f0d21ba50f52e9167a63173e4e7c02f46304c42))
+* **pr:** ✨ retarget pull requests with pr edit --target ([2b346c7](https://github.com/hugs7/bitbucket-cli/commit/2b346c72f992456bf3ab7ececd891718879d403c))
+
 ## [0.11.1](https://github.com/hugs7/bitbucket-cli/compare/v0.11.0...v0.11.1) (2026-10-08)
 
 
