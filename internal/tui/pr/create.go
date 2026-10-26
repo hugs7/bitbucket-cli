@@ -87,43 +87,7 @@ func upperFirst(s string) string {
 // PR. Returns nil silently if git isn't available — the input then
 // degrades to plain text entry.
 func remoteBranches() []string {
-	out, err := exec.Command("git", "for-each-ref",
-		"--format=%(refname)",
-		"refs/heads", "refs/remotes").Output()
-	if err != nil {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	var branches []string
-	for _, line := range strings.Split(string(out), "\n") {
-		ref := strings.TrimSpace(line)
-		var name string
-		switch {
-		case strings.HasPrefix(ref, "refs/heads/"):
-			name = strings.TrimPrefix(ref, "refs/heads/")
-		case strings.HasPrefix(ref, "refs/remotes/"):
-			rest := strings.TrimPrefix(ref, "refs/remotes/")
-			if i := strings.Index(rest, "/"); i > 0 {
-				rest = rest[i+1:]
-			} else {
-				continue
-			}
-			if rest == "HEAD" {
-				continue
-			}
-			name = rest
-		default:
-			continue
-		}
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		branches = append(branches, name)
-	}
+	branches, _ := gitctx.TargetBranches("", "", "")
 	return branches
 }
 
@@ -257,15 +221,20 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 	if branch == "" {
 		return
 	}
-	upstream, _ := branchUpstream(branch)
-	if upstream == "" {
-		// No upstream configured → branch isn't on the remote yet
-		// (or at least git doesn't know about it). Offer to push
-		// with -u so the tracking ref is set as a side effect.
+	repo, err := gitctx.Current("")
+	if err != nil {
+		f.err = err
+		return
+	}
+	upstream := "refs/remotes/" + repo.RemoteName + "/" + branch
+	_, existsErr := exec.Command("git", "rev-parse", "--verify", upstream).Output()
+	if existsErr != nil {
+		// The selected Bitbucket remote has no known tracking ref.
+		// Do not alter an existing upstream on another host.
 		var push bool
 		prompt := huh.NewForm(huh.NewGroup(
 			huh.NewConfirm().
-				Title(fmt.Sprintf("Branch %q has no upstream on origin.", branch)).
+				Title(fmt.Sprintf("Branch %q is not tracked on %s.", branch, repo.RemoteName)).
 				Description("Push it now so the PR can target the remote ref?").
 				Affirmative("Yes, push").Negative("No, skip").
 				Value(&push),
@@ -279,7 +248,7 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 			return
 		}
 		if push {
-			if err := gitPushNewBranch(branch, f.stdout, f.stderr); err != nil {
+			if err := gitPushBranch(repo.RemoteName, branch, f.stdout, f.stderr); err != nil {
 				f.err = fmt.Errorf("push %q failed: %w", branch, err)
 			}
 		}
@@ -313,22 +282,10 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 		return
 	}
 	if push {
-		if err := gitPushBranch(branch, f.stdout, f.stderr); err != nil {
+		if err := gitPushBranch(repo.RemoteName, branch, f.stdout, f.stderr); err != nil {
 			f.err = fmt.Errorf("push %q failed: %w", branch, err)
 		}
 	}
-}
-
-// branchUpstream returns the configured upstream ref (e.g.
-// "origin/feature/x") for branch, or "" when no upstream is set or
-// git can't be reached.
-func branchUpstream(branch string) (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--abbrev-ref",
-		branch+"@{upstream}").CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // branchAhead returns how many commits branch has that upstream
@@ -343,21 +300,10 @@ func branchAhead(branch, upstream string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(out)))
 }
 
-// gitPushNewBranch publishes a brand-new branch to origin with -u so
-// the upstream tracking ref is set as a side effect.
-func gitPushNewBranch(branch string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("git", "push", "-u", "origin", branch)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
-}
-
-// gitPushBranch pushes an already-tracked branch to its configured
-// upstream. We pass the branch explicitly rather than relying on the
-// current HEAD because the user may have picked a non-current branch
-// in the create-PR form.
-func gitPushBranch(branch string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("git", "push", "origin", branch)
+// gitPushBranch publishes the chosen branch to the selected Bitbucket remote,
+// without changing an upstream that may intentionally point at another host.
+func gitPushBranch(remote, branch string, stdout, stderr io.Writer) error {
+	cmd := exec.Command("git", "push", "--", remote, "refs/heads/"+branch+":refs/heads/"+branch)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()

@@ -1,6 +1,42 @@
 package pr
 
-import "testing"
+import (
+	"io"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestPushUsesSelectedRemote(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "--bare", filepath.Join(dir, "other.git"))
+	git("init", "--bare", filepath.Join(dir, "work.git"))
+	git("init", "local")
+	t.Chdir(filepath.Join(dir, "local"))
+	git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
+	git("branch", "feature/work")
+	git("remote", "add", "origin", filepath.Join(dir, "other.git"))
+	git("remote", "add", "bitbucket", filepath.Join(dir, "work.git"))
+	if err := gitPushBranch("bitbucket", "feature/work", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := git("ls-remote", "--heads", "origin"); got != "" {
+		t.Fatalf("wrote wrong remote: %s", got)
+	}
+	if got := git("ls-remote", "--heads", "bitbucket"); !strings.Contains(got, "refs/heads/feature/work") {
+		t.Fatalf("missing branch: %s", got)
+	}
+}
 
 func TestBranchToTitle(t *testing.T) {
 	tests := map[string]string{

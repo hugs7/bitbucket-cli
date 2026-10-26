@@ -1084,44 +1084,6 @@ func bytesTrim(b []byte) []byte {
 // silently if git isn't available or we're not inside a repo — the
 // input then degrades to plain text entry.
 func remoteBranches() []string {
-	out, err := exec.Command("git", "for-each-ref",
-		"--format=%(refname)",
-		"refs/heads", "refs/remotes").Output()
-	if err != nil {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	var branches []string
-	for _, line := range strings.Split(string(out), "\n") {
-		ref := strings.TrimSpace(line)
-		var name string
-		switch {
-		case strings.HasPrefix(ref, "refs/heads/"):
-			name = strings.TrimPrefix(ref, "refs/heads/")
-		case strings.HasPrefix(ref, "refs/remotes/"):
-			rest := strings.TrimPrefix(ref, "refs/remotes/")
-			// Drop the "<remote>/" segment; skip the symbolic
-			// "<remote>/HEAD" alias.
-			if i := strings.Index(rest, "/"); i > 0 {
-				rest = rest[i+1:]
-			} else {
-				continue
-			}
-			if rest == "HEAD" {
-				continue
-			}
-			name = rest
-		default:
-			continue
-		}
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		branches = append(branches, name)
-	}
+	branches, _ := gitctx.TargetBranches("", "", "")
 	return branches
 }
