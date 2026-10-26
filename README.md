@@ -157,6 +157,11 @@ upstream. Use `-R host/PROJ/repo` to select an API repository explicitly.
 offer **e** to edit JSON, **m** for minimum approvals, and **a/d** for the panel's
 add/remove or enable/disable actions. Every write requires confirmation.
 
+Use **Tab** to switch between sections and details; the active pane is labelled.
+In details, **↑/↓** scroll, **PgUp/PgDn** page, and **Home/End** jump to the top or
+bottom. Switching panes preserves the scroll position. Edit shortcuts also work
+directly from the sidebar, without pressing Enter first.
+
 ```sh
 bb repo settings get pull-requests -R PROJ/repo
 bb repo settings update pull-requests --minimum-approvals 2 -R PROJ/repo

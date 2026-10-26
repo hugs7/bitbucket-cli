@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 )
@@ -64,7 +65,11 @@ func TestSettingsTUIMinimumApprovalsRequiresExplicitConfirmation(t *testing.T) {
 				}
 				w.WriteHeader(http.StatusNoContent)
 			}, "Merge checks")
+			m.mode = modePanels // advertised shortcuts work without entering details first
 			m, read := settingKey(m, "m")
+			if read == nil {
+				t.Fatal("minimum shortcut must open the editor from the sidebar")
+			}
 			next, _ := m.Update(read())
 			m = next.(model)
 			if m.mode != modeSettingMinimum {
@@ -163,5 +168,71 @@ func TestSettingsTUIReportsReadErrorsAndKeepsSelectedPanelVisible(t *testing.T) 
 	m = next.(model)
 	if m.mode != modePanel || !strings.Contains(strings.Join(strings.Fields(m.View()), " "), "admin access denied") {
 		t.Fatalf("error not visible: %s", m.View())
+	}
+}
+
+func TestSettingsNavigationPreservesFocusAndReachesWrappedFields(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := settingsModel(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("navigation must not send HTTP requests")
+			}, "Merge checks")
+			m.mode = modePanels
+			fields := []api.RepoSettingsField{{Name: "First", Value: "TOP_SENTINEL"}}
+			for i := 0; i < 40; i++ {
+				fields = append(fields, api.RepoSettingsField{Name: fmt.Sprintf("Rule %02d", i), Value: strings.Repeat("long field contents ", 6) + fmt.Sprintf("TAIL_%02d", i)})
+			}
+			m.settings = &api.RepoSettings{Panels: map[string]api.RepoSettingsPanel{
+				"Merge checks": {Items: []api.RepoSettingsItem{{Title: "Checks", Fields: fields}}},
+			}}
+			next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+			m = next.(model)
+			press := func(k tea.KeyType) {
+				t.Helper()
+				next, _ := m.Update(tea.KeyMsg{Type: k})
+				m = next.(model)
+				if lipgloss.Width(m.View()) > width || lipgloss.Height(m.View()) > 24 {
+					t.Fatalf("navigation overflowed %dx24: %s", width, m.View())
+				}
+			}
+			if !strings.Contains(m.View(), "SECTIONS · active") || !strings.Contains(m.View(), "TOP_SENTINEL") {
+				t.Fatal("initial focus and first field must be visible")
+			}
+			press(tea.KeyTab)
+			if !strings.Contains(m.View(), "DETAILS · active") || !strings.Contains(m.View(), "↑/↓ scroll") {
+				t.Fatal("Tab must visibly focus details and explain arrow behavior")
+			}
+			press(tea.KeyEnd)
+			if !strings.Contains(m.View(), "TAIL_39") || strings.Contains(m.View(), "TOP_SENTINEL") {
+				t.Fatal("End must reach the untruncated final field")
+			}
+			press(tea.KeyShiftTab)
+			press(tea.KeyEnter)
+			if !strings.Contains(m.View(), "TAIL_39") {
+				t.Fatal("switching panes must preserve the scroll position")
+			}
+			press(tea.KeyHome)
+			if !strings.Contains(m.View(), "TOP_SENTINEL") {
+				t.Fatal("Home must return to the first field")
+			}
+			press(tea.KeyPgDown)
+			if strings.Contains(m.View(), "TOP_SENTINEL") {
+				t.Fatal("Page Down must scroll details")
+			}
+			press(tea.KeyPgUp)
+			if !strings.Contains(m.View(), "TOP_SENTINEL") {
+				t.Fatal("Page Up must return to the first field")
+			}
+			press(tea.KeyLeft)
+			press(tea.KeyPgDown)
+			if !strings.Contains(m.View(), "DETAILS · active") || strings.Contains(m.View(), "TOP_SENTINEL") {
+				t.Fatal("page keys from sections must focus and scroll details")
+			}
+			press(tea.KeyEsc)
+			press(tea.KeyDown)
+			if !strings.Contains(m.View(), "MERGE STRATEGIES") {
+				t.Fatal("arrows must navigate sections after returning to the sidebar")
+			}
+		})
 	}
 }

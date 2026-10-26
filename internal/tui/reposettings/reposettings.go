@@ -60,23 +60,29 @@ var panels = []panel{
 
 type keys struct {
 	Up, Down, Left, Right, Enter, Add, Delete, Edit, Minimum, Refresh, Back, Quit, Help key.Binding
+	SwitchPane, PageUp, PageDown, Top, Bottom                                           key.Binding
 }
 
 func defaultKeys() keys {
 	return keys{
-		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-		Left:    key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "panels")),
-		Right:   key.NewBinding(key.WithKeys("right", "l", "enter"), key.WithHelp("→/enter", "open")),
-		Enter:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open / submit")),
-		Add:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
-		Delete:  key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
-		Edit:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit JSON")),
-		Minimum: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "min approvals")),
-		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Up:         key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:       key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Left:       key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "panels")),
+		Right:      key.NewBinding(key.WithKeys("right", "l", "enter"), key.WithHelp("→/enter", "open")),
+		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open / submit")),
+		Add:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
+		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		Edit:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit JSON")),
+		Minimum:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "min approvals")),
+		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		SwitchPane: key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", "switch pane")),
+		PageUp:     key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll page up")),
+		PageDown:   key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll page down")),
+		Top:        key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top of details")),
+		Bottom:     key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom of details")),
 	}
 }
 
@@ -87,6 +93,7 @@ func (k keys) ShortHelp() []key.Binding {
 func (k keys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right, k.Enter},
+		{k.SwitchPane, k.PageUp, k.PageDown, k.Top, k.Bottom},
 		{k.Edit, k.Minimum, k.Add, k.Delete, k.Refresh, k.Back, k.Help, k.Quit},
 	}
 }
@@ -351,8 +358,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = 3
 		m.status = "refreshing settings"
 		return m, tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks(), m.fetchSettings())
+	case key.Matches(msg, m.keys.SwitchPane):
+		if m.mode == modePanels {
+			m.mode = modePanel
+		} else {
+			m.mode = modePanels
+		}
+		return m, nil
 	}
 
+	// Visible action shortcuts work immediately on the selected section. Page
+	// keys also focus the details, without requiring an invisible Enter step.
+	if key.Matches(msg, m.keys.Edit, m.keys.Minimum, m.keys.Add, m.keys.Delete,
+		m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) {
+		m.mode = modePanel
+	}
 	if m.mode == modePanels {
 		switch {
 		case key.Matches(msg, m.keys.Up):
@@ -363,11 +383,22 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.content.GotoTop()
 		case key.Matches(msg, m.keys.Right), key.Matches(msg, m.keys.Enter):
 			m.mode = modePanel
-			m.content.GotoTop()
 		}
 		return m, nil
 	}
 
+	if key.Matches(msg, m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) {
+		m.syncPanelContent()
+		switch {
+		case key.Matches(msg, m.keys.Top):
+			m.content.GotoTop()
+		case key.Matches(msg, m.keys.Bottom):
+			m.content.GotoBottom()
+		default:
+			m.content, _ = m.content.Update(msg)
+		}
+		return m, nil
+	}
 	if key.Matches(msg, m.keys.Edit) {
 		return m.beginSettingEdit("update")
 	}
@@ -416,17 +447,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if key.Matches(msg, m.keys.Left) {
 		m.mode = modePanels
-		m.content.GotoTop()
 		return m, nil
 	}
-	var body string
-	if m.activePanel().title == "Repository details" {
-		body = m.renderRepoDetails(m.contentWidth())
-	} else {
-		body = m.renderSettingsPanel(m.activePanel(), m.contentWidth())
-	}
-	m.content.Height = m.bodyHeight()
-	m.content.SetContent(lipgloss.NewStyle().Width(m.contentWidth() - 2).Render(body))
+	m.syncPanelContent()
 	var cmd tea.Cmd
 	m.content, cmd = m.content.Update(msg)
 	return m, cmd
@@ -516,10 +539,17 @@ func (m model) View() string {
 		fmt.Sprintf("REPO SETTINGS · %s/%s", m.project, m.slug),
 		theme.TitleChipDim.Render(m.svc.Host()),
 	)
+	sections, details := "SECTIONS · Tab to focus", "DETAILS · active"
+	if m.mode == modePanels {
+		sections, details = "SECTIONS · active", "DETAILS · Tab/Enter to focus"
+	} else if m.mode != modePanel {
+		sections = "SECTIONS"
+	}
+	paneHeaders := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(m.panelWidth()).Padding(0, 1).Render(theme.TitleBadge.Render(sections)),
+		lipgloss.NewStyle().Width(m.contentWidth()).Padding(0, 1).Render(theme.TitleBadge.Render(details)))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderPanels(), m.renderActivePanel())
-	statusLine := theme.RenderStatusLine(m.loading > 0, m.spinner.View(), m.status)
-	statusLine = lipgloss.NewStyle().Width(max(1, m.width)).Render(statusLine)
-	return header + "\n" + body + "\n" + statusLine + "\n" + m.help.View(m.keys)
+	return header + "\n" + paneHeaders + "\n" + body + "\n" + m.footerStatus() + "\n" + m.footerHelp()
 }
 
 func (m model) renderPanels() string {
@@ -559,7 +589,6 @@ func (m model) renderPanels() string {
 
 func (m model) renderActivePanel() string {
 	w := m.contentWidth()
-	p := m.activePanel()
 	style := lipgloss.NewStyle().Width(w).Padding(0, 1)
 	var body string
 	if m.mode >= modeSettingID {
@@ -571,6 +600,25 @@ func (m model) renderActivePanel() string {
 		m.content.SetContent(lipgloss.NewStyle().Width(w - 2).Render(body))
 		return style.Height(m.bodyHeight()).Render(m.content.View())
 	}
+	m.syncPanelContent()
+	body = m.content.View()
+	if m.mode == modePanels || m.mode == modePanel {
+		total := m.content.TotalLineCount()
+		position := fmt.Sprintf("Lines %d–%d/%d", m.content.YOffset+1, min(total, m.content.YOffset+m.content.Height), total)
+		if !m.content.AtBottom() {
+			position += " · more below ↓"
+		}
+		body += "\n" + theme.TitleChipDim.Render(position)
+	}
+	return style.Height(m.bodyHeight()).Render(body)
+}
+
+// syncPanelContent uses identical wrapping for rendering and scrolling so
+// long fields remain reachable and switching focus preserves the position.
+func (m *model) syncPanelContent() {
+	w := m.contentWidth()
+	p := m.activePanel()
+	var body string
 	switch p.title {
 	case "Repository details":
 		body = m.renderRepoDetails(w)
@@ -581,8 +629,10 @@ func (m model) renderActivePanel() string {
 	}
 	m.content.Width = w - 2
 	m.content.Height = m.bodyHeight()
+	if m.mode == modePanels || m.mode == modePanel {
+		m.content.Height-- // fixed scroll-position row
+	}
 	m.content.SetContent(lipgloss.NewStyle().Width(w - 2).Render(body))
-	return style.Height(m.bodyHeight()).Render(m.content.View())
 }
 
 func (m model) renderRepoDetails(w int) string {
@@ -726,7 +776,7 @@ func (m model) renderSettingsPanel(p panel, w int) string {
 		if title == "" {
 			title = "setting"
 		}
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Render(strutil.Truncate(title, w-4)))
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Render(title))
 		sb.WriteString("\n")
 		for _, field := range item.Fields {
 			if strings.EqualFold(field.Value, title) {
@@ -735,7 +785,7 @@ func (m model) renderSettingsPanel(p panel, w int) string {
 			sb.WriteString("  ")
 			sb.WriteString(theme.TitleChipDim.Render(field.Name + ":"))
 			sb.WriteString(" ")
-			sb.WriteString(strutil.Truncate(field.Value, w-len(field.Name)-8))
+			sb.WriteString(field.Value)
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
@@ -779,13 +829,12 @@ func (m model) bodyHeight() int {
 	if m.height == 0 {
 		return 20
 	}
-	footerH := lipgloss.Height(m.help.View(m.keys))
-	statusLine := theme.RenderStatusLine(m.loading > 0, m.spinner.View(), m.status)
-	statusH := lipgloss.Height(lipgloss.NewStyle().Width(max(1, m.width)).Render(statusLine))
+	footerH := lipgloss.Height(m.footerHelp())
+	statusH := lipgloss.Height(m.footerStatus())
 	// Header + newline above body + footer/status line. Keep at least a
 	// small viewport so long panels scroll instead of pushing the menu
 	// and header out of the terminal.
-	h := m.height - footerH - statusH - 2
+	h := m.height - footerH - statusH - 3
 	if h < 5 {
 		return 5
 	}

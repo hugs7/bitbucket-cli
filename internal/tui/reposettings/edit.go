@@ -78,6 +78,7 @@ func (m model) beginSettingEdit(action string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.edit = settingsEditState{resource: settingResource(m.activePanel().title), action: action}
+	m.content.GotoTop()
 	if !api.CanEditRepoSettings(m.svc) || m.edit.resource == "" {
 		m.status = "Read-only or unsupported panel; use the Bitbucket web UI."
 		return m, nil
@@ -118,6 +119,7 @@ func (m model) beginSettingEdit(action string) (tea.Model, tea.Cmd) {
 
 func (m model) loadSetting() (tea.Model, tea.Cmd) {
 	m.mode = modeSettingLoading
+	m.content.GotoTop()
 	m.status = "Loading complete settings JSON…"
 	return m, func() tea.Msg {
 		raw, err := api.ReadRepoSetting(m.svc, m.project, m.slug, m.edit.resource, m.edit.id)
@@ -284,7 +286,7 @@ func (m model) renderSettingEdit() string {
 	heading := theme.TitleBadge.Render(" " + strings.ToUpper(m.edit.action+" "+m.edit.resource) + " ")
 	switch m.mode {
 	case modeSettingID, modeSettingMinimum:
-		return heading + "\n\n" + m.status + "\n\n" + m.input.View() + "\n\nenter continues · esc cancels"
+		return heading + "\n\n" + m.status + "\n\n" + m.input.View()
 	case modeSettingLoading, modeSettingSaving:
 		return heading + "\n\n" + m.status
 	case modeSettingJSON:
