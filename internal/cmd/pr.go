@@ -52,6 +52,7 @@ With no arguments, prints help.`,
 		newPREditCmd(), newPRApproveCmd(), newPRUnapproveCmd(), newPRNeedsWorkCmd(),
 		newPRCommentCmd(), newPRReviewerCmd(),
 		newPRDescribeCmd(), newPRWatchCmd(), newPRStackCmd(),
+		newPRRecoverMergeChecksCmd(),
 	)
 	return c
 }
@@ -387,7 +388,7 @@ func newPRCheckoutCmd() *cobra.Command {
 
 func newPRMergeCmd() *cobra.Command {
 	var repoFlag, hostFlag string
-	var deleteBranch, deleteSet, retargetDependents, yes bool
+	var deleteBranch, deleteSet, retargetDependents, yes, bypassChecks bool
 	c := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Merge a pull request",
@@ -421,6 +422,12 @@ func newPRMergeCmd() *cobra.Command {
 						Title(fmt.Sprintf("Delete source branch %q after merge?", pr.SourceRef)).
 						Value(&deleteBranch))
 				}
+				if _, ok := svc.(api.MergeCheckBypassService); ok {
+					fields = append(fields, huh.NewConfirm().
+						Title("Temporarily bypass merge checks and reviewer minimums? (admin)").
+						Description("Repository-wide change: other PRs may merge during this window. Restores settings after success/failure; interruption requires bb pr recover-merge-checks.").
+						Value(&bypassChecks))
+				}
 				if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
 					return err
 				}
@@ -433,6 +440,7 @@ func newPRMergeCmd() *cobra.Command {
 			// CLI keeps the simpler "honour repo default" behaviour.
 			result, err := api.MergePullRequest(svc, project, slug, id, api.MergeOptions{
 				RetargetDependents: retargetDependents,
+				BypassChecks:       bypassChecks,
 			})
 			if err != nil {
 				return err
@@ -455,6 +463,7 @@ func newPRMergeCmd() *cobra.Command {
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().BoolVar(&deleteBranch, "delete-branch", false, "delete the source branch after a successful merge")
 	c.Flags().BoolVar(&retargetDependents, "retarget-dependents", true, "retarget open PRs targeting the merged branch to its base branch")
+	c.Flags().BoolVar(&bypassChecks, "bypass-checks", false, "admin only: temporarily disable repository-wide merge checks/reviewer minimums, merge, then restore")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation prompts")
 	return c
 }

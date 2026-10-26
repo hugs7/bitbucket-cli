@@ -133,6 +133,7 @@ type model struct {
 	pendingMergeSourceRef          string
 	pendingMergeDeleteBranch       bool
 	pendingMergeRetargetDependents bool
+	pendingMergeBypassChecks       bool
 	pendingMergeStrategies         []api.MergeStrategy
 	pendingMergeStrategyIdx        int
 
@@ -1088,6 +1089,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingMergeSourceRef = msg.sourceRef
 		m.pendingMergeDeleteBranch = false
 		m.pendingMergeRetargetDependents = true
+		m.pendingMergeBypassChecks = false
 		m.pendingMergeStrategies = msg.strategies
 		m.pendingMergeStrategyIdx = 0
 		for i, st := range msg.strategies {
@@ -2083,6 +2085,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case viewConfirmMerge:
 			switch msg.String() {
+			case "b":
+				if _, ok := m.svc.(api.MergeCheckBypassService); ok {
+					m.pendingMergeBypassChecks = !m.pendingMergeBypassChecks
+				}
+				return m, nil
 			case "d":
 				// Toggle "delete source branch on merge" without
 				// leaving the confirm screen so the user can flip
@@ -2121,6 +2128,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				src := m.pendingMergeSourceRef
 				del := m.pendingMergeDeleteBranch
 				retargetDependents := m.pendingMergeRetargetDependents
+				bypassChecks := m.pendingMergeBypassChecks
 				resolveTasks := m.pendingMergeResolveTasks
 				tasks := append([]api.Task(nil), m.pendingMergeTasks...)
 				strategyID := ""
@@ -2167,6 +2175,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_, err := api.MergePullRequest(m.svc, m.project, m.slug, prID, api.MergeOptions{
 						StrategyID:         strategyID,
 						RetargetDependents: retargetDependents,
+						BypassChecks:       bypassChecks,
 					})
 					if err != nil {
 						return err
