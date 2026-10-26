@@ -210,9 +210,18 @@ func (s *serverService) GetPR(project, slug string, id int) (*PullRequest, error
 }
 
 func (s *serverService) CreatePR(project, slug string, in CreatePRInput) (*PullRequest, error) {
+	users, err := s.createReviewers(project, slug, in)
+	if err != nil {
+		return nil, err
+	}
+	reviewers := make([]map[string]any, 0, len(users))
+	for _, user := range users {
+		reviewers = append(reviewers, map[string]any{"user": map[string]string{"name": user.Username}})
+	}
 	body := map[string]any{
 		"title":       in.Title,
 		"description": in.Description,
+		"reviewers":   reviewers,
 		"state":       "OPEN",
 		"open":        true,
 		"closed":      false,
