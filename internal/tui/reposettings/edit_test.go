@@ -176,14 +176,14 @@ func TestSettingsNavigationPreservesFocusAndReachesWrappedFields(t *testing.T) {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			m := settingsModel(t, func(w http.ResponseWriter, r *http.Request) {
 				t.Fatal("navigation must not send HTTP requests")
-			}, "Merge checks")
+			}, "Push log")
 			m.mode = modePanels
 			fields := []api.RepoSettingsField{{Name: "First", Value: "TOP_SENTINEL"}}
 			for i := 0; i < 40; i++ {
 				fields = append(fields, api.RepoSettingsField{Name: fmt.Sprintf("Rule %02d", i), Value: strings.Repeat("long field contents ", 6) + fmt.Sprintf("TAIL_%02d", i)})
 			}
 			m.settings = &api.RepoSettings{Panels: map[string]api.RepoSettingsPanel{
-				"Merge checks": {Items: []api.RepoSettingsItem{{Title: "Checks", Fields: fields}}},
+				"Push log": {Items: []api.RepoSettingsItem{{Title: "Pushes", Fields: fields}}},
 			}}
 			next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
 			m = next.(model)
@@ -230,8 +230,78 @@ func TestSettingsNavigationPreservesFocusAndReachesWrappedFields(t *testing.T) {
 			}
 			press(tea.KeyEsc)
 			press(tea.KeyDown)
-			if !strings.Contains(m.View(), "MERGE STRATEGIES") {
+			if !strings.Contains(m.View(), "AUDIT LOG") {
 				t.Fatal("arrows must navigate sections after returning to the sidebar")
+			}
+		})
+	}
+}
+
+func TestSettingsOpenDirectlyInEditorWithoutEditKey(t *testing.T) {
+	for _, section := range []struct{ title, response, visible string }{
+		{"Merge strategies", `{"mergeConfig":` + strategyFixture + `}`, "[x] Use project settings"},
+		{"Repository details", `{"name":"Example","description":"Original"}`, "Original"},
+		{"Default branch", `{"id":"refs/heads/develop"}`, "refs/heads/develop"},
+		{"Merge checks", `{"requiredApprovers":2}`, "requiredApprovers"},
+		{"Auto-decline", `{"enabled":false,"inactivityWeeks":4}`, "inactivityWeeks"},
+	} {
+		for _, entry := range []tea.KeyType{tea.KeyEnter, tea.KeyTab, tea.KeyRight, tea.KeyShiftTab} {
+			t.Run(fmt.Sprintf("%s/%d", section.title, entry), func(t *testing.T) {
+				writes := 0
+				m := settingsModel(t, func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodGet {
+						writes++
+					}
+					fmt.Fprint(w, section.response)
+				}, section.title)
+				m.mode = modePanels
+				next, read := m.Update(tea.KeyMsg{Type: entry})
+				if read == nil {
+					t.Fatal("entering settings must load the editor immediately")
+				}
+				next, _ = next.Update(read())
+				m = next.(model)
+				if !strings.Contains(m.View(), section.visible) || !strings.Contains(m.footerHelp(), "ctrl+s review") {
+					t.Fatalf("not editing immediately: %s", m.View())
+				}
+				if section.title == "Merge strategies" {
+					m = reviewerKey(m, tea.KeyDown)
+					m = reviewerKey(m, tea.KeyDown)
+					m, _ = settingKey(m, "d")
+					if !strings.Contains(m.View(), "[x] Squash  • default") {
+						t.Fatal("strategy controls must work immediately")
+					}
+				} else {
+					m, _ = settingKey(m, "Z")
+					if !strings.Contains(m.edit.json.Value(), "Z") {
+						t.Fatal("first character should edit the value")
+					}
+				}
+				m, _ = settingKey(m, "esc")
+				if m.mode != modePanels || writes != 0 {
+					t.Fatal("Esc must discard directly to sections without writing")
+				}
+			})
+		}
+	}
+}
+
+func TestSettingsCollectionsAndReadOnlyPanelsDoNotAutoEdit(t *testing.T) {
+	for _, title := range []string{"Default reviewers", "Hooks", "Access keys", "Group permissions", "Branch permissions", "Webhooks", "Push log"} {
+		t.Run(title, func(t *testing.T) {
+			m := settingsModel(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Error("opening collection must not fetch or write item settings")
+			}, title)
+			m.mode = modePanels
+			m, cmd := settingKey(m, "enter")
+			if cmd != nil || m.mode != modePanel {
+				t.Fatal("must choose an item before editing")
+			}
+			if title == "Hooks" || title == "Access keys" || title == "Group permissions" {
+				m, _ = settingKey(m, "enter")
+				if m.mode != modeSettingID {
+					t.Fatal("Enter must start item selection without e")
+				}
 			}
 		})
 	}

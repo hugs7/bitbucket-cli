@@ -166,8 +166,11 @@ upstream. Use `-R host/PROJ/repo` to select an API repository explicitly.
 
 ## Repository settings
 
-`bb repo settings` opens the settings TUI. In **Default reviewers**, use arrows
-to select a rule and **Enter/e** to edit it—no condition IDs or JSON needed.
+`bb repo settings` opens the settings TUI. Choose a section and press
+**Tab**, **Enter**, or **→**: single-document settings open directly in their
+editor, without an extra **e** step. **Esc** discards and returns to sections.
+Collections keep their item list; in **Default reviewers**, use arrows
+to select a rule and **Enter** to edit it—no condition IDs or JSON needed.
 The prefilled form edits source/target branches, reviewers and required approvals.
 On the Reviewers field, press **Enter** to search by name, **Space** to toggle a
 result, and **Enter** to return to the form. **a** adds a rule; **d** deletes the
@@ -175,15 +178,16 @@ selected rule. **Ctrl+S** reviews changes before an explicit **y** saves them.
 **J** opens advanced JSON. Inherited rules are read-only; advanced branch
 matchers and reviewer groups are preserved when changing other fields.
 
-In **Merge strategies**, **Enter/e** opens a checklist. Use **↑/↓** to choose,
+Opening **Merge strategies** goes straight to its checklist. Use **↑/↓** to choose,
 **Space** to allow/block a strategy, and **d** to choose the default (which also
 enables it). Select another default before disabling the current one.
 **Use project settings** restores inheritance; changing a strategy creates a
 repository-only override. **Ctrl+S** reviews, **y** saves, **n** returns to editing,
 and **Esc** discards. **J** remains available for advanced JSON.
 
-Other supported Server/Data Center panels offer **e** to edit JSON, **m** for
-minimum approvals, and **a/d** for add/remove or enable/disable actions.
+Other supported Server/Data Center sections open their existing JSON editor;
+collections use **Enter** to start editing an item. **m** sets minimum approvals,
+and **a/d** add/remove or enable/disable. **e** remains a compatibility shortcut.
 Every write requires confirmation.
 
 Use **Tab** to switch between sections and details; background colour indicates

@@ -410,10 +410,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks(), m.fetchSettings())
 	case key.Matches(msg, m.keys.SwitchPane):
 		if m.mode == modePanels {
-			m.mode = modePanel
-		} else {
-			m.mode = modePanels
+			return m.openPanel()
 		}
+		m.mode = modePanels
 		return m, nil
 	}
 
@@ -432,7 +431,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.panelIdx = (m.panelIdx + 1) % len(panels)
 			m.content.GotoTop()
 		case key.Matches(msg, m.keys.Right), key.Matches(msg, m.keys.Enter):
-			m.mode = modePanel
+			return m.openPanel()
 		}
 		return m, nil
 	}
@@ -489,7 +488,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if key.Matches(msg, m.keys.Edit) {
+	if key.Matches(msg, m.keys.Edit) || (key.Matches(msg, m.keys.Enter) && api.CanEditRepoSettings(m.svc) && settingResource(m.activePanel().title) != "") {
 		return m.beginSettingEdit("update")
 	}
 	if key.Matches(msg, m.keys.Minimum) && m.activePanel().title == "Merge checks" && api.CanEditRepoSettings(m.svc) && m.loading == 0 {

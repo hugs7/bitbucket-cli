@@ -38,6 +38,7 @@ type settingsEditState struct {
 	minimum              bool
 	reviewerForm         bool
 	strategyForm         bool
+	fromSections         bool
 }
 
 type settingReadMsg struct {
@@ -75,6 +76,25 @@ func settingResource(title string) string {
 
 func (m model) editable(p panel) bool {
 	return p.editable || (api.CanEditRepoSettings(m.svc) && settingResource(p.title) != "")
+}
+
+// openPanel focuses the editor immediately for single-document settings.
+// Collections retain their list so entering a section never chooses an item
+// implicitly or fetches sensitive hook configuration.
+func (m model) openPanel() (tea.Model, tea.Cmd) {
+	m.mode = modePanel
+	if !api.CanEditRepoSettings(m.svc) || m.loading > 0 {
+		return m, nil
+	}
+	resource := settingResource(m.activePanel().title)
+	if resource != "details" && resource != "default-branch" && resource != "pull-requests" && resource != "merge-strategies" && resource != "auto-decline" {
+		return m, nil
+	}
+	next, cmd := m.beginSettingEdit("update")
+	m = next.(model)
+	m.edit.strategyForm = resource == "merge-strategies"
+	m.edit.fromSections = true
+	return m, cmd
 }
 
 func (m model) beginSettingEdit(action string) (tea.Model, tea.Cmd) {
@@ -163,6 +183,9 @@ func (m model) handleSettingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "esc" || msg.String() == "ctrl+c" {
 		m.mode = modePanel
+		if m.edit.fromSections {
+			m.mode = modePanels
+		}
 		m.status = "Settings change cancelled; nothing written."
 		m.input.Blur()
 		return m, nil

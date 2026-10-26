@@ -22,7 +22,7 @@ func (m model) footerHelp() string {
 	var text string
 	switch m.mode {
 	case modePanels, modePanel:
-		text = "↑/↓ sections · Tab/Enter details · PgUp/PgDn scroll"
+		text = "↑/↓ sections · Tab/Enter open · PgUp/PgDn preview"
 		if m.mode == modePanel {
 			text = "↑/↓ scroll · PgUp/PgDn page · Home/End jump · Tab/← sections"
 			if m.reviewerPanel() {
@@ -78,22 +78,22 @@ func settingPanelHelp(title string) string {
 	case "Webhooks":
 		return "a add · d delete"
 	case "Default reviewers":
-		return "e edit rule · a add rule · d delete · J advanced JSON"
+		return "Enter edit rule · a add rule · d delete · J advanced JSON"
 	case "Merge strategies":
-		return "e edit strategies · J advanced JSON"
+		return "Tab/Enter strategies · J advanced JSON"
 	case "Repository permissions", "Group permissions":
-		return "a grant · e change · d revoke (username/group name)\nRepository grants only; inherited project/global access may remain."
+		return "a grant · Enter change · d revoke (username/group name)\nRepository grants only; inherited project/global access may remain."
 	case "Branch permissions":
 		return "a add · d delete (restriction ID)\nNo in-place update API; use separate explicit create/delete operations."
 	case "Access keys":
-		return "a register PUBLIC SSH key · e change permission · d revoke\nREPO_READ/REPO_WRITE only. No private keys or token generation."
+		return "a register PUBLIC SSH key · Enter permission · d revoke\nREPO_READ/REPO_WRITE only. No private keys or token generation."
 	case "Hooks":
-		return "e edit plugin JSON · a enable · d disable (plugin:hook key)\nMetadata only here. Explicit config editing may reveal secrets."
+		return "Enter plugin JSON · a enable · d disable (plugin:hook key)\nMetadata only here. Explicit config editing may reveal secrets."
 	case "Auto-decline":
-		return "e edit JSON · d restore inheritance"
+		return "Enter settings · d restore inheritance"
 	case "Default branch":
-		return "e edit JSON: id must be refs/heads/<branch>"
+		return "Enter settings: id must be refs/heads/<branch>"
 	default:
-		return "e edit JSON"
+		return "Enter settings"
 	}
 }

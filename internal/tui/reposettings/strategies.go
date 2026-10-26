@@ -134,6 +134,9 @@ func (m model) handleStrategyForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.mode = modePanel
+		if m.edit.fromSections {
+			m.mode = modePanels
+		}
 		m.status = "Changes cancelled; nothing written."
 		return m, nil
 	case "up", "k", "shift+tab":
@@ -223,7 +226,7 @@ func (m model) renderStrategyPanel() string {
 	if config.inherit {
 		scope = "Inherited from project"
 	}
-	rows := []string{scope, "Enter/e to edit allowed strategies and default", ""}
+	rows := []string{scope, "Tab/Enter opens the strategy controls", ""}
 	for _, option := range config.options {
 		rows = append(rows, strategyLabel(option, config.defaultID))
 	}
