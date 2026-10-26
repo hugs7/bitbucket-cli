@@ -130,7 +130,7 @@ type RepoSettingsPanel struct {
 	Hint  string
 	Items []RepoSettingsItem
 	Error string
-	// Raw retains reviewer conditions for the structured editor, not CLI dumps.
+	// Raw retains settings for structured editors, not CLI dumps.
 	Raw json.RawMessage `json:"-"`
 }
 

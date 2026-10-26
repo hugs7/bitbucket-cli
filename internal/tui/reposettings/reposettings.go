@@ -130,6 +130,7 @@ type model struct {
 	hookIdx    int
 	edit       settingsEditState
 	reviewers  reviewerEditor
+	strategies strategyEditor
 
 	addURL         string
 	addEvents      string
@@ -333,6 +334,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.edit.reviewerForm {
 			return m.openReviewerForm(msg.raw)
 		}
+		if m.edit.strategyForm {
+			return m.openStrategyForm(msg.raw)
+		}
 		return m.openSettingJSON(msg.raw)
 
 	case actionDoneMsg:
@@ -374,6 +378,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeReviewerPeople {
 		return m.handleReviewerPeople(msg)
 	}
+	if m.mode == modeStrategyForm {
+		return m.handleStrategyForm(msg)
+	}
 	if m.mode >= modeSettingID {
 		return m.handleSettingKey(msg)
 	}
@@ -413,7 +420,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Visible action shortcuts work immediately on the selected section. Page
 	// keys also focus the details, without requiring an invisible Enter step.
 	if key.Matches(msg, m.keys.Edit, m.keys.Minimum, m.keys.Add, m.keys.Delete,
-		m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) || (m.reviewerPanel() && msg.String() == "J") {
+		m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) || ((m.reviewerPanel() || m.strategyPanel()) && msg.String() == "J") {
 		m.mode = modePanel
 	}
 	if m.mode == modePanels {
@@ -430,6 +437,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.strategyPanel() {
+		if msg.String() == "J" {
+			return m.beginSettingEdit("update")
+		}
+		if key.Matches(msg, m.keys.Edit, m.keys.Enter) {
+			next, cmd := m.beginSettingEdit("update")
+			m = next.(model)
+			m.edit.strategyForm = true
+			return m, cmd
+		}
+	}
 	if m.reviewerPanel() {
 		switch {
 		case key.Matches(msg, m.keys.Edit, m.keys.Enter):
@@ -614,6 +632,9 @@ func (m model) View() string {
 	if m.mode == modeReviewerForm || m.mode == modeReviewerPeople {
 		return header + "\n\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.renderReviewerEditor()) + "\n" + m.footerStatus() + "\n" + m.footerHelp()
 	}
+	if m.mode == modeStrategyForm {
+		return header + "\n\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.renderStrategyForm()) + "\n" + m.footerStatus() + "\n" + m.footerHelp()
+	}
 	paneHeaders := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Padding(0, 1).Render(focusRow(" SECTIONS", m.panelWidth()-2, m.mode == modePanels)),
 		lipgloss.NewStyle().Padding(0, 1).Render(focusRow(" "+strings.ToUpper(m.activePanel().title), m.contentWidth()-2, m.mode != modePanels)))
@@ -690,6 +711,12 @@ func (m *model) syncPanelContent() {
 	case "Default reviewers":
 		if m.reviewerPanel() {
 			body = m.renderReviewerRules()
+		} else {
+			body = m.renderSettingsPanel(p, w)
+		}
+	case "Merge strategies":
+		if m.strategyPanel() {
+			body = m.renderStrategyPanel()
 		} else {
 			body = m.renderSettingsPanel(p, w)
 		}

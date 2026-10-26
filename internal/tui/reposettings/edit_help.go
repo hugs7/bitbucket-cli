@@ -39,7 +39,7 @@ func (m model) footerHelp() string {
 			}
 			text += "\n" + actions
 		}
-		if m.reviewerPanel() {
+		if m.reviewerPanel() || m.strategyPanel() {
 			text += "\nesc back · q quit · ? help"
 		} else {
 			text += " · ? help · esc back · q quit"
@@ -49,13 +49,15 @@ func (m model) footerHelp() string {
 		}
 	case modeSettingJSON:
 		text = "ctrl+s review changes · esc cancel"
+	case modeStrategyForm:
+		text = "↑/↓ choose · Space toggle · d default · ctrl+s review · esc cancel"
 	case modeReviewerForm:
 		text = "Tab/↑/↓ fields · Enter choose/continue · ctrl+s review · esc cancel"
 	case modeReviewerPeople:
 		text = "Enter search · Tab results/search · Space toggle · Enter in results done · esc back"
 	case modeSettingConfirm:
 		text = "y apply · n/esc cancel · ↑/↓ scroll · PgUp/PgDn page"
-		if m.edit.reviewerForm {
+		if m.edit.reviewerForm || m.edit.strategyForm {
 			text = "y save · n edit · esc discard"
 			if m.edit.action == "delete" {
 				text = "y delete · n/esc cancel"
@@ -77,6 +79,8 @@ func settingPanelHelp(title string) string {
 		return "a add · d delete"
 	case "Default reviewers":
 		return "e edit rule · a add rule · d delete · J advanced JSON"
+	case "Merge strategies":
+		return "e edit strategies · J advanced JSON"
 	case "Repository permissions", "Group permissions":
 		return "a grant · e change · d revoke (username/group name)\nRepository grants only; inherited project/global access may remain."
 	case "Branch permissions":

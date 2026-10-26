@@ -175,6 +175,13 @@ selected rule. **Ctrl+S** reviews changes before an explicit **y** saves them.
 **J** opens advanced JSON. Inherited rules are read-only; advanced branch
 matchers and reviewer groups are preserved when changing other fields.
 
+In **Merge strategies**, **Enter/e** opens a checklist. Use **↑/↓** to choose,
+**Space** to allow/block a strategy, and **d** to choose the default (which also
+enables it). Select another default before disabling the current one.
+**Use project settings** restores inheritance; changing a strategy creates a
+repository-only override. **Ctrl+S** reviews, **y** saves, **n** returns to editing,
+and **Esc** discards. **J** remains available for advanced JSON.
+
 Other supported Server/Data Center panels offer **e** to edit JSON, **m** for
 minimum approvals, and **a/d** for add/remove or enable/disable actions.
 Every write requires confirmation.

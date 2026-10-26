@@ -27,6 +27,7 @@ const (
 	modeConfirmAddWebhook
 	modeReviewerForm
 	modeReviewerPeople
+	modeStrategyForm
 )
 
 type settingsEditState struct {
@@ -36,6 +37,7 @@ type settingsEditState struct {
 	original             json.RawMessage
 	minimum              bool
 	reviewerForm         bool
+	strategyForm         bool
 }
 
 type settingReadMsg struct {
@@ -190,6 +192,10 @@ func (m model) handleSettingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mode = modeReviewerForm
 				return m, nil
 			}
+			if m.edit.strategyForm {
+				m.mode = modeStrategyForm
+				return m, nil
+			}
 			m.mode = modePanel
 			m.status = "Settings change cancelled; nothing written."
 			return m, nil
@@ -301,6 +307,9 @@ func (m model) renderSettingEdit() string {
 	case modeSettingConfirm:
 		if m.edit.reviewerForm {
 			return m.reviewerConfirmation()
+		}
+		if m.edit.strategyForm {
+			return m.strategyConfirmation()
 		}
 		body := fmt.Sprintf("%s\n\nApply %s %s %s to %s/%s?\nExplicit y confirms · n/esc cancels\n", heading, m.edit.action, m.edit.resource, m.edit.id, m.project, m.slug)
 		if m.edit.action == "delete" && m.edit.resource == "auto-decline" {

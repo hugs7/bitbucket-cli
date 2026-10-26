@@ -62,7 +62,7 @@ func (s *serverService) RepoSettings(project, slug string) (*RepoSettings, error
 			continue
 		}
 		panel := rawToSettingsPanel(name, hint, value)
-		if resource == "default-reviewers" {
+		if resource == "default-reviewers" || resource == "merge-strategies" {
 			panel.Raw = raw
 		}
 		if resource == "pull-requests" {
