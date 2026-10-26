@@ -6,8 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hugs7/bitbucket-cli/internal/config"
-	"github.com/hugs7/bitbucket-cli/internal/tui/home"
-	"github.com/hugs7/bitbucket-cli/internal/tui/pr"
 )
 
 type BuildInfo struct {
@@ -47,8 +45,7 @@ working tree at that path.`,
 		// single positional path argument — `bb .`, `bb ../foo`,
 		// `bb ~/code/bar` — short-circuits straight to the repo
 		// overview TUI for that working tree, mirroring how `gh repo
-		// view` accepts an optional path. The home loop only runs
-		// when no path is given so the two flows stay independent.
+		// view` accepts an optional path. Both enter the same navigation loop.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				return runRepoTUIAtPath(args[0])
@@ -57,32 +54,7 @@ working tree at that path.`,
 			if err != nil {
 				return err
 			}
-			var state *home.State
-			for {
-				action, next, err := home.Run(svc, state)
-				if err != nil {
-					return err
-				}
-				state = next // remember tab / search / cursors
-				if action == nil {
-					return nil
-				}
-				switch action.Kind {
-				case "prs":
-					if err := pr.Run(svc, action.Project, action.Slug); err != nil {
-						return err
-					}
-				case "repo":
-					// Dashboard Enter on a recent-repo row drops us
-					// onto the repo overview TUI (README + recent
-					// PRs + builds). Re-using runRepoTUI keeps the
-					// "p → PR TUI" follow-up loop identical to what
-					// `bb repo` / `bb .` give the user.
-					if err := runRepoTUI(svc, action.Project, action.Slug); err != nil {
-						return err
-					}
-				}
-			}
+			return runTUI(svc, "home", "", "", 0)
 		},
 	}
 

@@ -140,8 +140,9 @@ func (m modeKeyMap) ShortHelp() []key.Binding {
 func (m modeKeyMap) FullHelp() [][]key.Binding { return m.full }
 
 func (k keyMap) listHelp() modeKeyMap {
+	k.Back.SetHelp(k.Back.Help().Key, "repo")
 	return modeKeyMap{
-		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
+		short: [][]key.Binding{{k.Up, k.Down, k.Enter, k.Back, k.Diff, k.Comments, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.ManageReviewers, k.CreatePR, k.DeclinePR, k.DeletePR, k.PaletteOpen, k.Settings, k.Help, k.Quit}},
 		full: [][]key.Binding{
 			{k.Up, k.Down, k.Enter, k.Diff, k.Open, k.CopyLink},
 			{k.Approve, k.Unapprove, k.NeedsWork, k.Merge},

@@ -117,6 +117,19 @@ hosts:
 
 Per-repo overrides go in `.bb.yml` at the repo root.
 
+## TUI navigation
+
+All interactive entry points share the same navigation: `bb`, `bb .`, `bb repo`,
+`bb prs`, `bb pr <url>`, and `bb repo settings`.
+
+- **Esc** goes back: PR detail → PR list → repository overview → home,
+  even when you opened the PR list directly with `bb prs`.
+- From the repository overview, **p** opens PRs and **Shift+S** opens repository
+  settings. In settings, **Esc** returns from details to the sidebar, then to
+  the repository overview.
+- **q** or **Ctrl+C** quits the session rather than reopening a parent screen.
+  Forms, editors, and searches retain their own typing/cancellation shortcuts.
+
 ## Creating pull requests
 
 `bb prs` → `C`, or `bb pr create`, opens the creation form. Target suggestions

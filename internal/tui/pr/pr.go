@@ -30,8 +30,9 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
-// PRs launches the interactive pull-requests TUI.
-func Run(svc api.Service, project, slug string) error {
+// Run launches the PR browser. The result distinguishes Back to the repository
+// from Quit, so callers can route consistently even for direct entry points.
+func Run(svc api.Service, project, slug string) (backToRepo bool, err error) {
 	return RunFocused(svc, project, slug, 0)
 }
 
@@ -40,13 +41,17 @@ func Run(svc api.Service, project, slug string) error {
 // initial fetch returns. Used by `bb pr <url>` so the user lands on
 // the PR they pasted instead of having to scroll the list to find
 // it. prID == 0 falls through to the standard "select first" path.
-func RunFocused(svc api.Service, project, slug string, prID int) error {
+// It returns true only when Back leaves the PR list for its repository.
+func RunFocused(svc api.Service, project, slug string, prID int) (backToRepo bool, err error) {
 	m := newPRModel(svc, project, slug)
 	m.targetPRID = prID
 	// WithMouseCellMotion enables wheel + click events so viewports
 	// and lists can be scrolled with the mouse.
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
-	return err
+	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
+	if err != nil {
+		return false, err
+	}
+	return final.(model).backToRepo, nil
 }
 
 // ---------- model ----------
@@ -85,7 +90,8 @@ type model struct {
 	slug    string
 	state   string
 
-	mode viewMode
+	mode       viewMode
+	backToRepo bool
 	// modeStack is a navigation history of "user-driven" view
 	// modes (list/detail/diff/comments). pushMode appends the
 	// current mode then sets a new one; the Back handler pops it
@@ -1462,9 +1468,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Walk back along the user's navigation history (e.g.
 			// list → detail → diff → esc returns to detail, not
-			// straight to list). Falling off the bottom of the
-			// stack exits the TUI as it always did.
+			// straight to list). Leaving the list navigates to the
+			// repository, independently of the original entry point.
 			if m.mode == viewList {
+				m.backToRepo = true
 				return m, tea.Quit
 			}
 			if prev, ok := m.popMode(); ok {
@@ -2602,8 +2609,7 @@ func (m *model) pushMode(next viewMode) {
 
 // popMode rewinds the navigation stack by one step, returning the
 // restored mode and true. When the stack is empty it returns
-// (viewList, false) so the caller can fall back to "quit on root
-// esc" behaviour.
+// (viewList, false) so the caller can return to the list first.
 func (m *model) popMode() (viewMode, bool) {
 	if len(m.modeStack) == 0 {
 		return viewList, false

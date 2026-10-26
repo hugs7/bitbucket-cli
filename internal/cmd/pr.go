@@ -89,7 +89,7 @@ func runPRURL(rawURL, hostFlag string) error {
 	if err != nil {
 		return err
 	}
-	return prtui.RunFocused(svc, ref.Project, ref.Slug, ref.ID)
+	return runTUI(svc, "prs", ref.Project, ref.Slug, ref.ID)
 }
 
 func newPRListCmd() *cobra.Command {

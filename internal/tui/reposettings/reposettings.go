@@ -22,10 +22,14 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
-// Run opens the repository settings screen for project/slug.
-func Run(svc api.Service, project, slug string) error {
-	_, err := tea.NewProgram(newModel(svc, project, slug), tea.WithAltScreen()).Run()
-	return err
+// Run opens repository settings and reports whether Back requests its parent
+// repository overview. Quit returns false, regardless of the entry point.
+func Run(svc api.Service, project, slug string) (backToRepo bool, err error) {
+	final, err := tea.NewProgram(newModel(svc, project, slug), tea.WithAltScreen()).Run()
+	if err != nil {
+		return false, err
+	}
+	return final.(model).backToRepo, nil
 }
 
 type panel struct {
@@ -113,16 +117,17 @@ type model struct {
 	svc           api.Service
 	project, slug string
 
-	repo     *api.Repo
-	hooks    []api.Webhook
-	settings *api.RepoSettings
-	loading  int
-	status   string
-	err      error
-	mode     mode
-	panelIdx int
-	hookIdx  int
-	edit     settingsEditState
+	repo       *api.Repo
+	hooks      []api.Webhook
+	settings   *api.RepoSettings
+	loading    int
+	status     string
+	err        error
+	mode       mode
+	backToRepo bool
+	panelIdx   int
+	hookIdx    int
+	edit       settingsEditState
 
 	addURL         string
 	addEvents      string
@@ -350,6 +355,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modePanels
 			return m, nil
 		}
+		m.backToRepo = true
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Help):
 		m.help.ShowAll = !m.help.ShowAll
