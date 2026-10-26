@@ -166,12 +166,22 @@ upstream. Use `-R host/PROJ/repo` to select an API repository explicitly.
 
 ## Repository settings
 
-`bb repo settings` opens the settings TUI. Supported Server/Data Center panels
-offer **e** to edit JSON, **m** for minimum approvals, and **a/d** for the panel's
-add/remove or enable/disable actions. Every write requires confirmation.
+`bb repo settings` opens the settings TUI. In **Default reviewers**, use arrows
+to select a rule and **Enter/e** to edit it—no condition IDs or JSON needed.
+The prefilled form edits source/target branches, reviewers and required approvals.
+On the Reviewers field, press **Enter** to search by name, **Space** to toggle a
+result, and **Enter** to return to the form. **a** adds a rule; **d** deletes the
+selected rule. **Ctrl+S** reviews changes before an explicit **y** saves them.
+**J** opens advanced JSON. Inherited rules are read-only; advanced branch
+matchers and reviewer groups are preserved when changing other fields.
 
-Use **Tab** to switch between sections and details; the active pane is labelled.
-In details, **↑/↓** scroll, **PgUp/PgDn** page, and **Home/End** jump to the top or
+Other supported Server/Data Center panels offer **e** to edit JSON, **m** for
+minimum approvals, and **a/d** for add/remove or enable/disable actions.
+Every write requires confirmation.
+
+Use **Tab** to switch between sections and details; background colour indicates
+focus, with a cursor retained for monochrome terminals. In ordinary detail
+panels, **↑/↓** scroll, **PgUp/PgDn** page, and **Home/End** jump to the top or
 bottom. Switching panes preserves the scroll position. Edit shortcuts also work
 directly from the sidebar, without pressing Enter first.
 

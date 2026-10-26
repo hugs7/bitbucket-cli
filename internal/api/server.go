@@ -1370,6 +1370,7 @@ func (s *serverService) SearchUsers(query string, limit int) ([]User, error) {
 	}
 	var resp struct {
 		Values []struct {
+			ID           int    `json:"id"`
 			Name         string `json:"name"`
 			DisplayName  string `json:"displayName"`
 			EmailAddress string `json:"emailAddress"`
@@ -1385,6 +1386,7 @@ func (s *serverService) SearchUsers(query string, limit int) ([]User, error) {
 			continue
 		}
 		out = append(out, User{
+			ID:          u.ID,
 			Username:    u.Name,
 			DisplayName: u.DisplayName,
 			Email:       u.EmailAddress,

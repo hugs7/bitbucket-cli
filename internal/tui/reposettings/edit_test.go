@@ -195,11 +195,11 @@ func TestSettingsNavigationPreservesFocusAndReachesWrappedFields(t *testing.T) {
 					t.Fatalf("navigation overflowed %dx24: %s", width, m.View())
 				}
 			}
-			if !strings.Contains(m.View(), "SECTIONS · active") || !strings.Contains(m.View(), "TOP_SENTINEL") {
+			if m.mode != modePanels || !strings.Contains(m.View(), "TOP_SENTINEL") {
 				t.Fatal("initial focus and first field must be visible")
 			}
 			press(tea.KeyTab)
-			if !strings.Contains(m.View(), "DETAILS · active") || !strings.Contains(m.View(), "↑/↓ scroll") {
+			if m.mode != modePanel || !strings.Contains(m.View(), "↑/↓ scroll") {
 				t.Fatal("Tab must visibly focus details and explain arrow behavior")
 			}
 			press(tea.KeyEnd)
@@ -225,7 +225,7 @@ func TestSettingsNavigationPreservesFocusAndReachesWrappedFields(t *testing.T) {
 			}
 			press(tea.KeyLeft)
 			press(tea.KeyPgDown)
-			if !strings.Contains(m.View(), "DETAILS · active") || strings.Contains(m.View(), "TOP_SENTINEL") {
+			if m.mode != modePanel || strings.Contains(m.View(), "TOP_SENTINEL") {
 				t.Fatal("page keys from sections must focus and scroll details")
 			}
 			press(tea.KeyEsc)

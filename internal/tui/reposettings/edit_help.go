@@ -25,6 +25,9 @@ func (m model) footerHelp() string {
 		text = "↑/↓ sections · Tab/Enter details · PgUp/PgDn scroll"
 		if m.mode == modePanel {
 			text = "↑/↓ scroll · PgUp/PgDn page · Home/End jump · Tab/← sections"
+			if m.reviewerPanel() {
+				text = "↑/↓ choose rule · Enter edit · Tab/← sections"
+			}
 			if m.activePanel().title == "Webhooks" {
 				text = "↑/↓ select webhook · PgUp/PgDn scroll · Tab/← sections"
 			}
@@ -36,14 +39,28 @@ func (m model) footerHelp() string {
 			}
 			text += "\n" + actions
 		}
-		text += " · ? help · esc back · q quit"
+		if m.reviewerPanel() {
+			text += "\nesc back · q quit · ? help"
+		} else {
+			text += " · ? help · esc back · q quit"
+		}
 		if m.help.ShowAll {
 			text += "\nr refresh · j/k arrows · h/l panes · Shift+Tab switch pane"
 		}
 	case modeSettingJSON:
 		text = "ctrl+s review changes · esc cancel"
+	case modeReviewerForm:
+		text = "Tab/↑/↓ fields · Enter choose/continue · ctrl+s review · esc cancel"
+	case modeReviewerPeople:
+		text = "Enter search · Tab results/search · Space toggle · Enter in results done · esc back"
 	case modeSettingConfirm:
 		text = "y apply · n/esc cancel · ↑/↓ scroll · PgUp/PgDn page"
+		if m.edit.reviewerForm {
+			text = "y save · n edit · esc discard"
+			if m.edit.action == "delete" {
+				text = "y delete · n/esc cancel"
+			}
+		}
 	case modeConfirmAddWebhook, modeConfirmDelete:
 		text = "y apply · n/esc cancel"
 	case modeSettingLoading, modeSettingSaving:
@@ -59,7 +76,7 @@ func settingPanelHelp(title string) string {
 	case "Webhooks":
 		return "a add · d delete"
 	case "Default reviewers":
-		return "e edit JSON · a add · d delete (by condition ID)"
+		return "e edit rule · a add rule · d delete · J advanced JSON"
 	case "Repository permissions", "Group permissions":
 		return "a grant · e change · d revoke (username/group name)\nRepository grants only; inherited project/global access may remain."
 	case "Branch permissions":

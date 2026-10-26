@@ -25,6 +25,8 @@ const (
 	modeSettingConfirm
 	modeSettingSaving
 	modeConfirmAddWebhook
+	modeReviewerForm
+	modeReviewerPeople
 )
 
 type settingsEditState struct {
@@ -33,6 +35,7 @@ type settingsEditState struct {
 	patch                json.RawMessage
 	original             json.RawMessage
 	minimum              bool
+	reviewerForm         bool
 }
 
 type settingReadMsg struct {
@@ -183,6 +186,10 @@ func (m model) handleSettingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.String() == "n" || msg.String() == "N" {
+			if m.edit.reviewerForm && m.edit.action != "delete" {
+				m.mode = modeReviewerForm
+				return m, nil
+			}
 			m.mode = modePanel
 			m.status = "Settings change cancelled; nothing written."
 			return m, nil
@@ -292,6 +299,9 @@ func (m model) renderSettingEdit() string {
 	case modeSettingJSON:
 		return heading + "\nctrl+s review · esc cancel\nObjects merge; arrays replace. Empty mergeConfig restores inheritance.\n" + m.edit.json.View()
 	case modeSettingConfirm:
+		if m.edit.reviewerForm {
+			return m.reviewerConfirmation()
+		}
 		body := fmt.Sprintf("%s\n\nApply %s %s %s to %s/%s?\nExplicit y confirms · n/esc cancels\n", heading, m.edit.action, m.edit.resource, m.edit.id, m.project, m.slug)
 		if m.edit.action == "delete" && m.edit.resource == "auto-decline" {
 			body += "Deletes the repository override, restoring inherited auto-decline settings.\n"

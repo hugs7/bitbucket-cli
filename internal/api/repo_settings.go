@@ -62,6 +62,9 @@ func (s *serverService) RepoSettings(project, slug string) (*RepoSettings, error
 			continue
 		}
 		panel := rawToSettingsPanel(name, hint, value)
+		if resource == "default-reviewers" {
+			panel.Raw = raw
+		}
 		if resource == "pull-requests" {
 			if count, err := RepoMinimumApprovals(raw); err == nil {
 				panel.Hint += fmt.Sprintf(". Current minimum approving reviewers: %d (disabled plugin counts are not effective).", count)

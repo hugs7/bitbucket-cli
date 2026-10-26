@@ -6,6 +6,7 @@
 package reposettings
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -128,6 +129,7 @@ type model struct {
 	panelIdx   int
 	hookIdx    int
 	edit       settingsEditState
+	reviewers  reviewerEditor
 
 	addURL         string
 	addEvents      string
@@ -274,6 +276,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settingsLoadedMsg:
 		m.settings = msg.settings
 		m.loading--
+		m.reviewers.rules = nil
+		if raw := msg.settings.Panels["Default reviewers"].Raw; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &m.reviewers.rules); err != nil {
+				panel := m.settings.Panels["Default reviewers"]
+				panel.Error = "Unable to read reviewer rules: " + err.Error()
+				m.settings.Panels["Default reviewers"] = panel
+				m.reviewers.rules = nil
+			}
+		}
+		m.reviewers.selected = min(m.reviewers.selected, max(0, len(m.reviewers.rules)-1))
+		return m, nil
+
+	case reviewerSearchMsg:
+		if m.mode != modeReviewerPeople || msg.id != m.reviewers.searchID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = "Search failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.reviewers.results = msg.users
+		m.reviewers.result = 0
+		m.reviewers.searchFocus = false
+		m.input.Blur()
+		m.status = fmt.Sprintf("%d results · Space toggles · Enter returns to the rule", len(msg.users))
 		return m, nil
 
 	case settingReadMsg:
@@ -300,7 +327,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.edit.action == "delete" || m.edit.action == "enable" || m.edit.action == "disable" {
 			m.mode = modeSettingConfirm
 			m.edit.patch = msg.raw
+			m.status = ""
 			return m, nil
+		}
+		if m.edit.reviewerForm {
+			return m.openReviewerForm(msg.raw)
 		}
 		return m.openSettingJSON(msg.raw)
 
@@ -337,6 +368,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeReviewerForm {
+		return m.handleReviewerForm(msg)
+	}
+	if m.mode == modeReviewerPeople {
+		return m.handleReviewerPeople(msg)
+	}
 	if m.mode >= modeSettingID {
 		return m.handleSettingKey(msg)
 	}
@@ -376,7 +413,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Visible action shortcuts work immediately on the selected section. Page
 	// keys also focus the details, without requiring an invisible Enter step.
 	if key.Matches(msg, m.keys.Edit, m.keys.Minimum, m.keys.Add, m.keys.Delete,
-		m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) {
+		m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) || (m.reviewerPanel() && msg.String() == "J") {
 		m.mode = modePanel
 	}
 	if m.mode == modePanels {
@@ -391,6 +428,35 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modePanel
 		}
 		return m, nil
+	}
+
+	if m.reviewerPanel() {
+		switch {
+		case key.Matches(msg, m.keys.Edit, m.keys.Enter):
+			return m.beginReviewerEdit("update", false)
+		case msg.String() == "J":
+			return m.beginReviewerEdit("update", true)
+		case key.Matches(msg, m.keys.Add):
+			return m.beginReviewerEdit("create", false)
+		case key.Matches(msg, m.keys.Delete):
+			return m.beginReviewerEdit("delete", false)
+		case key.Matches(msg, m.keys.Up):
+			m.reviewers.selected = max(0, m.reviewers.selected-1)
+		case key.Matches(msg, m.keys.Down):
+			m.reviewers.selected = min(max(0, len(m.reviewers.rules)-1), m.reviewers.selected+1)
+		}
+		if key.Matches(msg, m.keys.Up, m.keys.Down) {
+			m.syncPanelContent()
+			// Locate the selected card after wrapping, so long names remain reachable.
+			lines := strings.Split(m.renderReviewerRules(), "\n")
+			for i, line := range lines {
+				if strings.Contains(line, "▸ ") {
+					m.content.SetYOffset(max(0, i-2))
+					break
+				}
+			}
+			return m, nil
+		}
 	}
 
 	if key.Matches(msg, m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) {
@@ -545,15 +611,12 @@ func (m model) View() string {
 		fmt.Sprintf("REPO SETTINGS · %s/%s", m.project, m.slug),
 		theme.TitleChipDim.Render(m.svc.Host()),
 	)
-	sections, details := "SECTIONS · Tab to focus", "DETAILS · active"
-	if m.mode == modePanels {
-		sections, details = "SECTIONS · active", "DETAILS · Tab/Enter to focus"
-	} else if m.mode != modePanel {
-		sections = "SECTIONS"
+	if m.mode == modeReviewerForm || m.mode == modeReviewerPeople {
+		return header + "\n\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.renderReviewerEditor()) + "\n" + m.footerStatus() + "\n" + m.footerHelp()
 	}
 	paneHeaders := lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(m.panelWidth()).Padding(0, 1).Render(theme.TitleBadge.Render(sections)),
-		lipgloss.NewStyle().Width(m.contentWidth()).Padding(0, 1).Render(theme.TitleBadge.Render(details)))
+		lipgloss.NewStyle().Padding(0, 1).Render(focusRow(" SECTIONS", m.panelWidth()-2, m.mode == modePanels)),
+		lipgloss.NewStyle().Padding(0, 1).Render(focusRow(" "+strings.ToUpper(m.activePanel().title), m.contentWidth()-2, m.mode != modePanels)))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderPanels(), m.renderActivePanel())
 	return header + "\n" + paneHeaders + "\n" + body + "\n" + m.footerStatus() + "\n" + m.footerHelp()
 }
@@ -579,13 +642,11 @@ func (m model) renderPanels() string {
 			selectedLine = strings.Count(sb.String(), "\n")
 			prefix = "▸ "
 			lineStyle = lineStyle.Foreground(lipgloss.Color("231")).Bold(true)
+			if m.mode == modePanels {
+				lineStyle = lineStyle.Background(theme.Current.TitleBadgeBg).Foreground(theme.Current.TitleBadgeFg)
+			}
 		}
-		marker := ""
-		if m.editable(p) {
-			marker = " " + theme.TitleChip.Render("edit")
-		}
-		sb.WriteString(lineStyle.Render(prefix + p.title))
-		sb.WriteString(marker)
+		sb.WriteString(lineStyle.Width(w - 2).Render(prefix + p.title))
 		sb.WriteString("\n")
 	}
 	lines := strings.Split(sb.String(), "\n")
@@ -626,6 +687,12 @@ func (m *model) syncPanelContent() {
 	p := m.activePanel()
 	var body string
 	switch p.title {
+	case "Default reviewers":
+		if m.reviewerPanel() {
+			body = m.renderReviewerRules()
+		} else {
+			body = m.renderSettingsPanel(p, w)
+		}
 	case "Repository details":
 		body = m.renderRepoDetails(w)
 	case "Webhooks":
