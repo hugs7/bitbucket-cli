@@ -8,8 +8,10 @@ INSTALL_NAME ?= bb-local
 LDFLAGS := -X main.commit=$(shell git describe --always --dirty) \
 	-X main.date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# Go creates nested temporary directories; inherited masks must not remove
+# their owner traversal permission. Keep this mask local to the build process.
 build:
-	go build -ldflags "$(LDFLAGS)" -o bb ./cmd/bb
+	umask 022; go build -ldflags "$(LDFLAGS)" -o bb ./cmd/bb
 
 # Rename into place so a running copy does not fail with "text file busy".
 install: build

@@ -32,7 +32,7 @@ import (
 // RepoAction mirrors HomeAction: returned to the caller when the user
 // wants to launch a different sub-TUI. Nil means a clean quit.
 type RepoAction struct {
-	Kind    string // "prs" or "settings"
+	Kind    string // "prs", "settings" or "home"
 	Project string
 	Slug    string
 }
@@ -65,12 +65,12 @@ func defaultRepoKeys() repoKeys {
 		Settings:     key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
 		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Back:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Back:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "home")),
 	}
 }
 
 func (k repoKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.OpenPRs, k.RepoSettings, k.Open, k.Clone, k.Settings, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.OpenPRs, k.RepoSettings, k.Back, k.Open, k.Clone, k.Settings, k.Help, k.Quit}
 }
 func (k repoKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
@@ -244,7 +244,10 @@ func (m repoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		switch {
-		case key.Matches(msg, m.keys.Quit), key.Matches(msg, m.keys.Back):
+		case key.Matches(msg, m.keys.Quit):
+			return m, tea.Quit
+		case key.Matches(msg, m.keys.Back):
+			m.next = &RepoAction{Kind: "home"}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll

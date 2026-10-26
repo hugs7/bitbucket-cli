@@ -176,6 +176,7 @@ type CreatePRInput struct {
 	Description string
 	SourceRef   string
 	TargetRef   string
+	Reviewers   []string // nil loads applicable defaults; an explicit empty slice disables them
 }
 
 type CreateRepoInput struct {

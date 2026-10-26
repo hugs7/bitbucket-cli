@@ -52,6 +52,7 @@ With no arguments, prints help.`,
 		newPREditCmd(), newPRApproveCmd(), newPRUnapproveCmd(), newPRNeedsWorkCmd(),
 		newPRCommentCmd(), newPRReviewerCmd(),
 		newPRDescribeCmd(), newPRWatchCmd(), newPRStackCmd(),
+		newPRRecoverMergeChecksCmd(),
 	)
 	return c
 }
@@ -88,7 +89,7 @@ func runPRURL(rawURL, hostFlag string) error {
 	if err != nil {
 		return err
 	}
-	return prtui.RunFocused(svc, ref.Project, ref.Slug, ref.ID)
+	return runTUI(svc, "prs", ref.Project, ref.Slug, ref.ID)
 }
 
 func newPRListCmd() *cobra.Command {
@@ -208,7 +209,8 @@ func reviewerStatusLabel(r api.Reviewer) string {
 
 func newPRCreateCmd() *cobra.Command {
 	var repoFlag, hostFlag, title, body, bodyFile, source, target string
-	var yes bool
+	var yes, autoTarget, noReviewers bool
+	var reviewers []string
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Create a pull request",
@@ -227,7 +229,18 @@ func newPRCreateCmd() *cobra.Command {
 					source = string(bytesTrim(out))
 				}
 			}
-			if target == "" {
+			local := gitctx.Matches(svc.Host(), project, slug)
+			if autoTarget {
+				if !local {
+					return fmt.Errorf("--auto-target requires a local checkout of the selected Bitbucket repository")
+				}
+				_, target = gitctx.TargetBranches("", "", source)
+				if target == "" {
+					return fmt.Errorf("no shared ancestor found in local history; fetch branches or pass --target")
+				}
+			}
+			interactive := !yes && isatty.IsTerminal(os.Stdin.Fd())
+			if target == "" && !interactive {
 				r, err := svc.GetRepo(project, slug)
 				if err == nil {
 					target = r.DefaultRef
@@ -239,11 +252,21 @@ func newPRCreateCmd() *cobra.Command {
 			// Skip the form with --yes or when stdin is not a
 			// terminal (scripts, pipes, `--body-file -`), using the
 			// flags and inferred defaults as-is.
-			if !yes && isatty.IsTerminal(os.Stdin.Fd()) {
+			if interactive {
 				// Pre-load remote branches from local git so the
 				// source/target inputs autocomplete through real branch
 				// names instead of forcing the user to type them blind.
-				branches := remoteBranches()
+				var branches []string
+				if local {
+					branches = remoteBranches()
+				}
+				choices := func(src string) []string {
+					if !local {
+						return nil
+					}
+					ranked, _ := gitctx.TargetBranches("", "", gitctx.CanonicalBranchName(src, branches))
+					return ranked
+				}
 
 				// Rebind tab to "accept suggestion" (the default
 				// ctrl+e is unintuitive for anyone used to a shell);
@@ -261,8 +284,7 @@ func newPRCreateCmd() *cobra.Command {
 				form := huh.NewForm(huh.NewGroup(
 					huh.NewInput().Title("Source branch").Value(&source).
 						Suggestions(branches).Validate(nonEmpty),
-					huh.NewInput().Title("Target branch").Value(&target).
-						Suggestions(branches).Validate(nonEmpty),
+					prtui.NewTargetInput(&source, &target, choices),
 					huh.NewInput().Title("Title").Value(&title).
 						PlaceholderFunc(func() string {
 							titleHint = prtui.BranchToTitle(source)
@@ -290,12 +312,22 @@ func newPRCreateCmd() *cobra.Command {
 			if strings.TrimSpace(title) == "" {
 				return fmt.Errorf("pull request title is required; pass --title")
 			}
+			if noReviewers {
+				reviewers = []string{}
+			}
+			if interactive {
+				reviewers, err = prtui.ChooseReviewers(svc, project, slug, source, target, reviewers, os.Stdin, os.Stdout)
+				if err != nil {
+					return err
+				}
+			}
 
 			p, err := svc.CreatePR(project, slug, api.CreatePRInput{
 				Title:       title,
 				Description: body,
 				SourceRef:   source,
 				TargetRef:   target,
+				Reviewers:   reviewers,
 			})
 			if err != nil {
 				return err
@@ -311,6 +343,11 @@ func newPRCreateCmd() *cobra.Command {
 	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read PR description from file (use "-" for stdin)`)
 	c.Flags().StringVarP(&source, "source", "s", "", "source branch (default: current branch)")
 	c.Flags().StringVarP(&target, "target", "T", "", "target branch (default: repo default branch)")
+	c.Flags().BoolVarP(&autoTarget, "auto-target", "a", false, "target the branch with the closest shared ancestor in local history")
+	c.MarkFlagsMutuallyExclusive("target", "auto-target")
+	c.Flags().StringSliceVarP(&reviewers, "reviewer", "r", nil, "reviewer usernames/UUIDs (repeat or comma-separate; replaces repository defaults)")
+	c.Flags().BoolVar(&noReviewers, "no-reviewers", false, "create without repository default reviewers")
+	c.MarkFlagsMutuallyExclusive("reviewer", "no-reviewers")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the interactive form (automatic when stdin is not a terminal)")
 	return c
 }
@@ -351,7 +388,7 @@ func newPRCheckoutCmd() *cobra.Command {
 
 func newPRMergeCmd() *cobra.Command {
 	var repoFlag, hostFlag string
-	var deleteBranch, deleteSet, retargetDependents, yes bool
+	var deleteBranch, deleteSet, retargetDependents, yes, bypassChecks bool
 	c := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Merge a pull request",
@@ -385,6 +422,12 @@ func newPRMergeCmd() *cobra.Command {
 						Title(fmt.Sprintf("Delete source branch %q after merge?", pr.SourceRef)).
 						Value(&deleteBranch))
 				}
+				if _, ok := svc.(api.MergeCheckBypassService); ok {
+					fields = append(fields, huh.NewConfirm().
+						Title("Temporarily bypass merge checks and reviewer minimums? (admin)").
+						Description("Repository-wide change: other PRs may merge during this window. Restores settings after success/failure; interruption requires bb pr recover-merge-checks.").
+						Value(&bypassChecks))
+				}
 				if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
 					return err
 				}
@@ -397,6 +440,7 @@ func newPRMergeCmd() *cobra.Command {
 			// CLI keeps the simpler "honour repo default" behaviour.
 			result, err := api.MergePullRequest(svc, project, slug, id, api.MergeOptions{
 				RetargetDependents: retargetDependents,
+				BypassChecks:       bypassChecks,
 			})
 			if err != nil {
 				return err
@@ -419,6 +463,7 @@ func newPRMergeCmd() *cobra.Command {
 	c.Flags().StringVar(&hostFlag, "host", "", "host")
 	c.Flags().BoolVar(&deleteBranch, "delete-branch", false, "delete the source branch after a successful merge")
 	c.Flags().BoolVar(&retargetDependents, "retarget-dependents", true, "retarget open PRs targeting the merged branch to its base branch")
+	c.Flags().BoolVar(&bypassChecks, "bypass-checks", false, "admin only: temporarily disable repository-wide merge checks/reviewer minimums, merge, then restore")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation prompts")
 	return c
 }
@@ -1062,44 +1107,6 @@ func bytesTrim(b []byte) []byte {
 // silently if git isn't available or we're not inside a repo — the
 // input then degrades to plain text entry.
 func remoteBranches() []string {
-	out, err := exec.Command("git", "for-each-ref",
-		"--format=%(refname)",
-		"refs/heads", "refs/remotes").Output()
-	if err != nil {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	var branches []string
-	for _, line := range strings.Split(string(out), "\n") {
-		ref := strings.TrimSpace(line)
-		var name string
-		switch {
-		case strings.HasPrefix(ref, "refs/heads/"):
-			name = strings.TrimPrefix(ref, "refs/heads/")
-		case strings.HasPrefix(ref, "refs/remotes/"):
-			rest := strings.TrimPrefix(ref, "refs/remotes/")
-			// Drop the "<remote>/" segment; skip the symbolic
-			// "<remote>/HEAD" alias.
-			if i := strings.Index(rest, "/"); i > 0 {
-				rest = rest[i+1:]
-			} else {
-				continue
-			}
-			if rest == "HEAD" {
-				continue
-			}
-			name = rest
-		default:
-			continue
-		}
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		branches = append(branches, name)
-	}
+	branches, _ := gitctx.TargetBranches("", "", "")
 	return branches
 }

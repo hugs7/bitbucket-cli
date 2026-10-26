@@ -250,9 +250,18 @@ func (c *cloudService) GetPR(workspace, slug string, id int) (*PullRequest, erro
 }
 
 func (c *cloudService) CreatePR(workspace, slug string, in CreatePRInput) (*PullRequest, error) {
+	users, err := c.createReviewers(workspace, slug, in)
+	if err != nil {
+		return nil, err
+	}
+	reviewers := make([]map[string]string, 0, len(users))
+	for _, user := range users {
+		reviewers = append(reviewers, map[string]string{"uuid": user.Username})
+	}
 	body := map[string]any{
 		"title":       in.Title,
 		"description": in.Description,
+		"reviewers":   reviewers,
 		"source":      map[string]any{"branch": map[string]string{"name": in.SourceRef}},
 		"destination": map[string]any{"branch": map[string]string{"name": in.TargetRef}},
 	}

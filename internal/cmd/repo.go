@@ -13,9 +13,6 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
-	"github.com/hugs7/bitbucket-cli/internal/tui/pr"
-	"github.com/hugs7/bitbucket-cli/internal/tui/repo"
-	"github.com/hugs7/bitbucket-cli/internal/tui/reposettings"
 )
 
 func newRepoCmd() *cobra.Command {
@@ -40,16 +37,13 @@ current repository (auto-detected from the cwd's git remote). Use
 	return c
 }
 
-// openRepoTUI launches the repo overview TUI and follows whatever
-// follow-on action the user picks (e.g. "p" → PR TUI). Loops so the
-// user can bounce between the two without dropping back to the shell,
-// matching how `bb` (home) chains into `bb prs`.
+// openRepoTUI resolves a repository and enters the shared TUI navigation loop.
 func openRepoTUI(repoFlag, hostFlag string) error {
 	svc, project, slug, err := resolveContext(repoFlag, hostFlag)
 	if err != nil {
 		return err
 	}
-	return runRepoTUI(svc, project, slug)
+	return runTUI(svc, "repo", project, slug, 0)
 }
 
 // runRepoTUIAtPath resolves the Bitbucket repo from the git remote
@@ -80,36 +74,7 @@ func runRepoTUIAtPath(path string) error {
 	if err != nil {
 		return err
 	}
-	return runRepoTUI(svc, r.Project, r.Slug)
-}
-
-// runRepoTUI drives the repo overview TUI's "follow-up action" loop
-// for a project/slug we already know. Pulled out of openRepoTUI so
-// the home dashboard's Enter handler can re-use it: when the user
-// hits Enter on a "Recently viewed repositories" row, root.go calls
-// this directly instead of round-tripping through resolveContext.
-func runRepoTUI(svc api.Service, project, slug string) error {
-	for {
-		action, err := repo.Repo(svc, project, slug)
-		if err != nil {
-			return err
-		}
-		if action == nil {
-			return nil
-		}
-		switch action.Kind {
-		case "prs":
-			if err := pr.Run(svc, action.Project, action.Slug); err != nil {
-				return err
-			}
-		case "settings":
-			if err := reposettings.Run(svc, action.Project, action.Slug); err != nil {
-				return err
-			}
-		default:
-			return nil
-		}
-	}
+	return runTUI(svc, "repo", r.Project, r.Slug, 0)
 }
 
 func newRepoSettingsCmd() *cobra.Command {
@@ -120,21 +85,29 @@ func newRepoSettingsCmd() *cobra.Command {
 		Short:   "Open repository settings",
 		Long: `Open the repository settings TUI.
 
-The settings TUI exposes the Bitbucket settings panels from the web UI.
-Webhooks are editable now; each panel loads its backing REST resources and
-shows permission/version errors inline when Bitbucket does not expose that
-panel for the configured host.`,
+Server/Data Center supports editing pull-request merge checks (including minimum
+approvals), merge strategies, default reviewer conditions, auto-decline, repository
+details/default branch, user/group permissions, branch restrictions, public SSH
+access keys and hook state/configuration using documented REST APIs.
+Other panels are read-only or explicitly unsupported; token management is excluded;
+this is not universal GUI parity. Cloud settings are read-only except webhooks.
+Use get/update/create/delete/enable/disable for equivalent JSON-based CLI operations.
+Writes require confirmation and appropriate server permissions.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
 			if err != nil {
 				return err
 			}
-			return reposettings.Run(svc, project, slug)
+			return runTUI(svc, "settings", project, slug, 0)
 		},
 	}
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
 	c.AddCommand(newRepoSettingsWebhookCmd())
+	for _, action := range []string{"get", "update", "create", "delete", "enable", "disable"} {
+		c.AddCommand(newRepoSettingsResourceCmd(action))
+	}
 	return c
 }
 

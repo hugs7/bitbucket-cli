@@ -6,6 +6,7 @@
 package reposettings
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -22,10 +23,14 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
-// Run opens the repository settings screen for project/slug.
-func Run(svc api.Service, project, slug string) error {
-	_, err := tea.NewProgram(newModel(svc, project, slug), tea.WithAltScreen()).Run()
-	return err
+// Run opens repository settings and reports whether Back requests its parent
+// repository overview. Quit returns false, regardless of the entry point.
+func Run(svc api.Service, project, slug string) (backToRepo bool, err error) {
+	final, err := tea.NewProgram(newModel(svc, project, slug), tea.WithAltScreen()).Run()
+	if err != nil {
+		return false, err
+	}
+	return final.(model).backToRepo, nil
 }
 
 type panel struct {
@@ -36,7 +41,9 @@ type panel struct {
 
 var panels = []panel{
 	{title: "Repository details", section: "Repository details", editable: false},
+	{title: "Default branch", section: "Repository details", editable: false},
 	{title: "Repository permissions", section: "Security", editable: false},
+	{title: "Group permissions", section: "Security", editable: false},
 	{title: "Branch permissions", section: "Security", editable: false},
 	{title: "Access keys", section: "Security", editable: false},
 	{title: "HTTP access tokens", section: "Security", editable: false},
@@ -57,33 +64,42 @@ var panels = []panel{
 }
 
 type keys struct {
-	Up, Down, Left, Right, Enter, Add, Delete, Refresh, Back, Quit, Help key.Binding
+	Up, Down, Left, Right, Enter, Add, Delete, Edit, Minimum, Refresh, Back, Quit, Help key.Binding
+	SwitchPane, PageUp, PageDown, Top, Bottom                                           key.Binding
 }
 
 func defaultKeys() keys {
 	return keys{
-		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-		Left:    key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "panels")),
-		Right:   key.NewBinding(key.WithKeys("right", "l", "enter"), key.WithHelp("→/enter", "open")),
-		Enter:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open / submit")),
-		Add:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
-		Delete:  key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
-		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Up:         key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:       key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Left:       key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "panels")),
+		Right:      key.NewBinding(key.WithKeys("right", "l", "enter"), key.WithHelp("→/enter", "open")),
+		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open / submit")),
+		Add:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
+		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		Edit:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit JSON")),
+		Minimum:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "min approvals")),
+		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		SwitchPane: key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", "switch pane")),
+		PageUp:     key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll page up")),
+		PageDown:   key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll page down")),
+		Top:        key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top of details")),
+		Bottom:     key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom of details")),
 	}
 }
 
 func (k keys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Right, k.Add, k.Delete, k.Refresh, k.Back, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Right, k.Edit, k.Minimum, k.Add, k.Delete, k.Refresh, k.Back, k.Help, k.Quit}
 }
 
 func (k keys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right, k.Enter},
-		{k.Add, k.Delete, k.Refresh, k.Back, k.Help, k.Quit},
+		{k.SwitchPane, k.PageUp, k.PageDown, k.Top, k.Bottom},
+		{k.Edit, k.Minimum, k.Add, k.Delete, k.Refresh, k.Back, k.Help, k.Quit},
 	}
 }
 
@@ -102,15 +118,19 @@ type model struct {
 	svc           api.Service
 	project, slug string
 
-	repo     *api.Repo
-	hooks    []api.Webhook
-	settings *api.RepoSettings
-	loading  int
-	status   string
-	err      error
-	mode     mode
-	panelIdx int
-	hookIdx  int
+	repo       *api.Repo
+	hooks      []api.Webhook
+	settings   *api.RepoSettings
+	loading    int
+	status     string
+	err        error
+	mode       mode
+	backToRepo bool
+	panelIdx   int
+	hookIdx    int
+	edit       settingsEditState
+	reviewers  reviewerEditor
+	strategies strategyEditor
 
 	addURL         string
 	addEvents      string
@@ -221,8 +241,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.help.Width = msg.Width
 		m.content.Width = m.contentWidth() - 2
 		m.content.Height = m.bodyHeight()
+		if m.mode == modeSettingJSON {
+			m.edit.json.SetWidth(m.contentWidth() - 4)
+			m.edit.json.SetHeight(max(5, m.bodyHeight()-7))
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -252,10 +277,70 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settingsLoadedMsg:
 		m.settings = msg.settings
 		m.loading--
+		m.reviewers.rules = nil
+		if raw := msg.settings.Panels["Default reviewers"].Raw; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &m.reviewers.rules); err != nil {
+				panel := m.settings.Panels["Default reviewers"]
+				panel.Error = "Unable to read reviewer rules: " + err.Error()
+				m.settings.Panels["Default reviewers"] = panel
+				m.reviewers.rules = nil
+			}
+		}
+		m.reviewers.selected = min(m.reviewers.selected, max(0, len(m.reviewers.rules)-1))
 		return m, nil
 
+	case reviewerSearchMsg:
+		if m.mode != modeReviewerPeople || msg.id != m.reviewers.searchID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = "Search failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.reviewers.results = msg.users
+		m.reviewers.result = 0
+		m.reviewers.searchFocus = false
+		m.input.Blur()
+		m.status = fmt.Sprintf("%d results · Space toggles · Enter returns to the rule", len(msg.users))
+		return m, nil
+
+	case settingReadMsg:
+		if msg.err != nil {
+			m.mode = modePanel
+			m.status = theme.ErrPrefix() + msg.err.Error()
+			return m, nil
+		}
+		if m.edit.minimum {
+			count, err := api.RepoMinimumApprovals(msg.raw)
+			if err != nil {
+				m.mode = modePanel
+				m.status = err.Error()
+				return m, nil
+			}
+			m.edit.original = msg.raw
+			m.mode = modeSettingMinimum
+			m.input.SetValue(fmt.Sprint(count))
+			m.input.Placeholder = "minimum approvals (0 disables the merge check)"
+			m.input.Focus()
+			m.status = fmt.Sprintf("Current minimum approving reviewers: %d (0 = disabled). Enter the new minimum.", count)
+			return m, textinput.Blink
+		}
+		if m.edit.action == "delete" || m.edit.action == "enable" || m.edit.action == "disable" {
+			m.mode = modeSettingConfirm
+			m.edit.patch = msg.raw
+			m.status = ""
+			return m, nil
+		}
+		if m.edit.reviewerForm {
+			return m.openReviewerForm(msg.raw)
+		}
+		if m.edit.strategyForm {
+			return m.openStrategyForm(msg.raw)
+		}
+		return m.openSettingJSON(msg.raw)
+
 	case actionDoneMsg:
-		m.loading = 2
+		m.loading = 3
 		m.mode = modePanel
 		m.clearAddState()
 		if msg.err != nil {
@@ -264,7 +349,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = theme.OKPrefix() + msg.text
-		return m, tea.Batch(m.spinner.Tick, m.fetchWebhooks(), m.fetchSettings())
+		if m.edit.resource == "details" {
+			m.status += ". If renamed, reopen settings using the new repository slug."
+		}
+		return m, tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks(), m.fetchSettings())
 
 	case errMsg:
 		m.loading = 0
@@ -275,10 +363,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
+	if m.mode == modeSettingJSON {
+		var cmd tea.Cmd
+		m.edit.json, cmd = m.edit.json.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeReviewerForm {
+		return m.handleReviewerForm(msg)
+	}
+	if m.mode == modeReviewerPeople {
+		return m.handleReviewerPeople(msg)
+	}
+	if m.mode == modeStrategyForm {
+		return m.handleStrategyForm(msg)
+	}
+	if m.mode >= modeSettingID {
+		return m.handleSettingKey(msg)
+	}
 	if m.mode == modeAddURL || m.mode == modeAddEvents || m.mode == modeAddDescription {
 		return m.handleInputKey(msg)
 	}
@@ -294,6 +399,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modePanels
 			return m, nil
 		}
+		m.backToRepo = true
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Help):
 		m.help.ShowAll = !m.help.ShowAll
@@ -302,8 +408,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = 3
 		m.status = "refreshing settings"
 		return m, tea.Batch(m.spinner.Tick, m.fetchRepo(), m.fetchWebhooks(), m.fetchSettings())
+	case key.Matches(msg, m.keys.SwitchPane):
+		if m.mode == modePanels {
+			return m.openPanel()
+		}
+		m.mode = modePanels
+		return m, nil
 	}
 
+	// Visible action shortcuts work immediately on the selected section. Page
+	// keys also focus the details, without requiring an invisible Enter step.
+	if key.Matches(msg, m.keys.Edit, m.keys.Minimum, m.keys.Add, m.keys.Delete,
+		m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) || ((m.reviewerPanel() || m.strategyPanel()) && msg.String() == "J") {
+		m.mode = modePanel
+	}
 	if m.mode == modePanels {
 		switch {
 		case key.Matches(msg, m.keys.Up):
@@ -313,10 +431,77 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.panelIdx = (m.panelIdx + 1) % len(panels)
 			m.content.GotoTop()
 		case key.Matches(msg, m.keys.Right), key.Matches(msg, m.keys.Enter):
-			m.mode = modePanel
-			m.content.GotoTop()
+			return m.openPanel()
 		}
 		return m, nil
+	}
+
+	if m.strategyPanel() {
+		if msg.String() == "J" {
+			return m.beginSettingEdit("update")
+		}
+		if key.Matches(msg, m.keys.Edit, m.keys.Enter) {
+			next, cmd := m.beginSettingEdit("update")
+			m = next.(model)
+			m.edit.strategyForm = true
+			return m, cmd
+		}
+	}
+	if m.reviewerPanel() {
+		switch {
+		case key.Matches(msg, m.keys.Edit, m.keys.Enter):
+			return m.beginReviewerEdit("update", false)
+		case msg.String() == "J":
+			return m.beginReviewerEdit("update", true)
+		case key.Matches(msg, m.keys.Add):
+			return m.beginReviewerEdit("create", false)
+		case key.Matches(msg, m.keys.Delete):
+			return m.beginReviewerEdit("delete", false)
+		case key.Matches(msg, m.keys.Up):
+			m.reviewers.selected = max(0, m.reviewers.selected-1)
+		case key.Matches(msg, m.keys.Down):
+			m.reviewers.selected = min(max(0, len(m.reviewers.rules)-1), m.reviewers.selected+1)
+		}
+		if key.Matches(msg, m.keys.Up, m.keys.Down) {
+			m.syncPanelContent()
+			// Locate the selected card after wrapping, so long names remain reachable.
+			lines := strings.Split(m.renderReviewerRules(), "\n")
+			for i, line := range lines {
+				if strings.Contains(line, "▸ ") {
+					m.content.SetYOffset(max(0, i-2))
+					break
+				}
+			}
+			return m, nil
+		}
+	}
+
+	if key.Matches(msg, m.keys.PageUp, m.keys.PageDown, m.keys.Top, m.keys.Bottom) {
+		m.syncPanelContent()
+		switch {
+		case key.Matches(msg, m.keys.Top):
+			m.content.GotoTop()
+		case key.Matches(msg, m.keys.Bottom):
+			m.content.GotoBottom()
+		default:
+			m.content, _ = m.content.Update(msg)
+		}
+		return m, nil
+	}
+	if key.Matches(msg, m.keys.Edit) || (key.Matches(msg, m.keys.Enter) && api.CanEditRepoSettings(m.svc) && settingResource(m.activePanel().title) != "") {
+		return m.beginSettingEdit("update")
+	}
+	if key.Matches(msg, m.keys.Minimum) && m.activePanel().title == "Merge checks" && api.CanEditRepoSettings(m.svc) && m.loading == 0 {
+		m.edit = settingsEditState{resource: "pull-requests", action: "update", minimum: true}
+		return m.loadSetting()
+	}
+	if m.activePanel().title != "Webhooks" {
+		if key.Matches(msg, m.keys.Add) {
+			return m.beginSettingEdit("create")
+		}
+		if key.Matches(msg, m.keys.Delete) {
+			return m.beginSettingEdit("delete")
+		}
 	}
 
 	if m.activePanel().title == "Webhooks" {
@@ -351,9 +536,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if key.Matches(msg, m.keys.Left) {
 		m.mode = modePanels
-		m.content.GotoTop()
 		return m, nil
 	}
+	m.syncPanelContent()
 	var cmd tea.Cmd
 	m.content, cmd = m.content.Update(msg)
 	return m, cmd
@@ -395,9 +580,9 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case modeAddDescription:
 			m.addDescription = strings.TrimSpace(m.input.Value())
 			m.input.Blur()
-			m.loading = 1
-			m.status = "creating webhook"
-			return m, tea.Batch(m.spinner.Tick, m.addWebhook())
+			m.mode = modeConfirmAddWebhook
+			m.status = "Review webhook; y confirms, n/esc cancels."
+			return m, nil
 		}
 	}
 
@@ -412,9 +597,9 @@ func (m model) handleDeleteConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
-	case "y", "Y", "enter":
+	case "y", "Y":
 		id := m.hooks[m.hookIdx].ID
-		m.mode = modePanel
+		m.mode = modeSettingSaving
 		m.loading = 1
 		m.status = "deleting webhook"
 		return m, tea.Batch(m.spinner.Tick, m.deleteWebhook(id))
@@ -443,9 +628,17 @@ func (m model) View() string {
 		fmt.Sprintf("REPO SETTINGS · %s/%s", m.project, m.slug),
 		theme.TitleChipDim.Render(m.svc.Host()),
 	)
+	if m.mode == modeReviewerForm || m.mode == modeReviewerPeople {
+		return header + "\n\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.renderReviewerEditor()) + "\n" + m.footerStatus() + "\n" + m.footerHelp()
+	}
+	if m.mode == modeStrategyForm {
+		return header + "\n\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.renderStrategyForm()) + "\n" + m.footerStatus() + "\n" + m.footerHelp()
+	}
+	paneHeaders := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Padding(0, 1).Render(focusRow(" SECTIONS", m.panelWidth()-2, m.mode == modePanels)),
+		lipgloss.NewStyle().Padding(0, 1).Render(focusRow(" "+strings.ToUpper(m.activePanel().title), m.contentWidth()-2, m.mode != modePanels)))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderPanels(), m.renderActivePanel())
-	statusLine := theme.RenderStatusLine(m.loading > 0, m.spinner.View(), m.status)
-	return header + "\n" + body + "\n" + theme.JoinFooter(statusLine, m.help.View(m.keys))
+	return header + "\n" + paneHeaders + "\n" + body + "\n" + m.footerStatus() + "\n" + m.footerHelp()
 }
 
 func (m model) renderPanels() string {
@@ -453,6 +646,7 @@ func (m model) renderPanels() string {
 	style := lipgloss.NewStyle().Width(w).Padding(0, 1)
 	var sb strings.Builder
 	lastSection := ""
+	selectedLine := 0
 	for i, p := range panels {
 		if p.section != lastSection {
 			if lastSection != "" {
@@ -465,26 +659,66 @@ func (m model) renderPanels() string {
 		prefix := "  "
 		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 		if i == m.panelIdx {
+			selectedLine = strings.Count(sb.String(), "\n")
 			prefix = "▸ "
 			lineStyle = lineStyle.Foreground(lipgloss.Color("231")).Bold(true)
+			if m.mode == modePanels {
+				lineStyle = lineStyle.Background(theme.Current.TitleBadgeBg).Foreground(theme.Current.TitleBadgeFg)
+			}
 		}
-		marker := ""
-		if p.editable {
-			marker = " " + theme.TitleChip.Render("edit")
-		}
-		sb.WriteString(lineStyle.Render(prefix + p.title))
-		sb.WriteString(marker)
+		sb.WriteString(lineStyle.Width(w - 2).Render(prefix + p.title))
 		sb.WriteString("\n")
 	}
-	return style.Height(m.bodyHeight()).Render(clampLines(sb.String(), m.bodyHeight()))
+	lines := strings.Split(sb.String(), "\n")
+	start := max(0, selectedLine-m.bodyHeight()+2)
+	return style.Height(m.bodyHeight()).Render(clampLines(strings.Join(lines[start:], "\n"), m.bodyHeight()))
 }
 
 func (m model) renderActivePanel() string {
 	w := m.contentWidth()
-	p := m.activePanel()
 	style := lipgloss.NewStyle().Width(w).Padding(0, 1)
 	var body string
+	if m.mode >= modeSettingID {
+		body = m.renderSettingEdit()
+		if m.mode == modeSettingJSON {
+			return style.Height(m.bodyHeight()).Render(body)
+		}
+		m.content.Height = m.bodyHeight()
+		m.content.SetContent(lipgloss.NewStyle().Width(w - 2).Render(body))
+		return style.Height(m.bodyHeight()).Render(m.content.View())
+	}
+	m.syncPanelContent()
+	body = m.content.View()
+	if m.mode == modePanels || m.mode == modePanel {
+		total := m.content.TotalLineCount()
+		position := fmt.Sprintf("Lines %d–%d/%d", m.content.YOffset+1, min(total, m.content.YOffset+m.content.Height), total)
+		if !m.content.AtBottom() {
+			position += " · more below ↓"
+		}
+		body += "\n" + theme.TitleChipDim.Render(position)
+	}
+	return style.Height(m.bodyHeight()).Render(body)
+}
+
+// syncPanelContent uses identical wrapping for rendering and scrolling so
+// long fields remain reachable and switching focus preserves the position.
+func (m *model) syncPanelContent() {
+	w := m.contentWidth()
+	p := m.activePanel()
+	var body string
 	switch p.title {
+	case "Default reviewers":
+		if m.reviewerPanel() {
+			body = m.renderReviewerRules()
+		} else {
+			body = m.renderSettingsPanel(p, w)
+		}
+	case "Merge strategies":
+		if m.strategyPanel() {
+			body = m.renderStrategyPanel()
+		} else {
+			body = m.renderSettingsPanel(p, w)
+		}
 	case "Repository details":
 		body = m.renderRepoDetails(w)
 	case "Webhooks":
@@ -494,14 +728,21 @@ func (m model) renderActivePanel() string {
 	}
 	m.content.Width = w - 2
 	m.content.Height = m.bodyHeight()
-	m.content.SetContent(body)
-	return style.Height(m.bodyHeight()).Render(m.content.View())
+	if m.mode == modePanels || m.mode == modePanel {
+		m.content.Height-- // fixed scroll-position row
+	}
+	m.content.SetContent(lipgloss.NewStyle().Width(w - 2).Render(body))
 }
 
 func (m model) renderRepoDetails(w int) string {
 	var sb strings.Builder
 	sb.WriteString(theme.TitleBadge.Render(" REPOSITORY DETAILS "))
 	sb.WriteString("\n\n")
+	if api.CanEditRepoSettings(m.svc) {
+		sb.WriteString("e edit name/description/public/forkable.\nRenaming may change the slug; reopen with its new slug.\n\n")
+	} else {
+		sb.WriteString("Read-only on Cloud.\n\n")
+	}
 	if m.repo == nil {
 		sb.WriteString("Loading repository metadata…")
 		return sb.String()
@@ -598,6 +839,15 @@ func (m model) renderSettingsPanel(p panel, w int) string {
 	var sb strings.Builder
 	sb.WriteString(theme.TitleBadge.Render(" " + strings.ToUpper(p.title) + " "))
 	sb.WriteString("\n\n")
+	if m.editable(p) {
+		sb.WriteString(settingPanelHelp(p.title))
+		if p.title == "Merge checks" {
+			sb.WriteString(" · m minimum approving reviewers")
+		}
+		sb.WriteString("\n\n")
+	} else {
+		sb.WriteString("Read-only / unsupported in this client.\n\n")
+	}
 	if m.settings == nil {
 		sb.WriteString("Loading repository settings…")
 		return sb.String()
@@ -608,11 +858,11 @@ func (m model) renderSettingsPanel(p panel, w int) string {
 		return sb.String()
 	}
 	if panel.Hint != "" {
-		sb.WriteString(theme.TitleChipDim.Render(strutil.Truncate(panel.Hint, w-4)))
+		sb.WriteString(lipgloss.NewStyle().Width(max(1, w-4)).Render(panel.Hint))
 		sb.WriteString("\n\n")
 	}
 	if panel.Error != "" {
-		sb.WriteString(theme.StatusErr.Render(strutil.Truncate(panel.Error, w-4)))
+		sb.WriteString(theme.StatusErr.Width(max(1, w-4)).Render(panel.Error))
 		sb.WriteString("\n")
 		return sb.String()
 	}
@@ -625,7 +875,7 @@ func (m model) renderSettingsPanel(p panel, w int) string {
 		if title == "" {
 			title = "setting"
 		}
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Render(strutil.Truncate(title, w-4)))
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Render(title))
 		sb.WriteString("\n")
 		for _, field := range item.Fields {
 			if strings.EqualFold(field.Value, title) {
@@ -634,7 +884,7 @@ func (m model) renderSettingsPanel(p panel, w int) string {
 			sb.WriteString("  ")
 			sb.WriteString(theme.TitleChipDim.Render(field.Name + ":"))
 			sb.WriteString(" ")
-			sb.WriteString(strutil.Truncate(field.Value, w-len(field.Name)-8))
+			sb.WriteString(field.Value)
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
@@ -654,8 +904,8 @@ func (m model) panelWidth() int {
 		return 34
 	}
 	w := (m.width * 35) / 100
-	if w < 28 {
-		w = 28
+	if w < 32 {
+		w = 32
 	}
 	if w > 42 {
 		w = 42
@@ -678,11 +928,12 @@ func (m model) bodyHeight() int {
 	if m.height == 0 {
 		return 20
 	}
-	footerH := lipgloss.Height(m.help.View(m.keys))
+	footerH := lipgloss.Height(m.footerHelp())
+	statusH := lipgloss.Height(m.footerStatus())
 	// Header + newline above body + footer/status line. Keep at least a
 	// small viewport so long panels scroll instead of pushing the menu
 	// and header out of the terminal.
-	h := m.height - footerH - 3
+	h := m.height - footerH - statusH - 3
 	if h < 5 {
 		return 5
 	}

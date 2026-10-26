@@ -11,6 +11,9 @@ const dependentPRScanLimit = 100
 type MergeOptions struct {
 	StrategyID         string
 	RetargetDependents bool
+	// BypassChecks temporarily changes repository settings; it requires admin
+	// permission and explicit user consent. The source branch is retained.
+	BypassChecks bool
 }
 
 // MergeResult describes follow-up changes made after a successful merge.
@@ -44,7 +47,17 @@ func MergePullRequest(
 			return result, err
 		}
 	}
-	if err := svc.MergePR(project, slug, id, options.StrategyID); err != nil {
+	merge := svc.MergePR
+	if options.BypassChecks {
+		bypass, ok := svc.(MergeCheckBypassService)
+		if !ok {
+			return result, fmt.Errorf("temporary merge-check bypass is unsupported by this backend")
+		}
+		merge = bypass.MergePRBypassingChecks
+	}
+	// The bypass capability restores and verifies settings before returning,
+	// so dependent PRs are never retargeted while checks are weakened.
+	if err := merge(project, slug, id, options.StrategyID); err != nil {
 		return result, err
 	}
 	if !options.RetargetDependents || pr == nil || pr.SourceRef == "" || pr.TargetRef == "" {

@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
+	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 )
 
@@ -87,43 +88,7 @@ func upperFirst(s string) string {
 // PR. Returns nil silently if git isn't available — the input then
 // degrades to plain text entry.
 func remoteBranches() []string {
-	out, err := exec.Command("git", "for-each-ref",
-		"--format=%(refname)",
-		"refs/heads", "refs/remotes").Output()
-	if err != nil {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	var branches []string
-	for _, line := range strings.Split(string(out), "\n") {
-		ref := strings.TrimSpace(line)
-		var name string
-		switch {
-		case strings.HasPrefix(ref, "refs/heads/"):
-			name = strings.TrimPrefix(ref, "refs/heads/")
-		case strings.HasPrefix(ref, "refs/remotes/"):
-			rest := strings.TrimPrefix(ref, "refs/remotes/")
-			if i := strings.Index(rest, "/"); i > 0 {
-				rest = rest[i+1:]
-			} else {
-				continue
-			}
-			if rest == "HEAD" {
-				continue
-			}
-			name = rest
-		default:
-			continue
-		}
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		branches = append(branches, name)
-	}
+	branches, _ := gitctx.TargetBranches("", "", "")
 	return branches
 }
 
@@ -132,6 +97,7 @@ func remoteBranches() []string {
 // just return the user to the list.
 type createPRMsg struct {
 	source, target, title, body string
+	reviewers                   []string
 	cancelled                   bool
 	err                         error
 }
@@ -141,6 +107,9 @@ type createPRMsg struct {
 // via the standard message loop.
 type createPRForm struct {
 	source, target, title, body string
+	reviewers                   []string
+	svc                         api.Service
+	project, slug               string
 	// titleHint is shown as the title input's placeholder so the
 	// user sees the suggested title without it sitting in the
 	// field as text they'd have to clear before retyping. If they
@@ -148,6 +117,7 @@ type createPRForm struct {
 	// final title.
 	titleHint string
 	branches  []string
+	local     bool
 
 	stdin          io.Reader
 	stdout, stderr io.Writer
@@ -181,8 +151,13 @@ func (f *createPRForm) Run() error {
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Source branch").Value(&f.source).
 			Suggestions(f.branches).Validate(formNonEmpty),
-		huh.NewInput().Title("Target branch").Value(&f.target).
-			Suggestions(f.branches).Validate(formNonEmpty),
+		NewTargetInput(&f.source, &f.target, func(source string) []string {
+			if !f.local {
+				return nil
+			}
+			branches, _ := gitctx.TargetBranches("", "", gitctx.CanonicalBranchName(source, f.branches))
+			return branches
+		}),
 		// Title shows the branch-derived suggestion as a
 		// placeholder rather than pre-filled text — typing
 		// replaces it without the user having to clear the
@@ -235,6 +210,14 @@ func (f *createPRForm) Run() error {
 	// still hand the createPRMsg back so they can continue (e.g.
 	// they pushed manually in another terminal).
 	f.syncSourceBranch(keymap)
+	if f.err != nil || f.cancelled {
+		return nil
+	}
+	f.reviewers, f.err = ChooseReviewers(f.svc, f.project, f.slug, f.source, f.target, nil, f.stdin, f.stdout)
+	if f.err == huh.ErrUserAborted {
+		f.cancelled = true
+		f.err = nil
+	}
 	return nil
 }
 
@@ -244,19 +227,27 @@ func (f *createPRForm) Run() error {
 // parent TUI shows them instead of silently submitting against a
 // missing/outdated ref.
 func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
+	if !f.local {
+		return
+	}
 	branch := strings.TrimSpace(f.source)
 	if branch == "" {
 		return
 	}
-	upstream, _ := branchUpstream(branch)
-	if upstream == "" {
-		// No upstream configured → branch isn't on the remote yet
-		// (or at least git doesn't know about it). Offer to push
-		// with -u so the tracking ref is set as a side effect.
+	repo, err := gitctx.Current("")
+	if err != nil {
+		f.err = err
+		return
+	}
+	upstream := "refs/remotes/" + repo.RemoteName + "/" + branch
+	_, existsErr := exec.Command("git", "rev-parse", "--verify", upstream).Output()
+	if existsErr != nil {
+		// The selected Bitbucket remote has no known tracking ref.
+		// Do not alter an existing upstream on another host.
 		var push bool
 		prompt := huh.NewForm(huh.NewGroup(
 			huh.NewConfirm().
-				Title(fmt.Sprintf("Branch %q has no upstream on origin.", branch)).
+				Title(fmt.Sprintf("Branch %q is not tracked on %s.", branch, repo.RemoteName)).
 				Description("Push it now so the PR can target the remote ref?").
 				Affirmative("Yes, push").Negative("No, skip").
 				Value(&push),
@@ -270,7 +261,7 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 			return
 		}
 		if push {
-			if err := gitPushNewBranch(branch, f.stdout, f.stderr); err != nil {
+			if err := gitPushBranch(repo.RemoteName, branch, f.stdout, f.stderr); err != nil {
 				f.err = fmt.Errorf("push %q failed: %w", branch, err)
 			}
 		}
@@ -304,22 +295,10 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 		return
 	}
 	if push {
-		if err := gitPushBranch(branch, f.stdout, f.stderr); err != nil {
+		if err := gitPushBranch(repo.RemoteName, branch, f.stdout, f.stderr); err != nil {
 			f.err = fmt.Errorf("push %q failed: %w", branch, err)
 		}
 	}
-}
-
-// branchUpstream returns the configured upstream ref (e.g.
-// "origin/feature/x") for branch, or "" when no upstream is set or
-// git can't be reached.
-func branchUpstream(branch string) (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--abbrev-ref",
-		branch+"@{upstream}").CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // branchAhead returns how many commits branch has that upstream
@@ -334,21 +313,10 @@ func branchAhead(branch, upstream string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(out)))
 }
 
-// gitPushNewBranch publishes a brand-new branch to origin with -u so
-// the upstream tracking ref is set as a side effect.
-func gitPushNewBranch(branch string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("git", "push", "-u", "origin", branch)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
-}
-
-// gitPushBranch pushes an already-tracked branch to its configured
-// upstream. We pass the branch explicitly rather than relying on the
-// current HEAD because the user may have picked a non-current branch
-// in the create-PR form.
-func gitPushBranch(branch string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("git", "push", "origin", branch)
+// gitPushBranch publishes the chosen branch to the selected Bitbucket remote,
+// without changing an upstream that may intentionally point at another host.
+func gitPushBranch(remote, branch string, stdout, stderr io.Writer) error {
+	cmd := exec.Command("git", "push", "--", remote, "refs/heads/"+branch+":refs/heads/"+branch)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
@@ -367,16 +335,19 @@ func formNonEmpty(s string) error {
 // back into the bubbletea event loop and the model handles the API
 // call (or the cancel) like any other message.
 func (m *model) startCreatePR() tea.Cmd {
-	source := currentGitBranch()
-	target := ""
-	if r, err := m.svc.GetRepo(m.project, m.slug); err == nil {
-		target = r.DefaultRef
+	local := gitctx.Matches(m.svc.Host(), m.project, m.slug)
+	var source string
+	var branches []string
+	if local {
+		source = currentGitBranch()
+		branches = remoteBranches()
 	}
 	form := &createPRForm{
+		svc: m.svc, project: m.project, slug: m.slug,
 		source:    source,
-		target:    target,
 		titleHint: BranchToTitle(source),
-		branches:  remoteBranches(),
+		branches:  branches,
+		local:     local,
 	}
 	return tea.Exec(form, func(err error) tea.Msg {
 		// Propagate any unexpected error from the harness itself
@@ -390,6 +361,7 @@ func (m *model) startCreatePR() tea.Cmd {
 			target:    form.target,
 			title:     form.title,
 			body:      form.body,
+			reviewers: form.reviewers,
 			cancelled: form.cancelled,
 			err:       form.err,
 		}

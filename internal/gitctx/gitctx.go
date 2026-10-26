@@ -8,13 +8,16 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/hugs7/bitbucket-cli/internal/config"
 )
 
 type Repo struct {
-	Host    string // e.g. bitbucket.org or bitbucket.mycorp.example
-	Project string // server: project key; cloud: workspace
-	Slug    string // repo slug
-	Remote  string // raw remote URL
+	Host       string // e.g. bitbucket.org or bitbucket.mycorp.example
+	Project    string // server: project key; cloud: workspace
+	Slug       string // repo slug
+	Remote     string // raw remote URL
+	RemoteName string // git remote selected for this repository
 }
 
 // CanonicalBranchName trims a branch name and, when it matches a known
@@ -33,8 +36,8 @@ func CanonicalBranchName(branch string, known []string) string {
 	return branch
 }
 
-// Current returns the Repo represented by the given git remote (defaults
-// to "origin") in the current working directory.
+// Current returns the Repo represented by the given git remote, preferring
+// a Bitbucket remote when no remote is explicitly selected.
 func Current(remote string) (*Repo, error) {
 	return AtPath("", remote)
 }
@@ -45,7 +48,38 @@ func Current(remote string) (*Repo, error) {
 // repo overview of any working tree without having to cd into it.
 func AtPath(dir, remote string) (*Repo, error) {
 	if remote == "" {
-		remote = "origin"
+		out, err := exec.Command("git", "-C", gitDir(dir), "remote").Output()
+		if err != nil {
+			return nil, fmt.Errorf("list git remotes: %w", err)
+		}
+		names := strings.Fields(string(out))
+		// Prefer origin among Bitbucket remotes, but never prefer a
+		// GitHub origin over a configured Bitbucket host.
+		for i, name := range names {
+			if name == "origin" {
+				names = append([]string{name}, append(names[:i], names[i+1:]...)...)
+				break
+			}
+		}
+		var fallback *Repo
+		for _, name := range names {
+			r, err := AtPath(dir, name)
+			if err != nil {
+				continue
+			}
+			if fallback == nil {
+				fallback = r
+			}
+			h, configured := config.Get().Hosts[r.Host]
+			if (configured && (h.Type == "server" || h.Type == "cloud")) ||
+				strings.Contains(strings.ToLower(r.Host), "bitbucket") || name == "bitbucket" {
+				return r, nil
+			}
+		}
+		if fallback != nil {
+			return fallback, nil
+		}
+		return nil, fmt.Errorf("no usable git remote")
 	}
 	args := []string{}
 	if dir != "" {
@@ -57,7 +91,19 @@ func AtPath(dir, remote string) (*Repo, error) {
 		return nil, fmt.Errorf("not in a git repo or no remote %q: %w", remote, err)
 	}
 	raw := strings.TrimSpace(string(out))
-	return Parse(raw)
+	r, err := Parse(raw)
+	if err == nil {
+		r.RemoteName = remote
+	}
+	return r, err
+}
+
+// gitDir supplies git's current-directory spelling for an omitted path.
+func gitDir(dir string) string {
+	if dir == "" {
+		return "."
+	}
+	return dir
 }
 
 // Parse turns a Bitbucket remote URL (https or ssh) into a Repo.

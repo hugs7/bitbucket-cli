@@ -352,6 +352,15 @@ func (m model) renderMergeConfirm() string {
 		fmt.Sprintf("delete source branch %q after merge", m.pendingMergeSourceRef)))
 	parts = append(parts, "  "+renderToggle(m.pendingMergeRetargetDependents, "r",
 		"retarget dependent PRs to this PR's base branch"))
+	if _, ok := m.svc.(api.MergeCheckBypassService); ok {
+		parts = append(parts, "  "+renderToggle(m.pendingMergeBypassChecks, "b",
+			"temporarily bypass merge checks / reviewer minimums (admin)"))
+		if m.pendingMergeBypassChecks {
+			parts = append(parts, theme.TitleChipWarn.Render("  Repository-wide: other PRs can merge during this window."),
+				"  Settings restored after merge/failure. If interrupted, run:",
+				"  bb pr recover-merge-checks -R "+m.svc.Host()+"/"+m.project+"/"+m.slug)
+		}
+	}
 
 	hasTasks := len(m.pendingMergeTasks) > 0
 	taskLabel := "resolve all open tasks before merging"
@@ -389,7 +398,7 @@ func (m model) renderMergeConfirm() string {
 	// Footer hints.
 	parts = append(parts, "",
 		theme.TitleChipDim.Render(
-			"↑/↓ pick strategy   d toggle delete   t toggle tasks   y merge   n/esc cancel"))
+			"↑/↓ strategy · d delete · r retarget · t tasks · b bypass · y merge · esc cancel"))
 
 	box := lipgloss.NewStyle().
 		Border(theme.Border()).

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -47,6 +48,7 @@ type Reviewer struct {
 // search. The display name is what reviewers see in the Bitbucket UI;
 // Username is what we send to AddReviewers / RemoveReviewers.
 type User struct {
+	ID          int    // numeric Server identity, used by default-reviewer rules
 	Username    string // login (Server) or UUID/account_id (Cloud)
 	DisplayName string
 	Email       string
@@ -128,6 +130,8 @@ type RepoSettingsPanel struct {
 	Hint  string
 	Items []RepoSettingsItem
 	Error string
+	// Raw retains settings for structured editors, not CLI dumps.
+	Raw json.RawMessage `json:"-"`
 }
 
 // RepoSettingsItem is one row within a settings panel.
