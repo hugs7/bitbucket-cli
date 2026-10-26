@@ -120,10 +120,15 @@ func newRepoSettingsCmd() *cobra.Command {
 		Short:   "Open repository settings",
 		Long: `Open the repository settings TUI.
 
-The settings TUI exposes the Bitbucket settings panels from the web UI.
-Webhooks are editable now; each panel loads its backing REST resources and
-shows permission/version errors inline when Bitbucket does not expose that
-panel for the configured host.`,
+Server/Data Center supports editing pull-request merge checks (including minimum
+approvals), merge strategies, default reviewer conditions, auto-decline, repository
+details/default branch, user/group permissions, branch restrictions, public SSH
+access keys and hook state/configuration using documented REST APIs.
+Other panels are read-only or explicitly unsupported; token management is excluded;
+this is not universal GUI parity. Cloud settings are read-only except webhooks.
+Use get/update/create/delete/enable/disable for equivalent JSON-based CLI operations.
+Writes require confirmation and appropriate server permissions.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, project, slug, err := resolveContext(repoFlag, hostFlag)
 			if err != nil {
@@ -135,6 +140,9 @@ panel for the configured host.`,
 	c.Flags().StringVarP(&repoFlag, "repo", "R", "", "PROJ/repo or host/PROJ/repo")
 	c.Flags().StringVar(&hostFlag, "host", "", "host (default: from git remote or configured default)")
 	c.AddCommand(newRepoSettingsWebhookCmd())
+	for _, action := range []string{"get", "update", "create", "delete", "enable", "disable"} {
+		c.AddCommand(newRepoSettingsResourceCmd(action))
+	}
 	return c
 }
 
