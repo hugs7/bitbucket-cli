@@ -988,6 +988,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Description: msg.body,
 			SourceRef:   msg.source,
 			TargetRef:   msg.target,
+			Reviewers:   msg.reviewers,
 		}
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, func() tea.Msg {

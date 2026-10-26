@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
+	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/gitctx"
 )
 
@@ -96,6 +97,7 @@ func remoteBranches() []string {
 // just return the user to the list.
 type createPRMsg struct {
 	source, target, title, body string
+	reviewers                   []string
 	cancelled                   bool
 	err                         error
 }
@@ -105,6 +107,9 @@ type createPRMsg struct {
 // via the standard message loop.
 type createPRForm struct {
 	source, target, title, body string
+	reviewers                   []string
+	svc                         api.Service
+	project, slug               string
 	// titleHint is shown as the title input's placeholder so the
 	// user sees the suggested title without it sitting in the
 	// field as text they'd have to clear before retyping. If they
@@ -205,6 +210,14 @@ func (f *createPRForm) Run() error {
 	// still hand the createPRMsg back so they can continue (e.g.
 	// they pushed manually in another terminal).
 	f.syncSourceBranch(keymap)
+	if f.err != nil || f.cancelled {
+		return nil
+	}
+	f.reviewers, f.err = ChooseReviewers(f.svc, f.project, f.slug, f.source, f.target, nil, f.stdin, f.stdout)
+	if f.err == huh.ErrUserAborted {
+		f.cancelled = true
+		f.err = nil
+	}
 	return nil
 }
 
@@ -330,6 +343,7 @@ func (m *model) startCreatePR() tea.Cmd {
 		branches = remoteBranches()
 	}
 	form := &createPRForm{
+		svc: m.svc, project: m.project, slug: m.slug,
 		source:    source,
 		titleHint: BranchToTitle(source),
 		branches:  branches,
@@ -347,6 +361,7 @@ func (m *model) startCreatePR() tea.Cmd {
 			target:    form.target,
 			title:     form.title,
 			body:      form.body,
+			reviewers: form.reviewers,
 			cancelled: form.cancelled,
 			err:       form.err,
 		}

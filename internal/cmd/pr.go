@@ -208,7 +208,8 @@ func reviewerStatusLabel(r api.Reviewer) string {
 
 func newPRCreateCmd() *cobra.Command {
 	var repoFlag, hostFlag, title, body, bodyFile, source, target string
-	var yes, autoTarget bool
+	var yes, autoTarget, noReviewers bool
+	var reviewers []string
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Create a pull request",
@@ -310,12 +311,22 @@ func newPRCreateCmd() *cobra.Command {
 			if strings.TrimSpace(title) == "" {
 				return fmt.Errorf("pull request title is required; pass --title")
 			}
+			if noReviewers {
+				reviewers = []string{}
+			}
+			if interactive {
+				reviewers, err = prtui.ChooseReviewers(svc, project, slug, source, target, reviewers, os.Stdin, os.Stdout)
+				if err != nil {
+					return err
+				}
+			}
 
 			p, err := svc.CreatePR(project, slug, api.CreatePRInput{
 				Title:       title,
 				Description: body,
 				SourceRef:   source,
 				TargetRef:   target,
+				Reviewers:   reviewers,
 			})
 			if err != nil {
 				return err
@@ -333,6 +344,9 @@ func newPRCreateCmd() *cobra.Command {
 	c.Flags().StringVarP(&target, "target", "T", "", "target branch (default: repo default branch)")
 	c.Flags().BoolVarP(&autoTarget, "auto-target", "a", false, "target the branch with the closest shared ancestor in local history")
 	c.MarkFlagsMutuallyExclusive("target", "auto-target")
+	c.Flags().StringSliceVarP(&reviewers, "reviewer", "r", nil, "reviewer usernames/UUIDs (repeat or comma-separate; replaces repository defaults)")
+	c.Flags().BoolVar(&noReviewers, "no-reviewers", false, "create without repository default reviewers")
+	c.MarkFlagsMutuallyExclusive("reviewer", "no-reviewers")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the interactive form (automatic when stdin is not a terminal)")
 	return c
 }
