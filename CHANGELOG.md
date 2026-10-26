@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.13.0](https://github.com/hugs7/bitbucket-cli/compare/v0.12.1...v0.13.0) (2026-10-26)
+
+
+### Features
+
+* **pr:** ✨ add recoverable admin merge-check overrides ([06dc3ea](https://github.com/hugs7/bitbucket-cli/commit/06dc3ea5a8ab5b6f0862fcb262666342da9a4f1c))
+* **pr:** ✨ apply repository default reviewers at creation ([4566eb7](https://github.com/hugs7/bitbucket-cli/commit/4566eb7472603f5ec1a44d58bf5e756583ee8a60))
+* **pr:** ✨ rank target completion by shared ancestry ([9f18d55](https://github.com/hugs7/bitbucket-cli/commit/9f18d55c96de10e930789be1c297c796dc13a707))
+* **pr:** ✨ select reviewers before creating pull requests ([a2061f1](https://github.com/hugs7/bitbucket-cli/commit/a2061f10672500acea947f619a75a79bc61f762f))
+* **repo:** ✨ edit documented repository settings from cli and tui ([4c763b2](https://github.com/hugs7/bitbucket-cli/commit/4c763b2d5e02e0009b0e0935a342b330e33e515d))
+* **tui:** ✨ edit merge strategies with a checklist ([85b2c5f](https://github.com/hugs7/bitbucket-cli/commit/85b2c5feab1fc3aba492a768122fb987bfde6104))
+* **tui:** ✨ edit reviewer rules with forms and a people picker ([a3edc43](https://github.com/hugs7/bitbucket-cli/commit/a3edc434b4a84e47cd18e2a981bd5f70a5ad6d12))
+* **tui:** ✨ open settings directly in their editors ([ca66aac](https://github.com/hugs7/bitbucket-cli/commit/ca66aac9855f2ea448b153c3307fbaa49d81661c))
+
+
+### Bug Fixes
+
+* **build:** 🐛 preserve Go temporary directory permissions ([d303870](https://github.com/hugs7/bitbucket-cli/commit/d303870eaed1045ec9ac9e70e99ee83fc1689380))
+* **git:** 🐛 prefer bitbucket remotes over other hosts ([05e89e3](https://github.com/hugs7/bitbucket-cli/commit/05e89e3871d7bd291bf5da8c53f24b3c7217226e))
+* **pr:** 🐛 publish source branches to the selected remote ([5c71fab](https://github.com/hugs7/bitbucket-cli/commit/5c71fab513ce6ea3484343adca09876e9ab97255))
+* **repo:** 🐛 clarify settings pane focus and scrolling ([4e4bfce](https://github.com/hugs7/bitbucket-cli/commit/4e4bfce92abff6bcf24d8b40b240cdaea240f1b9))
+* **tui:** 🐛 unify back navigation across entry points ([5b60d07](https://github.com/hugs7/bitbucket-cli/commit/5b60d0748ad668e421ce594b04553797262bec5e))
+
 ## [0.12.1](https://github.com/hugs7/bitbucket-cli/compare/v0.12.0...v0.12.1) (2026-10-12)
 
 
