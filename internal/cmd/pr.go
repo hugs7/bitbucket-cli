@@ -208,7 +208,7 @@ func reviewerStatusLabel(r api.Reviewer) string {
 
 func newPRCreateCmd() *cobra.Command {
 	var repoFlag, hostFlag, title, body, bodyFile, source, target string
-	var yes bool
+	var yes, autoTarget bool
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Create a pull request",
@@ -227,7 +227,18 @@ func newPRCreateCmd() *cobra.Command {
 					source = string(bytesTrim(out))
 				}
 			}
-			if target == "" {
+			local := gitctx.Matches(svc.Host(), project, slug)
+			if autoTarget {
+				if !local {
+					return fmt.Errorf("--auto-target requires a local checkout of the selected Bitbucket repository")
+				}
+				_, target = gitctx.TargetBranches("", "", source)
+				if target == "" {
+					return fmt.Errorf("no shared ancestor found in local history; fetch branches or pass --target")
+				}
+			}
+			interactive := !yes && isatty.IsTerminal(os.Stdin.Fd())
+			if target == "" && !interactive {
 				r, err := svc.GetRepo(project, slug)
 				if err == nil {
 					target = r.DefaultRef
@@ -239,11 +250,21 @@ func newPRCreateCmd() *cobra.Command {
 			// Skip the form with --yes or when stdin is not a
 			// terminal (scripts, pipes, `--body-file -`), using the
 			// flags and inferred defaults as-is.
-			if !yes && isatty.IsTerminal(os.Stdin.Fd()) {
+			if interactive {
 				// Pre-load remote branches from local git so the
 				// source/target inputs autocomplete through real branch
 				// names instead of forcing the user to type them blind.
-				branches := remoteBranches()
+				var branches []string
+				if local {
+					branches = remoteBranches()
+				}
+				choices := func(src string) []string {
+					if !local {
+						return nil
+					}
+					ranked, _ := gitctx.TargetBranches("", "", gitctx.CanonicalBranchName(src, branches))
+					return ranked
+				}
 
 				// Rebind tab to "accept suggestion" (the default
 				// ctrl+e is unintuitive for anyone used to a shell);
@@ -261,8 +282,7 @@ func newPRCreateCmd() *cobra.Command {
 				form := huh.NewForm(huh.NewGroup(
 					huh.NewInput().Title("Source branch").Value(&source).
 						Suggestions(branches).Validate(nonEmpty),
-					huh.NewInput().Title("Target branch").Value(&target).
-						Suggestions(branches).Validate(nonEmpty),
+					prtui.NewTargetInput(&source, &target, choices),
 					huh.NewInput().Title("Title").Value(&title).
 						PlaceholderFunc(func() string {
 							titleHint = prtui.BranchToTitle(source)
@@ -311,6 +331,8 @@ func newPRCreateCmd() *cobra.Command {
 	c.Flags().StringVarP(&bodyFile, "body-file", "F", "", `read PR description from file (use "-" for stdin)`)
 	c.Flags().StringVarP(&source, "source", "s", "", "source branch (default: current branch)")
 	c.Flags().StringVarP(&target, "target", "T", "", "target branch (default: repo default branch)")
+	c.Flags().BoolVarP(&autoTarget, "auto-target", "a", false, "target the branch with the closest shared ancestor in local history")
+	c.MarkFlagsMutuallyExclusive("target", "auto-target")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the interactive form (automatic when stdin is not a terminal)")
 	return c
 }

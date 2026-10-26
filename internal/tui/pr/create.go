@@ -148,6 +148,7 @@ type createPRForm struct {
 	// final title.
 	titleHint string
 	branches  []string
+	local     bool
 
 	stdin          io.Reader
 	stdout, stderr io.Writer
@@ -181,8 +182,13 @@ func (f *createPRForm) Run() error {
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Source branch").Value(&f.source).
 			Suggestions(f.branches).Validate(formNonEmpty),
-		huh.NewInput().Title("Target branch").Value(&f.target).
-			Suggestions(f.branches).Validate(formNonEmpty),
+		NewTargetInput(&f.source, &f.target, func(source string) []string {
+			if !f.local {
+				return nil
+			}
+			branches, _ := gitctx.TargetBranches("", "", gitctx.CanonicalBranchName(source, f.branches))
+			return branches
+		}),
 		// Title shows the branch-derived suggestion as a
 		// placeholder rather than pre-filled text — typing
 		// replaces it without the user having to clear the
@@ -244,6 +250,9 @@ func (f *createPRForm) Run() error {
 // parent TUI shows them instead of silently submitting against a
 // missing/outdated ref.
 func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
+	if !f.local {
+		return
+	}
 	branch := strings.TrimSpace(f.source)
 	if branch == "" {
 		return
@@ -367,16 +376,18 @@ func formNonEmpty(s string) error {
 // back into the bubbletea event loop and the model handles the API
 // call (or the cancel) like any other message.
 func (m *model) startCreatePR() tea.Cmd {
-	source := currentGitBranch()
-	target := ""
-	if r, err := m.svc.GetRepo(m.project, m.slug); err == nil {
-		target = r.DefaultRef
+	local := gitctx.Matches(m.svc.Host(), m.project, m.slug)
+	var source string
+	var branches []string
+	if local {
+		source = currentGitBranch()
+		branches = remoteBranches()
 	}
 	form := &createPRForm{
 		source:    source,
-		target:    target,
 		titleHint: BranchToTitle(source),
-		branches:  remoteBranches(),
+		branches:  branches,
+		local:     local,
 	}
 	return tea.Exec(form, func(err error) tea.Msg {
 		// Propagate any unexpected error from the harness itself
