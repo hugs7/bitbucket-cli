@@ -14,25 +14,27 @@ import (
 // settled. Repository defaults start checked; searching preserves selections
 // and issues one directory request per submitted query, never per keystroke.
 // A non-nil initial slice replaces defaults, including an explicitly empty one.
+// Recent reviewers are listed first, most recently used at the top, and the
+// final selection is recorded as recent.
 func ChooseReviewers(svc api.Service, project, slug, source, target string, initial []string, in io.Reader, out io.Writer) ([]string, error) {
 	users := []api.User{}
+	for _, user := range config.RecentReviewers(svc.Host()) {
+		users = append(users, api.User{Username: user.Username, DisplayName: user.DisplayName, Email: user.Email})
+	}
 	selected := append([]string{}, initial...)
 	if initial == nil {
-		var err error
-		users, err = api.DefaultReviewers(svc, project, slug, source, target)
+		defaults, err := api.DefaultReviewers(svc, project, slug, source, target)
 		if err != nil {
 			return nil, err
 		}
-		for _, user := range users {
+		users = append(users, defaults...)
+		for _, user := range defaults {
 			selected = append(selected, user.Username)
 		}
 	} else {
 		for _, name := range initial {
 			users = append(users, api.User{Username: name})
 		}
-	}
-	for _, user := range config.Get().RecentReviewers[svc.Host()] {
-		users = append(users, api.User{Username: user.Username, DisplayName: user.DisplayName})
 	}
 	notice := "Repository defaults are checked. Space toggles; submit with an empty search to create."
 	for {
@@ -60,6 +62,7 @@ func ChooseReviewers(svc api.Service, project, slug, source, target string, init
 			}
 		}
 		if strings.TrimSpace(query) == "" {
+			recordRecentReviewers(svc.Host(), selected, users)
 			return append([]string{}, selected...), nil
 		}
 		matches, err := svc.SearchUsers(strings.TrimSpace(query), 50)
@@ -72,7 +75,26 @@ func ChooseReviewers(svc api.Service, project, slug, source, target string, init
 	}
 }
 
-// reviewerOptions retains server ordering while collapsing repeated identities.
+// recordRecentReviewers pushes the selection onto the host's recents so the
+// first selected reviewer ends up at the top. Best-effort.
+func recordRecentReviewers(host string, selected []string, users []api.User) {
+	known := map[string]api.User{}
+	for _, user := range users {
+		if _, ok := known[user.Username]; !ok || known[user.Username].DisplayName == "" {
+			known[user.Username] = user
+		}
+	}
+	for i := len(selected) - 1; i >= 0; i-- {
+		user := known[selected[i]]
+		_ = config.AddRecentReviewer(host, config.RecentReviewer{
+			Username:    selected[i],
+			DisplayName: user.DisplayName,
+			Email:       user.Email,
+		})
+	}
+}
+
+// reviewerOptions keeps the given ordering while collapsing repeated identities.
 func reviewerOptions(users []api.User, author string) []huh.Option[string] {
 	seen := map[string]bool{strings.ToLower(author): true, "": true}
 	options := []huh.Option[string]{}
