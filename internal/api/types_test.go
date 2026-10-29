@@ -36,6 +36,14 @@ func TestSummarizeBuilds(t *testing.T) {
 			{ID: "plan-1", State: "SUCCESSFUL", CreatedAt: at(1)},
 			{ID: "plan-2", State: "INPROGRESS", CreatedAt: at(2)},
 		}, "INPROGRESS"},
+		{"recreated bamboo branch plan replaces stale failure", []Build{
+			{ID: "PROJ-PLAN489", Name: "Build app - feature-x", Ref: "refs/heads/feature-x", State: "FAILED", CreatedAt: at(1)},
+			{ID: "PROJ-PLAN490", Name: "Build app - feature-x 1", Ref: "refs/heads/feature-x", State: "INPROGRESS", CreatedAt: at(2)},
+		}, "INPROGRESS"},
+		{"numbered names without a base build stay separate", []Build{
+			{ID: "node-18", Name: "Node 18", State: "FAILED", CreatedAt: at(1)},
+			{ID: "node-20", Name: "Node 20", State: "SUCCESSFUL", CreatedAt: at(2)},
+		}, "FAILED"},
 		{"snyk failure ignored", []Build{
 			{ID: "plan-1", State: "SUCCESSFUL", CreatedAt: at(1)},
 			{ID: "code/snyk (my-project)", Name: "code/snyk (my-project)", State: "FAILED", CreatedAt: at(2)},

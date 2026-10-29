@@ -186,14 +186,30 @@ func buildStateRank(state string) int {
 
 // SummarizeBuilds reduces a commit's build statuses to the one that
 // decides its overall state, the way Bitbucket's PR page does: Snyk
-// scans are ignored, only the latest status per build key counts, and
-// any failure outranks running builds, which outrank passing ones. It
+// scans are ignored, only the latest status per build counts, and any
+// failure outranks running builds, which outrank passing ones. It
 // returns a zero Build when nothing is left.
+//
+// A build normally means one key. When Bamboo recreates a branch plan,
+// the new plan gets a new key and the old name plus " N"; it counts as
+// the same build as the one on the same ref with the base name, so its
+// newer status replaces the stale one.
 func SummarizeBuilds(builds []Build) Build {
+	builds = WithoutSnykBuilds(builds)
+	keyByName := map[string]string{}
+	for _, b := range builds {
+		keyByName[b.Ref+"\x00"+b.Name] = b.ID
+	}
 	latest := map[string]Build{}
-	for _, b := range WithoutSnykBuilds(builds) {
-		if prev, ok := latest[b.ID]; !ok || b.CreatedAt.After(prev.CreatedAt) {
-			latest[b.ID] = b
+	for _, b := range builds {
+		key := b.ID
+		if i := strings.LastIndex(b.Name, " "); i > 0 && i+1 < len(b.Name) && strings.Trim(b.Name[i+1:], "0123456789") == "" {
+			if base, ok := keyByName[b.Ref+"\x00"+b.Name[:i]]; ok {
+				key = base
+			}
+		}
+		if prev, ok := latest[key]; !ok || b.CreatedAt.After(prev.CreatedAt) {
+			latest[key] = b
 		}
 	}
 	var worst Build
