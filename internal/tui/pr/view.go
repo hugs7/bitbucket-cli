@@ -236,25 +236,28 @@ func (m model) renderForMode(mode viewMode) string {
 			Bold(true).
 			BorderStyle(theme.Border()).
 			BorderForeground(lipgloss.Color("9")).
-			Padding(0, 2)
-		body = "\n  " + warn.Render(fmt.Sprintf("Delete comment #%d?  [y/n]", m.pendingDeleteCommentID))
+			Padding(0, 2).
+			MarginLeft(2)
+		body = "\n" + warn.Render(fmt.Sprintf("Delete comment #%d?  [y/n]", m.pendingDeleteCommentID))
 	case viewConfirmDecline:
 		warn := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9")).
 			Bold(true).
 			BorderStyle(theme.Border()).
 			BorderForeground(lipgloss.Color("9")).
-			Padding(0, 2)
-		body = "\n  " + warn.Render(fmt.Sprintf("Decline PR #%d?  [y/n]", m.pendingDeclinePRID))
+			Padding(0, 2).
+			MarginLeft(2)
+		body = "\n" + warn.Render(fmt.Sprintf("Decline PR #%d?  [y/n]", m.pendingDeclinePRID))
 	case viewConfirmDeletePR:
 		warn := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9")).
 			Bold(true).
 			BorderStyle(theme.Border()).
 			BorderForeground(lipgloss.Color("9")).
-			Padding(0, 2)
-		body = "\n  " + warn.Render(fmt.Sprintf(
-			"Delete PR #%d?  [y/n]\n  irreversible · Bitbucket Server only · usually requires admin",
+			Padding(0, 2).
+			MarginLeft(2)
+		body = "\n" + warn.Render(fmt.Sprintf(
+			"Delete PR #%d?  [y/n]\nirreversible · Bitbucket Server only · usually requires admin",
 			m.pendingDeletePRID))
 	case viewConfirmMerge:
 		body = "\n" + m.renderMergeConfirm()
