@@ -36,6 +36,19 @@ func TestPushUsesSelectedRemote(t *testing.T) {
 	if got := git("ls-remote", "--heads", "bitbucket"); !strings.Contains(got, "refs/heads/feature/work") {
 		t.Fatalf("missing branch: %s", got)
 	}
+	if got := git("rev-parse", "--abbrev-ref", "feature/work@{upstream}"); got != "bitbucket/feature/work" {
+		t.Fatalf("upstream = %q, want bitbucket/feature/work", got)
+	}
+
+	// An upstream already pointing at another remote is kept.
+	git("branch", "feature/mirrored")
+	git("push", "-u", "origin", "feature/mirrored")
+	if err := gitPushBranch("bitbucket", "feature/mirrored", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := git("rev-parse", "--abbrev-ref", "feature/mirrored@{upstream}"); got != "origin/feature/mirrored" {
+		t.Fatalf("upstream = %q, want origin/feature/mirrored", got)
+	}
 }
 
 func TestBranchToTitle(t *testing.T) {

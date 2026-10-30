@@ -313,10 +313,17 @@ func branchAhead(branch, upstream string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(out)))
 }
 
-// gitPushBranch publishes the chosen branch to the selected Bitbucket remote,
-// without changing an upstream that may intentionally point at another host.
+// gitPushBranch publishes the chosen branch to the selected Bitbucket remote.
+// It sets the upstream only when the branch has none, so an upstream that
+// intentionally points at another host is left alone.
 func gitPushBranch(remote, branch string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("git", "push", "--", remote, "refs/heads/"+branch+":refs/heads/"+branch)
+	args := []string{"push"}
+	upstream, err := exec.Command("git", "for-each-ref", "--format=%(upstream)", "refs/heads/"+branch).Output()
+	if err == nil && strings.TrimSpace(string(upstream)) == "" {
+		args = append(args, "--set-upstream")
+	}
+	args = append(args, "--", remote, "refs/heads/"+branch+":refs/heads/"+branch)
+	cmd := exec.Command("git", args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
