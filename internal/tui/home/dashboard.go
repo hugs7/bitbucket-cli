@@ -280,7 +280,8 @@ func (m *homeModel) dashboardKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // dashCursorLine returns the rendered-line index of the row currently
-// under dashCursor, plus its height in lines. Mirrors the layout
+// under dashCursor, plus its height in lines (a section's first row
+// starts at the section header). Mirrors the layout
 // inside renderDashboard so we can snap the viewport without
 // re-rendering the content.
 func (m *homeModel) dashCursorLine() (line, height int) {
@@ -290,13 +291,19 @@ func (m *homeModel) dashCursorLine() (line, height int) {
 		if i > 0 {
 			currentLine++ // blank line between sections
 		}
+		header := currentLine
 		currentLine++ // section header
 		if len(sec.rows) == 0 {
 			currentLine++ // "(empty)" placeholder
 			continue
 		}
-		for range sec.rows {
+		for j := range sec.rows {
 			if globalIdx == m.dashCursor {
+				// A section's first row spans its header too, so
+				// scrolling up onto it reveals the section title.
+				if j == 0 {
+					return header, currentLine - header + 2
+				}
 				return currentLine, 2
 			}
 			currentLine += 2
