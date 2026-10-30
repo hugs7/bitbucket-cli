@@ -203,6 +203,20 @@ func (m *homeModel) myReviewerStatus(pr api.PullRequest) string {
 	return ""
 }
 
+// myReviewLabel renders the current user's review status for a row in
+// the review queue, using the PR list's reviewer colours.
+func myReviewLabel(status string) string {
+	switch status {
+	case "APPROVED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("✓ approved")
+	case "NEEDS_WORK":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ needs work")
+	case "UNAPPROVED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("~ needs your review")
+	}
+	return ""
+}
+
 func (m *homeModel) doPRAction(label string, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		err := fn()
@@ -501,9 +515,16 @@ func (m *homeModel) renderDashRow(r dashRow, selected bool, innerW int) string {
 	var title, meta string
 	if r.kind == "pr" {
 		p := r.pr.PR
-		title = fmt.Sprintf("#%d  %s", p.ID, strutil.Truncate(p.Title, innerW-12))
+		label := ""
+		if r.section == "Pull requests to review" {
+			label = myReviewLabel(m.myReviewerStatus(p))
+		}
+		title = fmt.Sprintf("#%d  %s", p.ID, strutil.Truncate(p.Title, innerW-12-lipgloss.Width(label)))
 		if dot := theme.BuildDot(m.dashBuilds[dashBuildKey(r.pr)]); dot != "" {
 			title = dot + " " + title
+		}
+		if label != "" {
+			title += "  " + label
 		}
 		meta = fmt.Sprintf("%s/%s · %s · %s",
 			r.pr.Project, r.pr.Slug, p.Author, strutil.HumanTime(p.UpdatedAt))
