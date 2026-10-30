@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.14.0](https://github.com/hugs7/bitbucket-cli/compare/v0.13.0...v0.14.0) (2026-10-30)
+
+
+### Features
+
+* ✨ show build status prs home page ([b0f4052](https://github.com/hugs7/bitbucket-cli/commit/b0f405285f6447e41e7421f614848d585d446a5b))
+
+
+### Bug Fixes
+
+* 🐛 add prs reviewing label ([1f3401a](https://github.com/hugs7/bitbucket-cli/commit/1f3401a30345569db93945db10dfb7991bf474df))
+* 🐛 build status showing stale ([16b7d30](https://github.com/hugs7/bitbucket-cli/commit/16b7d30d55aae5fa8543ab40a6ebe41295eb9ac9))
+* 🐛 default git push question to true ([43b9861](https://github.com/hugs7/bitbucket-cli/commit/43b986124981f948d34a9026484ddebd4119069f))
+* 🐛 delete PR border alignment ([e78d1dd](https://github.com/hugs7/bitbucket-cli/commit/e78d1dd4d1619862c234bcfa29f2c4a821f9dbb3))
+* 🐛 scroll up home page show header ([8c301df](https://github.com/hugs7/bitbucket-cli/commit/8c301dfcc78ec48c68bfe5157886ce2500cd5643))
+* 🐛 set upstream on interactive branch push ([aa04297](https://github.com/hugs7/bitbucket-cli/commit/aa04297bd22def878f183b00130ab0ce72b3bfe2))
+* 🐛 sort reviewers by recency in create PR TUI ([ed2ad44](https://github.com/hugs7/bitbucket-cli/commit/ed2ad44d462ff2e9f0326323b9e919b1c414f406))
+
 ## [0.13.0](https://github.com/hugs7/bitbucket-cli/compare/v0.12.1...v0.13.0) (2026-10-26)
 
 
