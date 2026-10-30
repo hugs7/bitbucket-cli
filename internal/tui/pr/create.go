@@ -244,7 +244,7 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 	if existsErr != nil {
 		// The selected Bitbucket remote has no known tracking ref.
 		// Do not alter an existing upstream on another host.
-		var push bool
+		push := true // default to pushing; the PR needs the remote ref
 		prompt := huh.NewForm(huh.NewGroup(
 			huh.NewConfirm().
 				Title(fmt.Sprintf("Branch %q is not tracked on %s.", branch, repo.RemoteName)).
@@ -278,7 +278,7 @@ func (f *createPRForm) syncSourceBranch(keymap *huh.KeyMap) {
 	if ahead != 1 {
 		commits = "commits"
 	}
-	var push bool
+	push := true // default to pushing; the PR needs the remote ref
 	prompt := huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
 			Title(fmt.Sprintf("Branch %q is ahead of %s by %d %s.", branch, upstream, ahead, commits)).
