@@ -129,6 +129,9 @@ type homeModel struct {
 	reviewPRs   []api.ReviewPR
 	authoredPRs []api.ReviewPR
 	closedPRs   []api.ReviewPR
+	// dashBuilds holds each open PR's combined build state, keyed by
+	// dashBuildKey, so dashboard rows can show a status dot.
+	dashBuilds  map[string]string
 	recentRepos []api.Repo
 	dashCursor  int
 	dashVP      viewport.Model // scrolls when content exceeds the left pane height
@@ -306,6 +309,27 @@ func (m homeModel) fetchAuthored() tea.Cmd {
 	}
 }
 
+// fetchDashBuilds loads the build statuses Bitbucket shows on each PR,
+// one request per PR, and reports their combined state. Failures are
+// dropped; the row just shows no dot.
+func (m homeModel) fetchDashBuilds(prs []api.ReviewPR) tea.Cmd {
+	svc := m.svc
+	cmds := make([]tea.Cmd, 0, len(prs))
+	for _, rp := range prs {
+		if rp.PR.SourceCommit == "" {
+			continue
+		}
+		cmds = append(cmds, func() tea.Msg {
+			builds, err := svc.ListPRBuilds(rp.Project, rp.Slug, rp.PR)
+			if err != nil {
+				return nil
+			}
+			return dashBuildLoadedMsg{key: dashBuildKey(rp), state: api.SummarizeBuilds(builds).State}
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
 func (m homeModel) fetchClosed() tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
@@ -379,12 +403,19 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviewsLoadedMsg:
 		m.loading = false
 		m.reviewPRs = msg.prs
-		return m, m.afterDashLoad()
+		return m, tea.Batch(m.afterDashLoad(), m.fetchDashBuilds(msg.prs))
 
 	case authoredLoadedMsg:
 		m.loading = false
 		m.authoredPRs = msg.prs
-		return m, m.afterDashLoad()
+		return m, tea.Batch(m.afterDashLoad(), m.fetchDashBuilds(msg.prs))
+
+	case dashBuildLoadedMsg:
+		if m.dashBuilds == nil {
+			m.dashBuilds = map[string]string{}
+		}
+		m.dashBuilds[msg.key] = msg.state
+		return m, nil
 
 	case closedLoadedMsg:
 		m.loading = false

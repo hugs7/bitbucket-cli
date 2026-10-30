@@ -9,6 +9,7 @@ import "github.com/hugs7/bitbucket-cli/internal/api"
 type reviewsLoadedMsg struct{ prs []api.ReviewPR }
 type authoredLoadedMsg struct{ prs []api.ReviewPR }
 type closedLoadedMsg struct{ prs []api.ReviewPR }
+type dashBuildLoadedMsg struct{ key, state string }
 type recentReposLoadedMsg struct{ repos []api.Repo }
 type reposLoadedMsg struct{ repos []api.Repo }
 type readmeLoadedMsg struct {

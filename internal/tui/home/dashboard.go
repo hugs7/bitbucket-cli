@@ -46,6 +46,11 @@ func (r dashRow) identity() string {
 	return r.kind + ":" + r.project() + "/" + r.slug() + ":" + fmt.Sprint(r.pr.PR.ID)
 }
 
+// dashBuildKey identifies a PR across repos for the dashBuilds map.
+func dashBuildKey(rp api.ReviewPR) string {
+	return fmt.Sprintf("%s/%s#%d", rp.Project, rp.Slug, rp.PR.ID)
+}
+
 // dashSectionRows is how many rows a section shows until it is
 // expanded with the ShowAll key.
 const dashSectionRows = 10
@@ -497,6 +502,9 @@ func (m *homeModel) renderDashRow(r dashRow, selected bool, innerW int) string {
 	if r.kind == "pr" {
 		p := r.pr.PR
 		title = fmt.Sprintf("#%d  %s", p.ID, strutil.Truncate(p.Title, innerW-12))
+		if dot := theme.BuildDot(m.dashBuilds[dashBuildKey(r.pr)]); dot != "" {
+			title = dot + " " + title
+		}
 		meta = fmt.Sprintf("%s/%s · %s · %s",
 			r.pr.Project, r.pr.Slug, p.Author, strutil.HumanTime(p.UpdatedAt))
 	} else {
