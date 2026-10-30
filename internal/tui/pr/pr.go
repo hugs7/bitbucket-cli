@@ -67,6 +67,9 @@ const (
 	viewConfirmDecline
 	viewConfirmDeletePR
 	viewConfirmMerge
+	// viewConfirmMergeBypass offers to retry a merge vetoed for
+	// missing approvals with merge checks temporarily bypassed.
+	viewConfirmMergeBypass
 	viewPalette
 	viewEditor
 	viewSettings
@@ -142,6 +145,9 @@ type model struct {
 	pendingMergeBypassChecks       bool
 	pendingMergeStrategies         []api.MergeStrategy
 	pendingMergeStrategyIdx        int
+	// pendingMergeBypass holds the vetoed merge awaiting consent in
+	// viewConfirmMergeBypass.
+	pendingMergeBypass *mergeApprovalBlockedMsg
 
 	// pendingMergeTasks is the open-tasks list fetched in the
 	// background after the dialog opens — used to show "Open
@@ -866,6 +872,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.comments.SetItems(items)
 		m.pushMode(viewComments)
+		return m, nil
+
+	case mergeApprovalBlockedMsg:
+		m.loading = false
+		m.pendingMergeBypass = &msg
+		m.mode = viewConfirmMergeBypass
 		return m, nil
 
 	case actionDoneMsg:
@@ -2166,23 +2178,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if del {
 					label += fmt.Sprintf(" + deleted %s", src)
 				}
-				return m, tea.Batch(m.spinner.Tick, m.doAction(label, true, func() error {
-					// Resolve every open task first so blocker
-					// comments don't veto the merge. Surface the
-					// first failure verbatim — partial-resolve
-					// state is fine; the next merge attempt sees
-					// fewer open tasks.
-					if resolveTasks {
-						for _, t := range tasks {
-							if err := m.svc.ResolveTask(m.project, m.slug, prID, t.ID); err != nil {
-								return fmt.Errorf("resolve task #%d: %w", t.ID, err)
-							}
-						}
-					}
+				merge := func(bypass bool) error {
 					_, err := api.MergePullRequest(m.svc, m.project, m.slug, prID, api.MergeOptions{
 						StrategyID:         strategyID,
 						RetargetDependents: retargetDependents,
-						BypassChecks:       bypassChecks,
+						BypassChecks:       bypass,
 					})
 					if err != nil {
 						return err
@@ -2196,7 +2196,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					return nil
-				}))
+				}
+				return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+					// Resolve every open task first so blocker
+					// comments don't veto the merge. Surface the
+					// first failure verbatim — partial-resolve
+					// state is fine; the next merge attempt sees
+					// fewer open tasks.
+					if resolveTasks {
+						for _, t := range tasks {
+							if err := m.svc.ResolveTask(m.project, m.slug, prID, t.ID); err != nil {
+								return actionDoneMsg{text: label, err: fmt.Errorf("resolve task #%d: %w", t.ID, err), reload: true}
+							}
+						}
+					}
+					err := merge(bypassChecks)
+					if !bypassChecks && api.IsBypassableApprovalVeto(m.svc, err) {
+						return mergeApprovalBlockedMsg{prID: prID, label: label, err: err, retry: func() error { return merge(true) }}
+					}
+					return actionDoneMsg{text: label, err: err, reload: true}
+				})
 			case "n", "N", "esc":
 				m.pendingMergePRID = 0
 				m.pendingMergeSourceRef = ""
@@ -2210,6 +2229,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergeResolveTasks = false
 				m.mode = viewList
 				m.status = "merge cancelled"
+				return m, nil
+			}
+			return m, nil
+
+		case viewConfirmMergeBypass:
+			blocked := m.pendingMergeBypass
+			switch {
+			case key.Matches(msg, m.keys.ConfirmYes):
+				m.pendingMergeBypass = nil
+				m.mode = viewList
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.doAction(blocked.label+" (checks bypassed)", true, blocked.retry))
+			case key.Matches(msg, m.keys.ConfirmNo):
+				m.pendingMergeBypass = nil
+				m.mode = viewList
+				m.status = "✗ " + blocked.label + ": " + blocked.err.Error()
 				return m, nil
 			}
 			return m, nil

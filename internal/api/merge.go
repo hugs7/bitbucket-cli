@@ -28,6 +28,17 @@ type mergeService interface {
 	UpdatePRTarget(project, slug string, id int, targetRef string) error
 }
 
+// IsBypassableApprovalVeto reports whether a failed merge was vetoed for
+// missing approvals and svc can retry it with MergeOptions.BypassChecks.
+// Callers must still obtain explicit consent before retrying.
+func IsBypassableApprovalVeto(svc any, err error) bool {
+	if _, ok := svc.(MergeCheckBypassService); !ok || err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "veto") && strings.Contains(msg, "approv")
+}
+
 // MergePullRequest merges a PR and optionally moves open PRs targeting its
 // source branch onto its target branch, preserving a stacked-PR chain after
 // the intermediate branch has landed.

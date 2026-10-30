@@ -438,10 +438,26 @@ func newPRMergeCmd() *cobra.Command {
 			// Empty strategy → use the repo's configured default
 			// merge mode. The TUI exposes per-merge picking; the
 			// CLI keeps the simpler "honour repo default" behaviour.
-			result, err := api.MergePullRequest(svc, project, slug, id, api.MergeOptions{
+			options := api.MergeOptions{
 				RetargetDependents: retargetDependents,
 				BypassChecks:       bypassChecks,
-			})
+			}
+			result, err := api.MergePullRequest(svc, project, slug, id, options)
+			if err != nil && !yes && !bypassChecks && api.IsBypassableApprovalVeto(svc, err) {
+				var retry bool
+				if ferr := huh.NewConfirm().
+					Title(fmt.Sprintf("PR #%d needs approvals. Bypass and merge anyway? (admin)", id)).
+					Description("Temporarily sets required approvers to 0 and disables merge checks, merges, then restores the previous settings.\nRepository-wide: other PRs may merge during this window. Interruption requires bb pr recover-merge-checks.").
+					Value(&retry).
+					Run(); ferr != nil {
+					return ferr
+				}
+				if !retry {
+					return err
+				}
+				options.BypassChecks = true
+				result, err = api.MergePullRequest(svc, project, slug, id, options)
+			}
 			if err != nil {
 				return err
 			}

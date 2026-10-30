@@ -109,3 +109,32 @@ func TestMergePullRequestReportsPostMergeRetargetFailures(t *testing.T) {
 		t.Fatalf("retargeted = %#v, want PR #3", result.Retargeted)
 	}
 }
+
+type bypassMergeStub struct{ mergeServiceStub }
+
+func (*bypassMergeStub) MergePRBypassingChecks(_, _ string, _ int, _ string) error { return nil }
+
+func TestIsBypassableApprovalVeto(t *testing.T) {
+	veto := func(summary string) error {
+		return errors.New(`merge PR 7: HTTP 409: {"errors":[{"message":"Merging the pull request has been vetoed.","exceptionName":"com.atlassian.bitbucket.pull.PullRequestMergeVetoedException","vetoes":[{"summaryMessage":"` + summary + `"}]}]}`)
+	}
+	approval := veto("Requires approvals")
+	cases := []struct {
+		name string
+		svc  any
+		err  error
+		want bool
+	}{
+		{"approval veto", &bypassMergeStub{}, approval, true},
+		{"required reviewers veto", &bypassMergeStub{}, veto("Not all required reviewers have approved yet"), true},
+		{"build veto", &bypassMergeStub{}, veto("Not all required builds are successful yet"), false},
+		{"merge conflict", &bypassMergeStub{}, errors.New(`HTTP 409: {"errors":[{"message":"The pull request has conflicts","conflicted":true}]}`), false},
+		{"backend cannot bypass", &mergeServiceStub{}, approval, false},
+		{"no error", &bypassMergeStub{}, nil, false},
+	}
+	for _, tc := range cases {
+		if got := IsBypassableApprovalVeto(tc.svc, tc.err); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

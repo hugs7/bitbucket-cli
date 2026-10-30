@@ -499,6 +499,14 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = theme.ErrPrefix() + msg.err.Error()
 		return m, nil
 
+	case homeMergeBlockedMsg:
+		m.loading = false
+		m.pendingAction = "merge-bypass"
+		m.pendingActionPR = msg.pr
+		m.pendingActionLabel = msg.label + " (checks bypassed)"
+		m.status = fmt.Sprintf("PR #%d needs approvals: temporarily set approvers to 0 + disable merge checks, merge, restore? (admin) y/n", msg.pr.PR.ID)
+		return m, nil
+
 	case homeActionDoneMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -589,13 +597,18 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingActionLabel = ""
 				m.loading = true
 				switch action {
-				case "merge":
-					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
+				case "merge", "merge-bypass":
+					bypass := action == "merge-bypass"
+					return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
 						_, err := api.MergePullRequest(m.svc, rp.Project, rp.Slug, prID, api.MergeOptions{
 							RetargetDependents: true,
+							BypassChecks:       bypass,
 						})
-						return err
-					}))
+						if !bypass && api.IsBypassableApprovalVeto(m.svc, err) {
+							return homeMergeBlockedMsg{pr: rp, label: label}
+						}
+						return homeActionDoneMsg{text: label, err: err}
+					})
 				case "decline":
 					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
 						return m.svc.DeclinePR(rp.Project, rp.Slug, prID)

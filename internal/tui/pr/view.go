@@ -30,7 +30,7 @@ func (m model) helpView() string {
 		km = m.keys.confirmHelp()
 	case viewConfirmDecline:
 		km = m.keys.confirmHelp()
-	case viewConfirmDeletePR:
+	case viewConfirmDeletePR, viewConfirmMergeBypass:
 		km = m.keys.confirmHelp()
 	case viewConfirmMerge:
 		// The merge confirm card already shows its own footer
@@ -261,6 +261,20 @@ func (m model) renderForMode(mode viewMode) string {
 			m.pendingDeletePRID))
 	case viewConfirmMerge:
 		body = "\n" + m.renderMergeConfirm()
+	case viewConfirmMergeBypass:
+		warn := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("11")).
+			Bold(true).
+			BorderStyle(theme.Border()).
+			BorderForeground(lipgloss.Color("11")).
+			Padding(0, 2).
+			MarginLeft(2)
+		body = "\n" + warn.Render(fmt.Sprintf(
+			"PR #%d needs approvals. Bypass and merge anyway?  [y/n]\n"+
+				"temporarily sets required approvers to 0 and disables merge checks, then restores them\n"+
+				"admin · repository-wide: other PRs can merge meanwhile · if interrupted run:\n"+
+				"bb pr recover-merge-checks -R %s/%s/%s",
+			m.pendingMergeBypass.prID, m.svc.Host(), m.project, m.slug))
 	case viewPalette:
 		// Render whatever view we came from as the background, then
 		// overlay the palette card on top — gives an "Amp-style"

@@ -223,7 +223,9 @@ make individual resources unavailable; errors are shown, not hidden.
 
 ## Temporary admin merge overrides
 
-The merge dialog's **b** checkbox is off by default. CLI equivalent:
+The merge dialog's **b** checkbox is off by default. If a merge is vetoed for
+missing approvals, `bb pr merge`, the PR browser and the dashboard's **M** also
+offer to retry it with this bypass (`y` to accept). CLI equivalent:
 
 ```sh
 bb pr merge 123 --bypass-checks -y

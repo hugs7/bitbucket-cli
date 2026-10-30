@@ -36,6 +36,15 @@ type actionDoneMsg struct {
 	// reload causes the PR list to refresh after the action.
 	reload bool
 }
+
+// mergeApprovalBlockedMsg reports a merge vetoed for missing approvals
+// that retry can repeat with merge checks temporarily bypassed.
+type mergeApprovalBlockedMsg struct {
+	prID  int
+	label string
+	err   error
+	retry func() error
+}
 type editorResultMsg struct {
 	purpose   string // "edit-description" | "add-comment" | "reply-comment" | "edit-comment" | "add-inline-comment"
 	prID      int

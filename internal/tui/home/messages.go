@@ -21,6 +21,13 @@ type searchTickMsg struct {
 	version int
 }
 type homeErrMsg struct{ err error }
+
+// homeMergeBlockedMsg reports a merge vetoed for missing approvals that
+// can be retried with merge checks temporarily bypassed.
+type homeMergeBlockedMsg struct {
+	pr    api.ReviewPR
+	label string
+}
 type homeActionDoneMsg struct {
 	text string
 	err  error
