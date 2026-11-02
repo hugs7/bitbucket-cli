@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/hugs7/bitbucket-cli/compare/v0.14.0...v0.15.0) (2026-11-02)
+
+
+### Features
+
+* **pr:** ✨ offer check bypass when merge lacks approvals ([9b1ee53](https://github.com/hugs7/bitbucket-cli/commit/9b1ee53ce212c2c86b4b2430b5b03330a5a0a482))
+
 ## [0.14.0](https://github.com/hugs7/bitbucket-cli/compare/v0.13.0...v0.14.0) (2026-10-30)
 
 
