@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -260,7 +259,7 @@ func (m model) renderForMode(mode viewMode) string {
 			"Delete PR #%d?  [y/n]\nirreversible · Bitbucket Server only · usually requires admin",
 			m.pendingDeletePRID))
 	case viewConfirmMerge:
-		body = "\n" + m.renderMergeConfirm()
+		body = "\n" + m.merge.View(m.width, m.spinner.View())
 	case viewConfirmMergeBypass:
 		warn := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("11")).
@@ -274,7 +273,7 @@ func (m model) renderForMode(mode viewMode) string {
 				"temporarily sets required approvers to 0 and disables merge checks, then restores them\n"+
 				"admin · repository-wide: other PRs can merge meanwhile · if interrupted run:\n"+
 				"bb pr recover-merge-checks -R %s/%s/%s",
-			m.pendingMergeBypass.prID, m.svc.Host(), m.project, m.slug))
+			m.pendingMergeBypass.PRID, m.svc.Host(), m.project, m.slug))
 	case viewPalette:
 		// Render whatever view we came from as the background, then
 		// overlay the palette card on top — gives an "Amp-style"
@@ -317,183 +316,6 @@ func (m model) renderForMode(mode viewMode) string {
 		body = header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 	return body
-}
-
-// renderMergeConfirm draws the merge-confirmation card. Lays the
-// strategy picker out as a vertical list (one row per allowed mode)
-// rather than the older ←/→ cycle, summarises the post-merge options
-// (delete branch, resolve tasks) and lists every open task so the
-// user knows exactly what will happen when they press y.
-func (m model) renderMergeConfirm() string {
-	width := mergeConfirmWidth(m.width)
-
-	header := theme.TitleBadge.Render(fmt.Sprintf(" MERGE PR #%d ", m.pendingMergePRID))
-	target := ""
-	if it, ok := m.list.SelectedItem().(prItem); ok && it.pr.ID == m.pendingMergePRID {
-		target = it.pr.TargetRef
-	}
-	switch {
-	case m.pendingMergeSourceRef != "" && target != "":
-		header += "  " + theme.TitleChipDim.Render(m.pendingMergeSourceRef+" → "+target)
-	case m.pendingMergeSourceRef != "":
-		header += "  " + theme.TitleChipDim.Render(m.pendingMergeSourceRef)
-	}
-
-	parts := []string{header, ""}
-
-	// Strategy picker.
-	parts = append(parts, theme.TitleChip.Render("Strategy"))
-	if n := len(m.pendingMergeStrategies); n == 0 {
-		parts = append(parts, "  "+theme.TitleChipDim.Render("(no strategies available — using default)"))
-	} else {
-		idx := m.pendingMergeStrategyIdx
-		if idx < 0 || idx >= n {
-			idx = 0
-		}
-		// Two passes: compute the widest name so the descriptions
-		// line up in a column rather than being ragged-right.
-		nameW := 0
-		for _, st := range m.pendingMergeStrategies {
-			if w := lipgloss.Width(st.Name); w > nameW {
-				nameW = w
-			}
-		}
-		for i, st := range m.pendingMergeStrategies {
-			parts = append(parts, renderStrategyRow(i == idx, st, nameW))
-		}
-	}
-
-	// Options pane: post-merge handling + resolve tasks toggles.
-	parts = append(parts, "", theme.TitleChip.Render("Options"))
-	parts = append(parts, "  "+renderToggle(m.pendingMergeDeleteBranch, "d",
-		fmt.Sprintf("delete source branch %q after merge", m.pendingMergeSourceRef)))
-	parts = append(parts, "  "+renderToggle(m.pendingMergeRetargetDependents, "r",
-		"retarget dependent PRs to this PR's base branch"))
-	if _, ok := m.svc.(api.MergeCheckBypassService); ok {
-		parts = append(parts, "  "+renderToggle(m.pendingMergeBypassChecks, "b",
-			"temporarily bypass merge checks / reviewer minimums (admin)"))
-		if m.pendingMergeBypassChecks {
-			parts = append(parts, theme.TitleChipWarn.Render("  Repository-wide: other PRs can merge during this window."),
-				"  Settings restored after merge/failure. If interrupted, run:",
-				"  bb pr recover-merge-checks -R "+m.svc.Host()+"/"+m.project+"/"+m.slug)
-		}
-	}
-
-	hasTasks := len(m.pendingMergeTasks) > 0
-	taskLabel := "resolve all open tasks before merging"
-	if !hasTasks && !m.pendingMergeTasksLoading && m.pendingMergeTasksErr == nil {
-		taskLabel += "  " + theme.TitleChipDim.Render("(none open)")
-	}
-	parts = append(parts, "  "+renderToggle(m.pendingMergeResolveTasks, "t", taskLabel))
-
-	// Tasks pane (only when relevant).
-	switch {
-	case m.pendingMergeTasksLoading:
-		parts = append(parts, "", theme.TitleChipDim.Render("  "+m.spinner.View()+" loading tasks…"))
-	case m.pendingMergeTasksErr != nil:
-		parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
-			Render("  ✗ tasks: "+m.pendingMergeTasksErr.Error()))
-	case hasTasks:
-		parts = append(parts, "", theme.TitleChipWarn.Render(
-			fmt.Sprintf("Open tasks: %d", len(m.pendingMergeTasks))))
-		for _, t := range m.pendingMergeTasks {
-			text := strings.TrimSpace(strings.SplitN(t.Text, "\n", 2)[0])
-			if text == "" {
-				text = "(no description)"
-			}
-			// Trim long task lines so they don't wrap in the box.
-			max := width - 12
-			if max > 0 && lipgloss.Width(text) > max {
-				text = text[:max-1] + "…"
-			}
-			parts = append(parts, "  "+theme.TitleChipDim.Render("•")+
-				" "+theme.TitleChipDim.Render(fmt.Sprintf("#%d", t.ID))+
-				"  "+text)
-		}
-	}
-
-	// Footer hints.
-	parts = append(parts, "",
-		theme.TitleChipDim.Render(
-			"↑/↓ strategy · d delete · r retarget · t tasks · b bypass · y merge · esc cancel"))
-
-	box := lipgloss.NewStyle().
-		Border(theme.Border()).
-		BorderForeground(lipgloss.Color("10")).
-		Padding(1, 2).
-		Width(width)
-	return box.Render(strings.Join(parts, "\n"))
-}
-
-// renderStrategyRow draws one row in the strategy picker. The
-// selected row is highlighted as a solid bar; others use a muted
-// glyph + name + git command hint.
-func renderStrategyRow(selected bool, st api.MergeStrategy, nameW int) string {
-	hint := strategyHint(st.ID)
-	tag := ""
-	if st.Default {
-		tag = "  " + theme.TitleChipDim.Render("(repo default)")
-	}
-	name := st.Name
-	if pad := nameW - lipgloss.Width(name); pad > 0 {
-		name += strings.Repeat(" ", pad)
-	}
-
-	if selected {
-		line := "▸ ● " + name + "  " + hint + tag
-		return lipgloss.NewStyle().
-			Foreground(lipgloss.Color("231")).
-			Background(lipgloss.Color("22")).
-			Bold(true).
-			Render(line)
-	}
-	return "  ○ " + name + "  " + theme.TitleChipDim.Render(hint) + tag
-}
-
-// renderToggle formats a "[x] k  label" line for the options pane.
-func renderToggle(on bool, key, label string) string {
-	check := "[ ]"
-	if on {
-		check = "[x]"
-	}
-	return check + " " + theme.TitleChipWarn.Render(key) + "  " + label
-}
-
-// strategyHint returns the git-command sketch for a known strategy
-// ID. Empty string if unknown — the row still renders, just without
-// a hint column.
-func strategyHint(id string) string {
-	switch id {
-	case "no-ff", "merge_commit":
-		return "--no-ff"
-	case "ff", "fast_forward":
-		return "--ff"
-	case "ff-only":
-		return "--ff-only"
-	case "rebase-no-ff":
-		return "rebase + merge --no-ff"
-	case "rebase-ff-only":
-		return "rebase + merge --ff-only"
-	case "squash":
-		return "--squash"
-	case "squash-ff-only":
-		return "--squash --ff-only"
-	}
-	return ""
-}
-
-// mergeConfirmWidth picks a roomy width for the merge confirm card
-// (capped so it doesn't span ultrawide terminals).
-func mergeConfirmWidth(termW int) int {
-	const minW, maxW = 60, 90
-	w := termW - 4
-	if w < minW {
-		w = minW
-	}
-	if w > maxW {
-		w = maxW
-	}
-	return w
 }
 
 // ---------- helpers ----------

@@ -37,14 +37,6 @@ type actionDoneMsg struct {
 	reload bool
 }
 
-// mergeApprovalBlockedMsg reports a merge vetoed for missing approvals
-// that retry can repeat with merge checks temporarily bypassed.
-type mergeApprovalBlockedMsg struct {
-	prID  int
-	label string
-	err   error
-	retry func() error
-}
 type editorResultMsg struct {
 	purpose   string // "edit-description" | "add-comment" | "reply-comment" | "edit-comment" | "add-inline-comment"
 	prID      int
@@ -83,25 +75,4 @@ type aiDescribeDoneMsg struct {
 	prID int
 	text string
 	err  error
-}
-
-// mergeStrategiesLoadedMsg lands after the M-key handler has fetched
-// the repo's allowed merge strategies. The Update handler stages the
-// strategy list, picks the default index, and switches into the
-// merge-confirm view.
-type mergeStrategiesLoadedMsg struct {
-	prID       int
-	sourceRef  string
-	strategies []api.MergeStrategy
-	err        error
-}
-
-// mergeTasksLoadedMsg lands after the merge confirm view kicks off
-// its background task fetch. It just refreshes the open-tasks count
-// shown in the dialog — the merge confirm view stays visible the
-// whole time so users can still y/n without waiting.
-type mergeTasksLoadedMsg struct {
-	prID  int
-	tasks []api.Task
-	err   error
 }

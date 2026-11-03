@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hugs7/bitbucket-cli/internal/config"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mergedialog"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -118,7 +119,7 @@ func buildPaletteItems(mode viewMode) []list.Item {
 					m.paletteReturnTo = viewList
 					m.loading = true
 					return tea.Batch(m.spinner.Tick,
-						m.fetchMergeStrategies(it.pr.ID, it.pr.SourceRef))
+						mergedialog.Open(m.svc, m.project, m.slug, it.pr))
 				}
 				return nil
 			}},
