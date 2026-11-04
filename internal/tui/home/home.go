@@ -22,6 +22,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mergedialog"
 	"github.com/hugs7/bitbucket-cli/internal/tui/preview"
 	"github.com/hugs7/bitbucket-cli/internal/tui/settings"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
@@ -174,10 +175,15 @@ type homeModel struct {
 	settingsOpen bool
 
 	// Confirmation prompt for direct PR actions from the dashboard
-	// (merge / decline / delete). Empty pendingAction means no prompt.
+	// (decline / delete / merge-bypass). Empty pendingAction means no
+	// prompt. pendingMergeRetry is the bypass merge for merge-bypass.
 	pendingAction      string
 	pendingActionPR    api.ReviewPR
 	pendingActionLabel string
+	pendingMergeRetry  tea.Cmd
+
+	// merge is the open merge dialog (M on a dashboard PR).
+	merge *mergedialog.Model
 
 	next *Action
 }
@@ -499,13 +505,30 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = theme.ErrPrefix() + msg.err.Error()
 		return m, nil
 
-	case homeMergeBlockedMsg:
+	case mergedialog.StrategiesLoadedMsg:
 		m.loading = false
-		m.pendingAction = "merge-bypass"
-		m.pendingActionPR = msg.pr
-		m.pendingActionLabel = msg.label + " (checks bypassed)"
-		m.status = fmt.Sprintf("PR #%d needs approvals: temporarily set approvers to 0 + disable merge checks, merge, restore? (admin) y/n", msg.pr.PR.ID)
+		var cmd tea.Cmd
+		m.merge, cmd = mergedialog.New(m.svc, msg)
+		if msg.Err != nil {
+			m.status = theme.ErrPrefix() + "merge strategies: " + msg.Err.Error()
+		}
+		return m, tea.Batch(m.spinner.Tick, cmd)
+
+	case mergedialog.TasksLoadedMsg:
+		if m.merge != nil {
+			m.merge.SetTasks(msg)
+		}
 		return m, nil
+
+	case mergedialog.ResultMsg:
+		if msg.Retry != nil {
+			m.loading = false
+			m.pendingAction = "merge-bypass"
+			m.pendingMergeRetry = msg.Retry
+			m.status = fmt.Sprintf("PR #%d needs approvals: temporarily set approvers to 0 + disable merge checks, merge, restore? (admin) y/n", msg.PRID)
+			return m, nil
+		}
+		return m.Update(homeActionDoneMsg{text: msg.Label, err: msg.Err})
 
 	case homeActionDoneMsg:
 		m.loading = false
@@ -579,6 +602,23 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.merge != nil {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			closed, cmd := m.merge.Update(msg)
+			if !closed {
+				return m, nil
+			}
+			m.merge = nil
+			if cmd == nil {
+				m.status = "merge cancelled"
+				return m, nil
+			}
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, cmd)
+		}
+
 		if m.pendingAction != "" {
 			rp := m.pendingActionPR
 			prID := rp.PR.ID
@@ -589,6 +629,7 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingAction = ""
 				m.pendingActionPR = api.ReviewPR{}
 				m.pendingActionLabel = ""
+				m.pendingMergeRetry = nil
 				m.status = action + " cancelled"
 				return m, nil
 			case key.Matches(msg, m.keys.ConfirmYes):
@@ -597,18 +638,10 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingActionLabel = ""
 				m.loading = true
 				switch action {
-				case "merge", "merge-bypass":
-					bypass := action == "merge-bypass"
-					return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
-						_, err := api.MergePullRequest(m.svc, rp.Project, rp.Slug, prID, api.MergeOptions{
-							RetargetDependents: true,
-							BypassChecks:       bypass,
-						})
-						if !bypass && api.IsBypassableApprovalVeto(m.svc, err) {
-							return homeMergeBlockedMsg{pr: rp, label: label}
-						}
-						return homeActionDoneMsg{text: label, err: err}
-					})
+				case "merge-bypass":
+					retry := m.pendingMergeRetry
+					m.pendingMergeRetry = nil
+					return m, tea.Batch(m.spinner.Tick, retry)
 				case "decline":
 					return m, tea.Batch(m.spinner.Tick, m.doPRAction(label, func() error {
 						return m.svc.DeclinePR(rp.Project, rp.Slug, prID)
@@ -869,11 +902,8 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.Merge):
 			if rp, ok := m.selectedDashPR(); ok && m.tab == tabDashboard {
-				m.pendingAction = "merge"
-				m.pendingActionPR = rp
-				m.pendingActionLabel = fmt.Sprintf("merged #%d", rp.PR.ID)
-				m.status = fmt.Sprintf("merge PR #%d? y/n", rp.PR.ID)
-				return m, nil
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, mergedialog.Open(m.svc, rp.Project, rp.Slug, rp.PR))
 			}
 			m.status = "select a dashboard PR first"
 			return m, nil
@@ -1116,6 +1146,10 @@ func (m homeModel) View() string {
 	sepCol := sepStyle.Render(strings.TrimRight(strings.Repeat(theme.VerticalRule()+"\n", contentH), "\n"))
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sepCol, rightPane)
+	if m.merge != nil {
+		body = lipgloss.Place(lipgloss.Width(body), lipgloss.Height(body),
+			lipgloss.Center, lipgloss.Center, m.merge.View(m.width, m.spinner.View()))
+	}
 
 	footer := m.help.View(m.keys)
 	statusLine := theme.RenderStatusLine(m.loading, m.spinner.View(), m.status)
