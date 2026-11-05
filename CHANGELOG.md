@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.0](https://github.com/hugs7/bitbucket-cli/compare/v0.15.0...v0.16.0) (2026-11-05)
+
+
+### Features
+
+* ✨ show reviewer status + merge ability on home page ([e88b52d](https://github.com/hugs7/bitbucket-cli/commit/e88b52d1ca315e3cc7690305093cfcd9007ca033))
+* ✨ show reviewer status + merge ability on home page ([b4bc869](https://github.com/hugs7/bitbucket-cli/commit/b4bc8694fb48ada51d3de5b8afcf725e64dddee5))
+
 ## [0.15.0](https://github.com/hugs7/bitbucket-cli/compare/v0.14.0...v0.15.0) (2026-11-02)
 
 
