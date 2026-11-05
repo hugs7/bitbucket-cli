@@ -13,6 +13,7 @@ import (
 
 	"github.com/hugs7/bitbucket-cli/internal/api"
 	"github.com/hugs7/bitbucket-cli/internal/tui/mdrender"
+	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
 type prItem struct {
@@ -145,7 +146,7 @@ func (m *model) updateDetail() {
 		fmt.Fprintln(&sb)
 		sb.WriteString(badge)
 	}
-	if reviewers := renderReviewers(p.Reviewers); reviewers != "" {
+	if reviewers := theme.Reviewers(p.Reviewers); reviewers != "" {
 		fmt.Fprintln(&sb)
 		sb.WriteString(reviewers)
 	}
@@ -186,41 +187,4 @@ func (m *model) reviewerBadge(p api.PullRequest) string {
 			Render(" PENDING YOUR REVIEW ")
 	}
 	return ""
-}
-
-func renderReviewers(reviewers []api.Reviewer) string {
-	if len(reviewers) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	fmt.Fprintln(&sb, lipgloss.NewStyle().Bold(true).Render("Reviewers"))
-	for _, r := range reviewers {
-		fmt.Fprintf(&sb, "  %s  %s\n", reviewerStatusLabel(r), reviewerName(r))
-	}
-	return strings.TrimRight(sb.String(), "\n")
-}
-
-func reviewerName(r api.Reviewer) string {
-	if strings.TrimSpace(r.DisplayName) == "" {
-		return r.Username
-	}
-	if strings.TrimSpace(r.Username) == "" || r.Username == r.DisplayName {
-		return r.DisplayName
-	}
-	return fmt.Sprintf("%s (%s)", r.DisplayName, r.Username)
-}
-
-func reviewerStatusLabel(r api.Reviewer) string {
-	s := strings.ToUpper(strings.TrimSpace(r.Status))
-	if s == "" && r.Approved {
-		s = "APPROVED"
-	}
-	switch s {
-	case "APPROVED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("✓ approved")
-	case "NEEDS_WORK", "CHANGES_REQUESTED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ needs work")
-	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("~ pending")
-	}
 }

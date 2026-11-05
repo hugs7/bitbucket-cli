@@ -27,6 +27,7 @@ import (
 	"github.com/hugs7/bitbucket-cli/internal/config"
 	"github.com/hugs7/bitbucket-cli/internal/strutil"
 	"github.com/hugs7/bitbucket-cli/internal/sysutil"
+	"github.com/hugs7/bitbucket-cli/internal/tui/mergedialog"
 	"github.com/hugs7/bitbucket-cli/internal/tui/theme"
 )
 
@@ -130,38 +131,11 @@ type model struct {
 	// changes, manual refresh) don't keep yanking the cursor back.
 	targetPRID int
 
-	// merge-confirm sub-mode state. pendingMergeDeleteBranch toggles
-	// whether to remove the source branch after a successful merge;
-	// pendingMergeRetargetDependents controls whether stacked PRs are
-	// moved to the merged PR's base branch.
-	// pendingMergeStrategies is the list of strategies the repo
-	// allows (fetched lazily before the dialog opens); the user
-	// cycles through them with ←/→ and the chosen one is sent
-	// to MergePR.
-	pendingMergePRID               int
-	pendingMergeSourceRef          string
-	pendingMergeDeleteBranch       bool
-	pendingMergeRetargetDependents bool
-	pendingMergeBypassChecks       bool
-	pendingMergeStrategies         []api.MergeStrategy
-	pendingMergeStrategyIdx        int
+	// merge is the open merge-confirm dialog (viewConfirmMerge).
+	merge *mergedialog.Model
 	// pendingMergeBypass holds the vetoed merge awaiting consent in
 	// viewConfirmMergeBypass.
-	pendingMergeBypass *mergeApprovalBlockedMsg
-
-	// pendingMergeTasks is the open-tasks list fetched in the
-	// background after the dialog opens — used to show "Open
-	// tasks: N" and to drive the "resolve all tasks before merge"
-	// toggle. pendingMergeTasksLoading is true while the fetch is
-	// in flight so the dialog can render a spinner instead of
-	// showing a stale "0 open" before the response lands.
-	// pendingMergeResolveTasks, when true, makes the y-key handler
-	// resolve every open task before firing the merge so the user
-	// doesn't get vetoed by leftover blocker comments.
-	pendingMergeTasks        []api.Task
-	pendingMergeTasksLoading bool
-	pendingMergeTasksErr     error
-	pendingMergeResolveTasks bool
+	pendingMergeBypass *mergedialog.ResultMsg
 
 	// prBuilds caches the latest build state per PR id so the list
 	// can render a status dot without re-fetching on every keystroke.
@@ -602,31 +576,6 @@ func (m *model) applyDiffJump(t diffJumpTarget) bool {
 	return false
 }
 
-// fetchMergeStrategies asynchronously loads the repo's allowed merge
-// strategies. The result lands as mergeStrategiesLoadedMsg, which
-// opens the merge-confirm dialog with the strategies prepared.
-func (m *model) fetchMergeStrategies(prID int, sourceRef string) tea.Cmd {
-	svc := m.svc
-	project, slug := m.project, m.slug
-	return func() tea.Msg {
-		ss, err := svc.MergeStrategies(project, slug)
-		return mergeStrategiesLoadedMsg{prID: prID, sourceRef: sourceRef, strategies: ss, err: err}
-	}
-}
-
-// fetchMergeTasks asynchronously loads the PR's open tasks (blocker
-// comments) so the merge confirm dialog can display the count and
-// drive the "resolve before merge" toggle. The result lands as
-// mergeTasksLoadedMsg.
-func (m *model) fetchMergeTasks(prID int) tea.Cmd {
-	svc := m.svc
-	project, slug := m.project, m.slug
-	return func() tea.Msg {
-		ts, err := svc.ListTasks(project, slug, prID)
-		return mergeTasksLoadedMsg{prID: prID, tasks: ts, err: err}
-	}
-}
-
 func (m *model) doAction(label string, reload bool, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		err := fn()
@@ -874,11 +823,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pushMode(viewComments)
 		return m, nil
 
-	case mergeApprovalBlockedMsg:
-		m.loading = false
-		m.pendingMergeBypass = &msg
-		m.mode = viewConfirmMergeBypass
-		return m, nil
+	case mergedialog.ResultMsg:
+		if msg.Retry != nil {
+			m.loading = false
+			m.pendingMergeBypass = &msg
+			m.mode = viewConfirmMergeBypass
+			return m, nil
+		}
+		return m.Update(actionDoneMsg{text: msg.Label, err: msg.Err, reload: true})
 
 	case actionDoneMsg:
 		m.loading = false
@@ -1096,50 +1048,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			},
 		))
 
-	case mergeStrategiesLoadedMsg:
-		// Strategies fetched — populate the dialog state and switch
-		// into the confirm view. On error we still show the dialog
-		// (with whatever fallback list the API layer provided) so
-		// the merge action stays usable. Kick off the task fetch in
-		// parallel so "open tasks: N" lights up moments later.
+	case mergedialog.StrategiesLoadedMsg:
+		// Show the dialog even on error (with whatever fallback list
+		// the API layer provided) so the merge action stays usable.
+		// The task fetch runs in parallel so "open tasks: N" lights up
+		// moments later.
 		m.loading = false
-		m.pendingMergePRID = msg.prID
-		m.pendingMergeSourceRef = msg.sourceRef
-		m.pendingMergeDeleteBranch = false
-		m.pendingMergeRetargetDependents = true
-		m.pendingMergeBypassChecks = false
-		m.pendingMergeStrategies = msg.strategies
-		m.pendingMergeStrategyIdx = 0
-		for i, st := range msg.strategies {
-			if st.Default {
-				m.pendingMergeStrategyIdx = i
-				break
-			}
-		}
-		m.pendingMergeTasks = nil
-		m.pendingMergeTasksErr = nil
-		m.pendingMergeTasksLoading = true
-		m.pendingMergeResolveTasks = false
+		var cmd tea.Cmd
+		m.merge, cmd = mergedialog.New(m.svc, msg)
 		m.mode = viewConfirmMerge
-		if msg.err != nil {
-			m.status = theme.ErrPrefix() + "merge strategies: " + msg.err.Error()
+		if msg.Err != nil {
+			m.status = theme.ErrPrefix() + "merge strategies: " + msg.Err.Error()
 		}
-		return m, tea.Batch(m.spinner.Tick, m.fetchMergeTasks(msg.prID))
+		return m, tea.Batch(m.spinner.Tick, cmd)
 
-	case mergeTasksLoadedMsg:
+	case mergedialog.TasksLoadedMsg:
 		// Stale response (user already cancelled or merged) — drop.
-		if m.mode != viewConfirmMerge || msg.prID != m.pendingMergePRID {
-			return m, nil
-		}
-		m.pendingMergeTasksLoading = false
-		m.pendingMergeTasks = msg.tasks
-		m.pendingMergeTasksErr = msg.err
-		// Default the "resolve all tasks before merge" toggle ON
-		// when there's something to resolve — that's the whole
-		// point of surfacing the count, and the user can flip it
-		// off with `t` if they really want the merge to be vetoed.
-		if msg.err == nil && len(msg.tasks) > 0 {
-			m.pendingMergeResolveTasks = true
+		if m.mode == viewConfirmMerge && m.merge != nil {
+			m.merge.SetTasks(msg)
 		}
 		return m, nil
 
@@ -2013,7 +1939,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case key.Matches(msg, m.keys.Merge):
 					m.loading = true
 					return m, tea.Batch(m.spinner.Tick,
-						m.fetchMergeStrategies(id, it.pr.SourceRef))
+						mergedialog.Open(m.svc, m.project, m.slug, it.pr))
 				case key.Matches(msg, m.keys.EditDesc):
 					return m, editInTUI("edit-description",
 						fmt.Sprintf("pr-%d-description", id), id, 0, it.pr.Description)
@@ -2103,135 +2029,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case viewConfirmMerge:
-			switch msg.String() {
-			case "b":
-				if _, ok := m.svc.(api.MergeCheckBypassService); ok {
-					m.pendingMergeBypassChecks = !m.pendingMergeBypassChecks
-				}
+			closed, cmd := m.merge.Update(msg)
+			if !closed {
 				return m, nil
-			case "d":
-				// Toggle "delete source branch on merge" without
-				// leaving the confirm screen so the user can flip
-				// their mind before pressing y.
-				m.pendingMergeDeleteBranch = !m.pendingMergeDeleteBranch
-				return m, nil
-			case "r":
-				m.pendingMergeRetargetDependents = !m.pendingMergeRetargetDependents
-				return m, nil
-			case "t":
-				// Toggle "resolve all open tasks before merging".
-				// Only meaningful when there are tasks to resolve;
-				// keep the toggle inert otherwise so a stray press
-				// doesn't enable a no-op flag.
-				if len(m.pendingMergeTasks) > 0 {
-					m.pendingMergeResolveTasks = !m.pendingMergeResolveTasks
-				}
-				return m, nil
-			case "up", "k", "left", "h":
-				// Cycle strategies backwards. Wraps around so users
-				// can step in either direction without lifting off
-				// the navigation keys; up/down are the primary
-				// keys now that the dialog renders as a vertical
-				// list, with h/l/←/→ kept as aliases.
-				if n := len(m.pendingMergeStrategies); n > 0 {
-					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx - 1 + n) % n
-				}
-				return m, nil
-			case "down", "j", "right", "l":
-				if n := len(m.pendingMergeStrategies); n > 0 {
-					m.pendingMergeStrategyIdx = (m.pendingMergeStrategyIdx + 1) % n
-				}
-				return m, nil
-			case "y", "Y", "enter":
-				prID := m.pendingMergePRID
-				src := m.pendingMergeSourceRef
-				del := m.pendingMergeDeleteBranch
-				retargetDependents := m.pendingMergeRetargetDependents
-				bypassChecks := m.pendingMergeBypassChecks
-				resolveTasks := m.pendingMergeResolveTasks
-				tasks := append([]api.Task(nil), m.pendingMergeTasks...)
-				strategyID := ""
-				strategyName := ""
-				if idx := m.pendingMergeStrategyIdx; idx >= 0 && idx < len(m.pendingMergeStrategies) {
-					strategyID = m.pendingMergeStrategies[idx].ID
-					strategyName = m.pendingMergeStrategies[idx].Name
-				}
-				m.pendingMergePRID = 0
-				m.pendingMergeSourceRef = ""
-				m.pendingMergeDeleteBranch = false
-				m.pendingMergeRetargetDependents = false
-				m.pendingMergeStrategies = nil
-				m.pendingMergeStrategyIdx = 0
-				m.pendingMergeTasks = nil
-				m.pendingMergeTasksErr = nil
-				m.pendingMergeTasksLoading = false
-				m.pendingMergeResolveTasks = false
-				m.mode = viewList
-				m.loading = true
-				label := fmt.Sprintf("merged #%d", prID)
-				if strategyName != "" {
-					label = fmt.Sprintf("merged #%d (%s)", prID, strategyName)
-				}
-				if resolveTasks && len(tasks) > 0 {
-					label = fmt.Sprintf("resolved %d task(s) + ", len(tasks)) + label
-				}
-				if del {
-					label += fmt.Sprintf(" + deleted %s", src)
-				}
-				merge := func(bypass bool) error {
-					_, err := api.MergePullRequest(m.svc, m.project, m.slug, prID, api.MergeOptions{
-						StrategyID:         strategyID,
-						RetargetDependents: retargetDependents,
-						BypassChecks:       bypass,
-					})
-					if err != nil {
-						return err
-					}
-					if del && src != "" {
-						// Branch deletion is best-effort: the merge
-						// already succeeded, so surface the failure
-						// in the toast but don't undo the merge.
-						if derr := m.svc.DeleteBranch(m.project, m.slug, src); derr != nil {
-							return fmt.Errorf("merged but branch delete failed: %w", derr)
-						}
-					}
-					return nil
-				}
-				return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
-					// Resolve every open task first so blocker
-					// comments don't veto the merge. Surface the
-					// first failure verbatim — partial-resolve
-					// state is fine; the next merge attempt sees
-					// fewer open tasks.
-					if resolveTasks {
-						for _, t := range tasks {
-							if err := m.svc.ResolveTask(m.project, m.slug, prID, t.ID); err != nil {
-								return actionDoneMsg{text: label, err: fmt.Errorf("resolve task #%d: %w", t.ID, err), reload: true}
-							}
-						}
-					}
-					err := merge(bypassChecks)
-					if !bypassChecks && api.IsBypassableApprovalVeto(m.svc, err) {
-						return mergeApprovalBlockedMsg{prID: prID, label: label, err: err, retry: func() error { return merge(true) }}
-					}
-					return actionDoneMsg{text: label, err: err, reload: true}
-				})
-			case "n", "N", "esc":
-				m.pendingMergePRID = 0
-				m.pendingMergeSourceRef = ""
-				m.pendingMergeDeleteBranch = false
-				m.pendingMergeRetargetDependents = false
-				m.pendingMergeStrategies = nil
-				m.pendingMergeStrategyIdx = 0
-				m.pendingMergeTasks = nil
-				m.pendingMergeTasksErr = nil
-				m.pendingMergeTasksLoading = false
-				m.pendingMergeResolveTasks = false
-				m.mode = viewList
+			}
+			m.merge = nil
+			m.mode = viewList
+			if cmd == nil {
 				m.status = "merge cancelled"
 				return m, nil
 			}
-			return m, nil
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, cmd)
 
 		case viewConfirmMergeBypass:
 			blocked := m.pendingMergeBypass
@@ -2240,11 +2049,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingMergeBypass = nil
 				m.mode = viewList
 				m.loading = true
-				return m, tea.Batch(m.spinner.Tick, m.doAction(blocked.label+" (checks bypassed)", true, blocked.retry))
+				return m, tea.Batch(m.spinner.Tick, blocked.Retry)
 			case key.Matches(msg, m.keys.ConfirmNo):
 				m.pendingMergeBypass = nil
 				m.mode = viewList
-				m.status = "✗ " + blocked.label + ": " + blocked.err.Error()
+				m.status = "✗ " + blocked.Label + ": " + blocked.Err.Error()
 				return m, nil
 			}
 			return m, nil
@@ -2412,7 +2221,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if it, ok := m.list.SelectedItem().(prItem); ok {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick,
-					m.fetchMergeStrategies(it.pr.ID, it.pr.SourceRef))
+					mergedialog.Open(m.svc, m.project, m.slug, it.pr))
 			}
 		case key.Matches(msg, m.keys.EditDesc):
 			if it, ok := m.list.SelectedItem().(prItem); ok {

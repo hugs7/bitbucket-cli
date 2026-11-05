@@ -395,6 +395,10 @@ func (m *homeModel) renderPRDetail(rp api.ReviewPR) string {
 	if p.WebURL != "" {
 		fmt.Fprintln(&sb, homeMuted.Render(p.WebURL))
 	}
+	if reviewers := theme.Reviewers(p.Reviewers); reviewers != "" {
+		fmt.Fprintln(&sb)
+		fmt.Fprintln(&sb, reviewers)
+	}
 	if p.Description != "" {
 		fmt.Fprintln(&sb)
 		// PR descriptions on Bitbucket are markdown — render them
@@ -525,6 +529,9 @@ func (m *homeModel) renderDashRow(r dashRow, selected bool, innerW int) string {
 		label := ""
 		if r.section == "Pull requests to review" {
 			label = myReviewLabel(m.myReviewerStatus(p))
+		}
+		if approvals := theme.ApprovalSummary(p.Reviewers); approvals != "" {
+			label = strings.TrimSpace(approvals + "  " + label)
 		}
 		title = fmt.Sprintf("#%d  %s", p.ID, strutil.Truncate(p.Title, innerW-12-lipgloss.Width(label)))
 		if dot := theme.BuildDot(m.dashBuilds[dashBuildKey(r.pr)]); dot != "" {
