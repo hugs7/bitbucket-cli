@@ -30,6 +30,7 @@ type overrideFixture struct {
 	disableFailure     bool
 	restoreFailure     bool
 	restoreIgnored     bool
+	unconfiguredCheck  bool
 	permissionDenied   bool
 	bypass             bool
 	mergeCalls         int
@@ -196,6 +197,11 @@ func (f *overrideFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		response = hook
 		if strings.HasSuffix(path, "/settings") {
+			if hook["configured"] == false {
+				// Bitbucket answers an unconfigured hook's settings with an empty 204.
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			response = f.hookSettings
 		}
 		if r.Method == http.MethodDelete && strings.HasSuffix(path, "/"+key) {
@@ -277,7 +283,7 @@ func TestMergeOverrideRestoration(t *testing.T) {
 	for _, scenario := range []struct {
 		name                                                         string
 		mergeFailure, disableFailure, restoreFailure, restoreIgnored bool
-		inherited, inheritedApprovers                                bool
+		inherited, inheritedApprovers, unconfigured                  bool
 		wantError                                                    string
 		wantMerges, wantScans                                        int
 	}{
@@ -292,9 +298,13 @@ func TestMergeOverrideRestoration(t *testing.T) {
 		{name: "inherited partial disable failure", inherited: true, inheritedApprovers: true, disableFailure: true, wantError: "merge not attempted"},
 		{name: "inherited restore failure", inherited: true, inheritedApprovers: true, restoreFailure: true, wantError: "project inheritance", wantMerges: 1},
 		{name: "inherited restore enabled but wrong scope", inherited: true, restoreIgnored: true, wantError: "state verification failed", wantMerges: 1},
+		{name: "inherited unconfigured check success", inherited: true, unconfigured: true, wantMerges: 1, wantScans: 1},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newOverrideFixture(t)
+			if scenario.unconfigured {
+				f.hooks[1]["configured"] = false
+			}
 			if scenario.inherited {
 				f.inheritHook(1)
 			}

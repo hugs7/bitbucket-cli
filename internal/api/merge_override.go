@@ -172,7 +172,9 @@ func (s *serverService) snapshotMergeOverride(project, slug string, id int) (*ov
 		if key == "" || (scope != "REPOSITORY" && scope != "PROJECT") || !configuredOK {
 			return nil, fmt.Errorf("refusing unknown-scope or non-restorable merge hook %q", key)
 		}
-		hook := overrideHook{Key: key, State: state}
+		// An unconfigured hook's settings come back as an empty 204, which
+		// leaves this map empty.
+		hook := overrideHook{Key: key, State: state, Settings: map[string]any{}}
 		if err := s.client.getJSON(base+"/settings/hooks/"+url.PathEscape(key)+"/settings", &hook.Settings); err != nil {
 			return nil, fmt.Errorf("snapshot hook %s settings: %w", key, err)
 		}
@@ -298,7 +300,8 @@ func (s *serverService) verifyMergeOverride(j *overrideJournal, restored bool) e
 	}
 	for _, hook := range j.Hooks {
 		path := base + "/settings/hooks/" + url.PathEscape(hook.Key)
-		var state, settings map[string]any
+		var state map[string]any
+		settings := map[string]any{}
 		if err := s.client.getJSON(path, &state); err != nil {
 			failures = append(failures, err)
 		} else if (restored && !reflect.DeepEqual(state, hook.State)) || (!restored && (state["enabled"] != false || !overrideLocal(state))) {
