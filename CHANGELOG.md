@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.1](https://github.com/hugs7/bitbucket-cli/compare/v0.16.0...v0.16.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* 🐛 merge override again ([0932bb3](https://github.com/hugs7/bitbucket-cli/commit/0932bb344d5644b6aa636f01dce21c1012cd100d))
+* 🐛 merge with override ([3bdb1aa](https://github.com/hugs7/bitbucket-cli/commit/3bdb1aa6ef0be2ecd72b117d797feadf3a9d98c6))
+
 ## [0.16.0](https://github.com/hugs7/bitbucket-cli/compare/v0.15.0...v0.16.0) (2026-11-05)
 
 
