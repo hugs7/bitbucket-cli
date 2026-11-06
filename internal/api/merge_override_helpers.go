@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -69,13 +70,58 @@ func overrideConditionMatches(c map[string]any, source, target string) (bool, er
 			if strings.TrimPrefix(id, "refs/heads/") != strings.TrimPrefix(pair.ref, "refs/heads/") {
 				return false, nil
 			}
+		case "PATTERN":
+			pattern, ok := matcher["id"].(string)
+			if !ok || pattern == "" {
+				return false, fmt.Errorf("missing default-reviewer pattern matcher ID")
+			}
+			if !overridePatternMatches(pattern, pair.ref) {
+				return false, nil
+			}
 		default:
-			// Do not approximate Bitbucket branch-model/pattern semantics. A
+			// Do not approximate unknown or branch-model matcher semantics. A
 			// false negative could merge without disabling all requested checks.
-			return false, fmt.Errorf("unsupported default-reviewer matcher %v; only ANY_REF and BRANCH can be safely bypassed", typ["id"])
+			return false, fmt.Errorf("unsupported default-reviewer matcher %v; only ANY_REF, BRANCH and PATTERN can be safely bypassed", typ["id"])
 		}
 	}
 	return true, nil
+}
+
+// overridePatternMatches implements Bitbucket's Ant-style, path-segment suffix
+// matching: * and ? stay within a segment, ** spans zero or more segments, and
+// a trailing slash implies **. Other characters are literal, not shell/regex
+// syntax. Consecutive stars within a segment are ordinary * wildcards.
+// https://confluence.atlassian.com/bitbucketserver/branch-permission-patterns-776639814.html
+func overridePatternMatches(pattern, ref string) bool {
+	ref = "refs/heads/" + strings.TrimPrefix(ref, "refs/heads/")
+	if strings.HasSuffix(pattern, "/") {
+		pattern += "**"
+	}
+	segments := strings.Split(ref, "/")
+	// Any prefix may precede the matched suffix of the fully qualified ref.
+	matched := make([]bool, len(segments)+1)
+	for i := range matched {
+		matched[i] = true
+	}
+	for _, segment := range strings.Split(pattern, "/") {
+		next := make([]bool, len(matched))
+		if segment == "**" {
+			next[0] = matched[0]
+			for i := range segments {
+				next[i+1] = matched[i+1] || next[i]
+			}
+		} else {
+			expression := regexp.QuoteMeta(segment)
+			expression = strings.ReplaceAll(expression, `\*`, `[^/]*`)
+			expression = strings.ReplaceAll(expression, `\?`, `[^/]`)
+			matcher := regexp.MustCompile("^" + expression + "$")
+			for i, value := range segments {
+				next[i+1] = matched[i] && matcher.MatchString(value)
+			}
+		}
+		matched = next
+	}
+	return matched[len(segments)]
 }
 
 // overrideCollection accepts both the Westpac array response and standard

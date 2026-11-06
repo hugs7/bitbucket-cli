@@ -4,7 +4,7 @@
 # changes can be used without replacing it. Version stays "dev" so the
 # update notifier leaves it alone; commit/date identify the build.
 PREFIX ?= $(HOME)/.local
-INSTALL_NAME ?= bb-local
+INSTALL_NAME ?= bbl
 LDFLAGS := -X main.commit=$(shell git describe --always --dirty) \
 	-X main.date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 

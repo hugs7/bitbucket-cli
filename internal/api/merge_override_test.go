@@ -284,10 +284,23 @@ func TestMergeOverrideRestoration(t *testing.T) {
 		name                                                         string
 		mergeFailure, disableFailure, restoreFailure, restoreIgnored bool
 		inherited, inheritedApprovers, unconfigured                  bool
+		targetPattern, sourcePattern, unrelatedPattern               string
 		wantError                                                    string
 		wantMerges, wantScans                                        int
 	}{
 		{name: "success", wantMerges: 1, wantScans: 1},
+		{name: "unrelated release pattern", unrelatedPattern: "release/R****-*-DO", wantMerges: 1, wantScans: 1},
+		{name: "matching repeated stars", targetPattern: "m****n", wantMerges: 1, wantScans: 1},
+		{name: "matching source pattern", sourcePattern: "feat?re", wantMerges: 1, wantScans: 1},
+		{name: "matching qualified suffix", targetPattern: "heads/ma?n", wantMerges: 1, wantScans: 1},
+		{name: "matching zero segments", targetPattern: "refs/heads/**/main", wantMerges: 1, wantScans: 1},
+		{name: "matching intervening segment", targetPattern: "refs/**/main", wantMerges: 1, wantScans: 1},
+		{name: "matching trailing slash", targetPattern: "heads/", wantMerges: 1, wantScans: 1},
+		{name: "single star cannot cross slash", unrelatedPattern: "refs*main", wantMerges: 1, wantScans: 1},
+		{name: "question mark requires one character", unrelatedPattern: "main?", wantMerges: 1, wantScans: 1},
+		{name: "regex syntax is literal", unrelatedPattern: "ma[in]+", wantMerges: 1, wantScans: 1},
+		{name: "pattern is case sensitive", unrelatedPattern: "MAIN", wantMerges: 1, wantScans: 1},
+		{name: "pattern requires whole segment", unrelatedPattern: "ain", wantMerges: 1, wantScans: 1},
 		{name: "merge failure", mergeFailure: true, wantError: "outcome uncertain", wantMerges: 1},
 		{name: "partial disable applied then failed", disableFailure: true, wantError: "merge not attempted"},
 		{name: "restore failure", restoreFailure: true, wantError: "PR merged; settings restoration failed", wantMerges: 1},
@@ -302,6 +315,22 @@ func TestMergeOverrideRestoration(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newOverrideFixture(t)
+			if scenario.targetPattern != "" {
+				f.conditions[0]["targetRefMatcher"] = map[string]any{"id": scenario.targetPattern, "type": map[string]any{"id": "PATTERN"}}
+			}
+			if scenario.sourcePattern != "" {
+				f.conditions[0]["sourceRefMatcher"] = map[string]any{"id": scenario.sourcePattern, "type": map[string]any{"id": "PATTERN"}}
+			}
+			if scenario.unrelatedPattern != "" {
+				unrelated := overrideCopy(f.conditions[0])
+				unrelated["id"] = float64(8)
+				unrelated["targetRefMatcher"] = map[string]any{"id": scenario.unrelatedPattern, "type": map[string]any{"id": "PATTERN"}}
+				f.conditions = append(f.conditions, unrelated)
+			}
+			originalConditions, err := json.Marshal(f.conditions)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if scenario.unconfigured {
 				f.hooks[1]["configured"] = false
 			}
@@ -312,7 +341,7 @@ func TestMergeOverrideRestoration(t *testing.T) {
 				f.inheritHook(0)
 			}
 			f.mergeFailure, f.disableFailure, f.restoreFailure, f.restoreIgnored = scenario.mergeFailure, scenario.disableFailure, scenario.restoreFailure, scenario.restoreIgnored
-			_, err := MergePullRequest(f.svc, "PROJ", "repo", 1, MergeOptions{BypassChecks: true, RetargetDependents: true, StrategyID: "squash"})
+			_, err = MergePullRequest(f.svc, "PROJ", "repo", 1, MergeOptions{BypassChecks: true, RetargetDependents: true, StrategyID: "squash"})
 			if scenario.wantError == "" && err != nil || scenario.wantError != "" && (err == nil || !strings.Contains(err.Error(), scenario.wantError)) {
 				t.Fatalf("error = %v, want %q", err, scenario.wantError)
 			}
@@ -321,6 +350,10 @@ func TestMergeOverrideRestoration(t *testing.T) {
 			}
 			if f.journalChecks == 0 || f.settings["requiredApprovers"] != float64(2) || f.conditions[0]["requiredApprovals"] != float64(1) {
 				t.Fatal("cleanup did not restore independent settings")
+			}
+			restoredConditions, marshalErr := json.Marshal(f.conditions)
+			if marshalErr != nil || string(restoredConditions) != string(originalConditions) {
+				t.Fatalf("reviewer conditions were not preserved: %s, error: %v", restoredConditions, marshalErr)
 			}
 			if f.inheritanceDeletes != len(f.inheritedHooks) {
 				t.Fatalf("inheritance reset attempts = %d, want %d", f.inheritanceDeletes, len(f.inheritedHooks))
@@ -375,7 +408,7 @@ func TestMergeOverrideDefaultDoesNotBypass(t *testing.T) {
 }
 
 func TestMergeOverrideRefusesUnsafeConfiguration(t *testing.T) {
-	for _, scenario := range []string{"not admin", "global hook", "inherited reviewers", "unknown matcher", "missing plugin", "unknown approval hook", "unknown hook scope", "missing project scope ID"} {
+	for _, scenario := range []string{"not admin", "global hook", "inherited reviewers", "unknown matcher", "missing pattern", "missing plugin", "unknown approval hook", "unknown hook scope", "missing project scope ID"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newOverrideFixture(t)
 			switch scenario {
@@ -387,6 +420,8 @@ func TestMergeOverrideRefusesUnsafeConfiguration(t *testing.T) {
 				f.conditions[0]["scope"].(map[string]any)["type"] = "PROJECT"
 			case "unknown matcher":
 				f.conditions[0]["targetRefMatcher"].(map[string]any)["type"] = map[string]any{"id": "MODEL_BRANCH"}
+			case "missing pattern":
+				f.conditions[0]["targetRefMatcher"] = map[string]any{"type": map[string]any{"id": "PATTERN"}}
 			case "missing plugin":
 				delete(f.settings, overrideApproversKey)
 			case "unknown approval hook":
