@@ -760,6 +760,23 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.toggleDashSection()
 			}
 			return m, nil
+		case key.Matches(msg, m.keys.Refresh):
+			m.status = ""
+			switch m.tab {
+			case tabDashboard:
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.refreshDashboardFeeds(), m.fetchRecentRepos())
+			case tabFavourites:
+				m.refreshFavourites()
+				return m, m.refreshPreviewForTab()
+			case tabBrowse:
+				if m.browseQ == "" {
+					return m, nil
+				}
+				delete(m.searchCache, m.browseQ)
+				return m, m.runSearchNow(m.browseQ)
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.ShiftTab):
 			m.tab = (m.tab + homeTab(len(allTabs)-1)) % homeTab(len(allTabs))
 			return m, m.refreshPreviewForTab()

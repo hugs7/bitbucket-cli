@@ -8,8 +8,8 @@ package home
 import "github.com/charmbracelet/bubbles/key"
 
 type homeKeys struct {
-	Up, Down, Enter, Tab, ShiftTab, Search, Open, CopyLink, Quit, Back, Help, OpenPRs, ToggleFav, ClearStatus, Settings, FocusPane, ShowAll key.Binding
-	Approve, Unapprove, NeedsWork, Merge, DeclinePR, DeletePR, ConfirmYes, ConfirmNo                                                        key.Binding
+	Up, Down, Enter, Tab, ShiftTab, Search, Open, CopyLink, Quit, Back, Help, OpenPRs, ToggleFav, ClearStatus, Settings, FocusPane, ShowAll, Refresh key.Binding
+	Approve, Unapprove, NeedsWork, Merge, DeclinePR, DeletePR, ConfirmYes, ConfirmNo                                                                 key.Binding
 }
 
 func defaultHomeKeys() homeKeys {
@@ -39,16 +39,17 @@ func defaultHomeKeys() homeKeys {
 		Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		FocusPane:   key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "toggle pane focus")),
 		ShowAll:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "show all / fewer")),
+		Refresh:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 	}
 }
 
 func (k homeKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.FocusPane, k.Search, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.OpenPRs, k.Open, k.CopyLink, k.Settings, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.FocusPane, k.Search, k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.OpenPRs, k.Open, k.CopyLink, k.Refresh, k.Settings, k.Help, k.Quit}
 }
 func (k homeKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Tab, k.ShiftTab, k.Search, k.ShowAll},
 		{k.Approve, k.Unapprove, k.NeedsWork, k.Merge, k.DeclinePR, k.DeletePR},
-		{k.FocusPane, k.OpenPRs, k.ToggleFav, k.Open, k.CopyLink, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
+		{k.FocusPane, k.OpenPRs, k.ToggleFav, k.Open, k.CopyLink, k.Refresh, k.Settings, k.ClearStatus, k.Help, k.Back, k.Quit},
 	}
 }
