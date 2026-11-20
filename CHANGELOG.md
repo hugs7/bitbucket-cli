@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/hugs7/bitbucket-cli/compare/v0.16.1...v0.17.0) (2026-11-20)
+
+
+### Features
+
+* **home:** ✨ add r to refresh the home page ([e3b0b3a](https://github.com/hugs7/bitbucket-cli/commit/e3b0b3a6ce1838b736340ee4cb1c7fb1bb335f5a))
+
 ## [0.16.1](https://github.com/hugs7/bitbucket-cli/compare/v0.16.0...v0.16.1) (2026-11-06)
 
 
